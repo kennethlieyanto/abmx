@@ -8,23 +8,30 @@ types so it cannot drift from the implementation.
 
 ## Where specs are loaded from
 
-Parser specs are runtime configuration; none are compiled into the binary. The
-first source that yields a corpus wins:
+Parser specs are runtime configuration; none are compiled into the binary.
+
+**Explicit sources merge.** Every directory named by `--parsers` or
+`$TXP_PARSERS` is loaded in order and merged by parser `id`; when two directories
+define the same `id` the earlier one wins and the later file is reported as
+shadowed. A duplicate id *inside one* directory is an error. This allows a local
+override of a single bank without copying the whole corpus.
+
+**Implicit discovery uses one corpus.** When neither flag nor env is set, the
+first directory that **exists** wins:
 
 | Order | Source |
 |---|---|
-| 1 | `--parsers <dir>` (repeatable) |
-| 2 | `$TXP_PARSERS` (colon-separated) |
-| 3 | `./parsers` |
-| 4 | `$XDG_CONFIG_HOME/txp/parsers` |
-| 5 | `/etc/txp/parsers` |
+| 1 | `./parsers` |
+| 2 | `$XDG_CONFIG_HOME/txp/parsers` |
+| 3 | `/etc/txp/parsers` |
 
-Explicit entries (1 and 2) **merge by parser `id`, earlier wins**; a duplicate id
-inside one directory is an error. This allows a local override of a single bank
-without copying the whole corpus.
+If that directory contains no specs, loading fails rather than falling through to
+a lower-precedence corpus: an empty corpus in the place you asked it to look is a
+broken install, and silently reading a different one is worse.
 
-Router policy resolves as `--router` → `$TXP_ROUTER` → `router.toml` inside the
-first parser directory → built-in defaults. `txp paths` prints the chain.
+Router policy resolves as `--router` → `$TXP_ROUTER` → the first used directory
+that contains a `router.toml` → built-in defaults. `txp paths` prints the chain
+and marks skipped candidates.
 
 ## Input
 

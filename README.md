@@ -60,11 +60,15 @@ in this order:
 
 | Order | Source | Notes |
 |---|---|---|
-| 1 | `--parsers <dir>` (repeatable) | explicit; several dirs merge by `id`, first wins |
-| 2 | `$TXP_PARSERS` | colon-separated, same merge semantics |
-| 3 | `./parsers` | first hit wins |
-| 4 | `$XDG_CONFIG_HOME/txp/parsers` | `~/.config/txp/parsers` by default |
-| 5 | `/etc/txp/parsers` | containers and system installs |
+| 1 | `--parsers <dir>` (repeatable) | all entries are **merged** by parser `id`; earlier wins |
+| 2 | `$TXP_PARSERS` | colon-separated; same merge semantics |
+| 3 | `./parsers` | first **existing** directory wins; error if it has no specs |
+| 4 | `$XDG_CONFIG_HOME/txp/parsers` | `~/.config/txp/parsers`; only consulted if nothing above exists |
+| 5 | `/etc/txp/parsers` | containers and system installs; same rule |
+
+Implicit discovery uses **one** corpus, deliberately: a stale user-level parser
+can never silently contribute half your registry. To layer a local override on
+top of a base corpus, say so explicitly with `--parsers` or `$TXP_PARSERS`.
 
 Router policy resolves as `--router` → `$TXP_ROUTER` → `router.toml` inside the
 first parser directory → built-in defaults.
@@ -74,10 +78,12 @@ first parser directory → built-in defaults.
 ```
 $ txp paths
 used      cwd     parsers
-missing   xdg     /home/you/.config/txp/parsers
+skipped   xdg     /home/you/.config/txp/parsers
 missing   system  /etc/txp/parsers
 
+env: TXP_PARSERS unset
 router: parsers/router.toml (corpus)
+note: 1 lower-precedence corpus ignored (first hit wins); pass --parsers to layer
 ```
 
 `txp specs` shows what actually loaded and which file each parser came from.

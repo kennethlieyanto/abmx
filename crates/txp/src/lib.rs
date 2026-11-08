@@ -36,6 +36,11 @@ pub enum Error {
     Empty(PathBuf),
     #[error("no parser specs found")]
     NoCorpus { tried: Vec<PathBuf> },
+    #[error("no parser specs in {path} (found via {found_via}); pass --parsers <dir> or remove the directory")]
+    EmptyCorpus {
+        path: PathBuf,
+        found_via: &'static str,
+    },
     #[error("{path} does not exist")]
     MissingPath { path: PathBuf },
 }
@@ -69,22 +74,27 @@ pub struct Discovery {
 }
 
 impl Discovery {
-    /// One line per candidate, e.g. for `txp paths`.
+    /// Directory state, used by `txp paths`.
+    pub fn status(&self, candidate: &Candidate) -> &'static str {
+        if !candidate.exists {
+            "missing"
+        } else if self.dirs.iter().any(|dir| dir == &candidate.path) {
+            "used"
+        } else if candidate.has_specs {
+            "skipped"
+        } else {
+            "empty"
+        }
+    }
+
+    /// One line per candidate, in precedence order.
     pub fn describe(&self) -> String {
         self.candidates
             .iter()
             .map(|candidate| {
-                let mark = if self.dirs.contains(&candidate.path) {
-                    "used"
-                } else if candidate.has_specs {
-                    "shadowed"
-                } else if candidate.exists {
-                    "empty"
-                } else {
-                    "missing"
-                };
                 format!(
-                    "{mark:<9} {:<7} {}",
+                    "{:<9} {:<7} {}",
+                    self.status(candidate),
                     candidate.source,
                     candidate.path.display()
                 )
@@ -92,12 +102,30 @@ impl Discovery {
             .collect::<Vec<_>>()
             .join("\n")
     }
+
+    /// Hint for implicit discovery when a lower-precedence corpus was ignored.
+    pub fn note(&self) -> Option<String> {
+        let skipped = self
+            .candidates
+            .iter()
+            .filter(|candidate| self.status(candidate) == "skipped")
+            .count();
+
+        (skipped > 0).then(|| {
+            format!(
+                "note: {skipped} lower-precedence corpus ignored (first hit wins); pass --parsers to layer"
+            )
+        })
+    }
 }
 
 /// Work out which parser directories would be used, without reading any spec.
+///
+/// Explicit sources (`--parsers`, `$TXP_PARSERS`) are merged in order. The
+/// implicit chain uses exactly one directory: the first that exists, so that a
+/// stale user-level corpus can never silently contribute parsers.
 pub fn discover(options: &Options) -> Discovery {
     let mut candidates = Vec::new();
-    let mut dirs = Vec::new();
 
     if !options.parsers.is_empty() {
         for dir in &options.parsers {
@@ -108,34 +136,31 @@ pub fn discover(options: &Options) -> Discovery {
                 exists,
                 has_specs,
             });
-            dirs.push(dir.clone());
         }
     } else if let Some(entries) = env_list(ENV_PARSERS) {
         for dir in entries {
             let (exists, has_specs) = inspect(&dir);
             candidates.push(Candidate {
-                path: dir.clone(),
+                path: dir,
                 source: "env",
                 exists,
                 has_specs,
             });
-            dirs.push(dir);
         }
     } else {
+        // Keep inspecting after a hit so `txp paths` can show what was skipped.
         for (path, source) in implicit_chain() {
             let (exists, has_specs) = inspect(&path);
             candidates.push(Candidate {
-                path: path.clone(),
+                path,
                 source,
                 exists,
                 has_specs,
             });
-            if has_specs {
-                dirs.push(path);
-                break;
-            }
         }
     }
+
+    let dirs = select_dirs(&candidates);
 
     let (router, router_source) = match &options.router {
         Some(path) => (Some(path.clone()), Some("flag")),
@@ -144,10 +169,12 @@ pub fn discover(options: &Options) -> Discovery {
             .filter(|value| !value.is_empty())
         {
             Some(value) => (Some(PathBuf::from(value)), Some("env")),
+            // In merge mode the override directory usually has no router, so
+            // take the first used directory that provides one.
             None => dirs
-                .first()
+                .iter()
                 .map(|dir| dir.join("router.toml"))
-                .filter(|path| path.is_file())
+                .find(|path| path.is_file())
                 .map(|path| (Some(path), Some("corpus")))
                 .unwrap_or((None, None)),
         },
@@ -159,6 +186,26 @@ pub fn discover(options: &Options) -> Discovery {
         router,
         router_source,
     }
+}
+
+/// Explicit sources merge; the implicit chain takes the first directory that exists.
+fn select_dirs(candidates: &[Candidate]) -> Vec<PathBuf> {
+    let explicit = candidates
+        .iter()
+        .any(|candidate| matches!(candidate.source, "flag" | "env"));
+
+    if explicit {
+        return candidates
+            .iter()
+            .map(|candidate| candidate.path.clone())
+            .collect();
+    }
+
+    candidates
+        .iter()
+        .find(|candidate| candidate.exists)
+        .map(|candidate| vec![candidate.path.clone()])
+        .unwrap_or_default()
 }
 
 impl Options {
@@ -185,6 +232,26 @@ impl Parser {
                     .map(|candidate| candidate.path.clone())
                     .collect(),
             });
+        }
+
+        // An empty implicit corpus is a broken install, not a reason to fall
+        // back to a lower-precedence directory.
+        if discovery.dirs.len() == 1 {
+            if let Some(chosen) = discovery
+                .candidates
+                .iter()
+                .find(|candidate| candidate.path == discovery.dirs[0])
+            {
+                if matches!(chosen.source, "cwd" | "xdg" | "system")
+                    && chosen.exists
+                    && !chosen.has_specs
+                {
+                    return Err(Error::EmptyCorpus {
+                        path: chosen.path.clone(),
+                        found_via: chosen.source,
+                    });
+                }
+            }
         }
 
         if let (Some(router), Some("flag" | "env")) = (&discovery.router, discovery.router_source) {
@@ -373,4 +440,79 @@ fn is_spec_file(path: &Path) -> bool {
             .and_then(|stem| stem.to_str())
             .map(|stem| stem.contains('.'))
             .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candidate(path: &str, source: &'static str, exists: bool, has_specs: bool) -> Candidate {
+        Candidate {
+            path: PathBuf::from(path),
+            source,
+            exists,
+            has_specs,
+        }
+    }
+
+    fn discovery(candidates: Vec<Candidate>) -> Discovery {
+        let dirs = select_dirs(&candidates);
+        Discovery {
+            candidates,
+            dirs,
+            router: None,
+            router_source: None,
+        }
+    }
+
+    #[test]
+    fn implicit_chain_uses_the_first_existing_directory() {
+        let d = discovery(vec![
+            candidate("parsers", "cwd", true, true),
+            candidate("/xdg/txp/parsers", "xdg", true, true),
+            candidate("/etc/txp/parsers", "system", false, false),
+        ]);
+
+        assert_eq!(d.dirs, vec![PathBuf::from("parsers")]);
+        assert_eq!(d.status(&d.candidates[1]), "skipped");
+        assert_eq!(d.status(&d.candidates[2]), "missing");
+        assert!(d.note().is_some());
+    }
+
+    #[test]
+    fn implicit_chain_stops_at_an_empty_directory() {
+        let d = discovery(vec![
+            candidate("parsers", "cwd", true, false),
+            candidate("/xdg/txp/parsers", "xdg", true, true),
+        ]);
+
+        // The empty directory is still the chosen one; loading then fails loudly
+        // instead of silently reading the lower-precedence corpus.
+        assert_eq!(d.dirs, vec![PathBuf::from("parsers")]);
+        assert_eq!(d.status(&d.candidates[0]), "used");
+        assert_eq!(d.status(&d.candidates[1]), "skipped");
+    }
+
+    #[test]
+    fn explicit_sources_merge_in_order() {
+        let d = discovery(vec![
+            candidate("/override", "flag", true, true),
+            candidate("/base", "flag", true, false),
+        ]);
+
+        assert_eq!(
+            d.dirs,
+            vec![PathBuf::from("/override"), PathBuf::from("/base")]
+        );
+        assert!(d.candidates.iter().all(|c| d.status(c) == "used"));
+        assert!(d.note().is_none());
+    }
+
+    #[test]
+    fn nothing_found_yields_no_dirs() {
+        let d = discovery(vec![candidate("parsers", "cwd", false, false)]);
+
+        assert!(d.dirs.is_empty());
+        assert_eq!(d.status(&d.candidates[0]), "missing");
+    }
 }

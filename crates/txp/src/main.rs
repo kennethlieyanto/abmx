@@ -612,6 +612,9 @@ fn corpus(parser: &txp::Parser, dir: &Path) -> Result<i32> {
 
 fn paths(options: &txp::Options, json: bool) -> Result<i32> {
     let discovery = txp::discover(options);
+    let env = std::env::var(txp::ENV_PARSERS)
+        .ok()
+        .filter(|value| !value.is_empty());
 
     if json {
         let candidates: Vec<_> = discovery
@@ -624,6 +627,7 @@ fn paths(options: &txp::Options, json: bool) -> Result<i32> {
                     "exists": candidate.exists,
                     "has_specs": candidate.has_specs,
                     "used": discovery.dirs.contains(&candidate.path),
+                    "status": discovery.status(candidate),
                 })
             })
             .collect();
@@ -634,18 +638,38 @@ fn paths(options: &txp::Options, json: bool) -> Result<i32> {
             "router": discovery.router,
             "router_source": discovery.router_source,
             "env_parsers": txp::ENV_PARSERS,
+            "env_parsers_value": env,
             "env_router": txp::ENV_ROUTER,
+            "note": discovery.note(),
         });
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         println!("{}", discovery.describe());
+
+        match &env {
+            Some(value) => println!(
+                "\nenv: {}={value} ({})",
+                txp::ENV_PARSERS,
+                if discovery.dirs.len() > 1 {
+                    "merged"
+                } else {
+                    "used"
+                }
+            ),
+            None => println!("\nenv: {} unset", txp::ENV_PARSERS),
+        }
+
         match &discovery.router {
             Some(router) => println!(
-                "\nrouter: {} ({})",
+                "router: {} ({})",
                 router.display(),
                 discovery.router_source.unwrap_or("?")
             ),
-            None => println!("\nrouter: built-in defaults"),
+            None => println!("router: built-in defaults"),
+        }
+
+        if let Some(note) = discovery.note() {
+            println!("{note}");
         }
     }
 

@@ -13,17 +13,17 @@ Parser specs are runtime configuration; none are compiled into the binary.
 **Explicit sources merge.** Every directory named by `--parsers` or
 `$TXP_PARSERS` is loaded in order and merged by parser `id`; when two directories
 define the same `id` the earlier one wins and the later file is reported as
-shadowed. A duplicate id *inside one* directory is an error. This allows a local
+shadowed. A duplicate id _inside one_ directory is an error. This allows a local
 override of a single bank without copying the whole corpus.
 
 **Implicit discovery uses one corpus.** When neither flag nor env is set, the
 first directory that **exists** wins:
 
-| Order | Source |
-|---|---|
-| 1 | `./parsers` |
-| 2 | `$XDG_CONFIG_HOME/txp/parsers` |
-| 3 | `/etc/txp/parsers` |
+| Order | Source                         |
+| ----- | ------------------------------ |
+| 1     | `./parsers`                    |
+| 2     | `$XDG_CONFIG_HOME/txp/parsers` |
+| 3     | `/etc/txp/parsers`             |
 
 If that directory contains no specs, loading fails rather than falling through to
 a lower-precedence corpus: an empty corpus in the place you asked it to look is a
@@ -91,32 +91,32 @@ safe to pipe.
 }
 ```
 
-| Field | Type | Meaning |
-|---|---|---|
-| `source.message_id` | string? | Value of the `Message-ID` header, without angle brackets |
-| `source.file` | string? | Where the message came from, when known |
-| `source.tx_index` | integer | Index of the transaction inside the email. Always `0` today; reserved for invoices and statements that contain several transactions |
-| `id` | string | Deterministic identity: `hash(message_id, tx_index)`. Never changes when a parser changes. Use it as your dedupe key |
-| `parser`, `parser_version` | string, integer | Which spec produced this row |
-| `bank`, `account` | string | Parser-declared account key (`example-account`, `wallet-account`). Map it to your own account externally |
-| `kind` | enum | `purchase`, `payment`, `transfer_in`, `transfer_out`, `fee`, `refund`, `cash_withdrawal`, `unknown` |
-| `status` | enum | `settled`, `pending`, `failed`, `unknown`. `failed` must not be imported |
-| `amount_minor` | integer | Signed amount in the currency's minor units. Negative is an outflow |
-| `currency` | string | ISO-4217 code |
-| `currency_exponent` | integer | ISO-4217 minor-unit exponent (IDR = 0, USD = 2). Repeated so consumers need no currency table |
-| `amount` | string | Exact decimal rendering of `amount_minor`. Display only |
-| `occurred_at` | string | RFC 3339 timestamp with the offset the email carried |
-| `occurred_on` | string | Calendar date in the account timezone. This is the date a ledger should use |
-| `timezone` | string | IANA zone from the parser spec |
-| `counterparty` | string? | Merchant, recipient, or payer as printed in the email |
-| `counterparty_account` | string? | Their account or PAN, when printed |
-| `account_last4` | string? | Card/account hint extracted from the email |
-| `reference_id` | string? | Bank reference, when the email carries one |
-| `channel` | string? | `QRIS`, `BI-FAST`, `DEBIT ONLINE`, ... |
-| `description` | string? | Free-text description from the email |
-| `extra` | object | Additional parser-specific fields |
-| `extraction` | enum | `strict` (every declared field matched and the amount is non-zero) or `heuristic` (see `warnings`) |
-| `warnings` | array | Why the row is heuristic |
+| Field                      | Type            | Meaning                                                                                                                             |
+| -------------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `source.message_id`        | string?         | Value of the `Message-ID` header, without angle brackets                                                                            |
+| `source.file`              | string?         | Where the message came from, when known                                                                                             |
+| `source.tx_index`          | integer         | Index of the transaction inside the email. Always `0` today; reserved for invoices and statements that contain several transactions |
+| `id`                       | string          | Deterministic identity: `hash(message_id, tx_index)`. Never changes when a parser changes. Use it as your dedupe key                |
+| `parser`, `parser_version` | string, integer | Which spec produced this row                                                                                                        |
+| `bank`, `account`          | string          | Parser-declared account key (`example-account`, `wallet-account`). Map it to your own account externally                                    |
+| `kind`                     | enum            | `purchase`, `payment`, `transfer_in`, `transfer_out`, `fee`, `refund`, `cash_withdrawal`, `unknown`                                 |
+| `status`                   | enum            | `settled`, `pending`, `failed`, `unknown`. `failed` must not be imported                                                            |
+| `amount_minor`             | integer         | Signed amount in the currency's minor units. Negative is an outflow                                                                 |
+| `currency`                 | string          | ISO-4217 code                                                                                                                       |
+| `currency_exponent`        | integer         | ISO-4217 minor-unit exponent (IDR = 0, USD = 2). Repeated so consumers need no currency table                                       |
+| `amount`                   | string          | Exact decimal rendering of `amount_minor`. Display only                                                                             |
+| `occurred_at`              | string          | RFC 3339 timestamp with the offset the email carried                                                                                |
+| `occurred_on`              | string          | Calendar date in the account timezone. This is the date a ledger should use                                                         |
+| `timezone`                 | string          | IANA zone from the parser spec                                                                                                      |
+| `counterparty`             | string?         | Merchant, recipient, or payer as printed in the email                                                                               |
+| `counterparty_account`     | string?         | Their account or PAN, when printed                                                                                                  |
+| `account_last4`            | string?         | Card/account hint extracted from the email                                                                                          |
+| `reference_id`             | string?         | Bank reference, when the email carries one                                                                                          |
+| `channel`                  | string?         | `QRIS`, `BI-FAST`, `DEBIT ONLINE`, ...                                                                                              |
+| `description`              | string?         | Free-text description from the email                                                                                                |
+| `extra`                    | object          | Additional parser-specific fields                                                                                                   |
+| `extraction`               | enum            | `strict` (every declared field matched and the amount is non-zero) or `heuristic` (see `warnings`)                                  |
+| `warnings`                 | array           | Why the row is heuristic                                                                                                            |
 
 ### Plausibility checks
 
@@ -138,12 +138,12 @@ date and the email `Date:` header carries no meaning and is not checked.
 
 ## Exit codes
 
-| Code | Meaning |
-|---|---|
-| `0` | every input produced a `strict` transaction |
-| `2` | at least one email was unmatched or failed to parse |
-| `3` | at least one transaction was `heuristic` (suppress with `--allow-heuristic`) |
-| `1` | the tool itself failed |
+| Code | Meaning                                                                      |
+| ---- | ---------------------------------------------------------------------------- |
+| `0`  | every input produced a `strict` transaction                                  |
+| `2`  | at least one email was unmatched or failed to parse                          |
+| `3`  | at least one transaction was `heuristic` (suppress with `--allow-heuristic`) |
+| `1`  | the tool itself failed                                                       |
 
 ## Money
 
@@ -245,17 +245,17 @@ optional; omit the section and the output field stays `null`.
 
 1. The body is normalized to an ordered list of visible text blocks, one per
    block-level HTML element. Tags and attributes are never part of the contract.
-2. The engine partitions the blocks on `labels.list`. A *region* is everything
+2. The engine partitions the blocks on `labels.list`. A _region_ is everything
    between one label and the next, which is why a value may span several blocks
    (`Rp` / `100.000` / `,00`).
 3. Each field picks a value from its region:
 
-| Setting | Behaviour |
-|---|---|
-| nothing | the whole region, joined with spaces |
-| `regex` | first match in the joined region |
-| `per_block = true` + `regex` | first block that matches |
-| `block = N` | the Nth block of the region (optionally filtered by `regex`) |
+| Setting                      | Behaviour                                                    |
+| ---------------------------- | ------------------------------------------------------------ |
+| nothing                      | the whole region, joined with spaces                         |
+| `regex`                      | first match in the joined region                             |
+| `per_block = true` + `regex` | first block that matches                                     |
+| `block = N`                  | the Nth block of the region (optionally filtered by `regex`) |
 
 The captured group is the first **named** group (`value`, `last4`, ...), else
 group 1, else the whole match.

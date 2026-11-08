@@ -58,13 +58,13 @@ txp = "0.1"
 Nothing is compiled into the binary. Specs are runtime configuration, resolved
 in this order:
 
-| Order | Source | Notes |
-|---|---|---|
-| 1 | `--parsers <dir>` (repeatable) | all entries are **merged** by parser `id`; earlier wins |
-| 2 | `$TXP_PARSERS` | colon-separated; same merge semantics |
-| 3 | `./parsers` | first **existing** directory wins; error if it has no specs |
-| 4 | `$XDG_CONFIG_HOME/txp/parsers` | `~/.config/txp/parsers`; only consulted if nothing above exists |
-| 5 | `/etc/txp/parsers` | containers and system installs; same rule |
+| Order | Source                         | Notes                                                           |
+| ----- | ------------------------------ | --------------------------------------------------------------- |
+| 1     | `--parsers <dir>` (repeatable) | all entries are **merged** by parser `id`; earlier wins         |
+| 2     | `$TXP_PARSERS`                 | colon-separated; same merge semantics                           |
+| 3     | `./parsers`                    | first **existing** directory wins; error if it has no specs     |
+| 4     | `$XDG_CONFIG_HOME/txp/parsers` | `~/.config/txp/parsers`; only consulted if nothing above exists |
+| 5     | `/etc/txp/parsers`             | containers and system installs; same rule                       |
 
 Implicit discovery uses **one** corpus, deliberately: a stale user-level parser
 can never silently contribute half your registry. To layer a local override on
@@ -162,14 +162,14 @@ let results = parser.parse_path("emails/")?;
 
 ## Supported banks
 
-| Bank | Parsers |
-|---|---|
-| example | `card-debit`, `journal-qris`, `journal-va`, `journal-transfer` |
+| Bank              | Parsers                                                            |
+| ----------------- | ------------------------------------------------------------------ |
+| example               | `card-debit`, `journal-qris`, `journal-va`, `journal-transfer`     |
 | wallet (example Digital) | `incoming-transfer`, `qris-payment`, `card-online`, `online-order` |
-| banktwo (banktwo') | `qris-payment`, `bank-transfer` |
+| banktwo (banktwo')  | `qris-payment`, `bank-transfer`                                    |
 
 Three of the source emails contained three different layouts each, so the unit is
-a **template**, not an email. The three example journal layouts share a sender *and* a
+a **template**, not an email. The three example journal layouts share a sender _and_ a
 subject; they are separated by label fingerprints (`requires` / `rejects`).
 
 ## How it works
@@ -181,7 +181,7 @@ subject; they are separated by label fingerprints (`requires` / `rejects`).
 
 The body becomes an ordered list of text blocks, one per block-level HTML
 element. Each parser declares every constant label in its template; the engine
-partitions the blocks on those labels, so a *region* is everything between one
+partitions the blocks on those labels, so a _region_ is everything between one
 label and the next. That is what makes `Rp` / `100.000` / `,00` and
 `XXXX XXXX XXXX` / `4821` work without per-bank code, and what survives a CSS or
 table relayout.
@@ -238,7 +238,7 @@ volumeMounts:
 volumes:
   - name: parsers
     configMap:
-      name: txp-parsers      # keys: example.card_debit.toml, ..., router.toml
+      name: txp-parsers # keys: example.card_debit.toml, ..., router.toml
 ```
 
 - ConfigMap keys cannot contain `/`, which is why specs are flat: `<id>.toml`.

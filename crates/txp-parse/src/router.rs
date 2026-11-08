@@ -2,7 +2,8 @@
 //!
 //! `parser.toml` owns the sender and subject, so the router is *derived* and a
 //! new parser can never be forgotten here.  `router.toml` only holds policy:
-//! ignore rules, overrides and what to do when nothing matches.
+//! ignore rules and overrides. What to do with unmatched mail is the caller's
+//! decision, not the library's.
 
 use regex::Regex;
 use serde::Deserialize;
@@ -16,27 +17,12 @@ pub struct RouterConfig {
     pub router: Policy,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Policy {
-    /// `queue` (keep for review) or `ignore`.
-    pub on_no_match: String,
-    /// `queue` (never guess) or `best` (pick the most specific).
-    pub on_ambiguous: String,
     pub ignore: IgnoreRules,
     #[serde(rename = "override")]
     pub overrides: Vec<OverrideRule>,
-}
-
-impl Default for Policy {
-    fn default() -> Self {
-        Self {
-            on_no_match: "queue".to_string(),
-            on_ambiguous: "queue".to_string(),
-            ignore: IgnoreRules::default(),
-            overrides: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

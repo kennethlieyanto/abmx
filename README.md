@@ -170,7 +170,7 @@ subject; they are separated by label fingerprints (`requires` / `rejects`).
 
 ```
 .eml ──► normalize ──► route ──► extract ──► validate ──► Transaction
-         txp-mail      router    TOML spec   invariants
+         txp-mail      router    TOML spec   checks
 ```
 
 The body becomes an ordered list of text blocks, one per block-level HTML

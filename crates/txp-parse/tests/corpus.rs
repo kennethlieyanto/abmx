@@ -277,3 +277,28 @@ fn amounts_dates_and_counterparties_are_correct() {
         );
     }
 }
+
+#[test]
+fn a_transaction_date_far_from_the_email_date_is_still_strict() {
+    let registry = registry();
+    let path = repo_root().join("fixtures/example.card_debit/01.eml");
+    let bytes = std::fs::read(&path).expect("read fixture");
+    let mut email = txp_mail::parse_eml(&bytes, Some(path.display().to_string())).expect("parse");
+
+    // Banks send late and batched alerts. The gap between the transaction date
+    // and the email date is data, not an extraction failure, so the parser must
+    // not mark the row as suspicious.
+    email.date -= chrono::Duration::days(30);
+
+    match registry.run(&email) {
+        Outcome::Parsed(transaction) => {
+            assert_eq!(transaction.extraction, txp_core::Extraction::Strict);
+            assert!(
+                transaction.warnings.is_empty(),
+                "{:?}",
+                transaction.warnings
+            );
+        }
+        other => panic!("expected a transaction, got {other:?}"),
+    }
+}

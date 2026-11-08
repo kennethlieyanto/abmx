@@ -284,18 +284,6 @@ impl Parser {
             warnings.push("amount is zero".to_string());
         }
 
-        // Independent invariant: a card alert arrives within days of the
-        // transaction, so a far-off date means we probably grabbed the wrong
-        // block.  This catches spec mistakes that golden files cannot.
-        let email_date = email.date.date_naive();
-        let skew = (occurred_at.date_naive() - email_date).num_days().abs();
-        if skew > 3 {
-            warnings.push(format!(
-                "transaction date {} is {skew} days from email date {email_date}",
-                occurred_at.date_naive()
-            ));
-        }
-
         let kind = defaults.kind;
         let minor = if kind.is_outflow() {
             -magnitude

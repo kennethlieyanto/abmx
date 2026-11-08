@@ -35,7 +35,7 @@ decoded from base64url, or a saved test fixture.
 The parser needs:
 
 - the `From` address and `Subject` (routing),
-- the `Date` header (invariant and timezone offset),
+- the `Date` header (used only to give `occurred_at` its timezone offset),
 - the `Message-ID` (identity),
 - a `text/html` or `text/plain` body (extraction).
 
@@ -108,18 +108,17 @@ safe to pipe.
 | `channel` | string? | `QRIS`, `BI-FAST`, `DEBIT ONLINE`, ... |
 | `description` | string? | Free-text description from the email |
 | `extra` | object | Additional parser-specific fields |
-| `extraction` | enum | `strict` (all selectors matched, invariants held) or `heuristic` (see `warnings`) |
+| `extraction` | enum | `strict` (every declared field matched and the amount is non-zero) or `heuristic` (see `warnings`) |
 | `warnings` | array | Why the row is heuristic |
 
-### Invariants
+### Plausibility checks
 
-A row is `strict` only when:
+One check runs outside the spec: **a zero amount marks the row `heuristic`**,
+because a parser that extracts `0` has almost certainly matched the wrong block.
 
-- the amount is non-zero,
-- the parsed transaction date is within **3 days** of the email `Date:` header.
-
-The date invariant is deliberately independent of the parser spec: it is the
-check that catches a selector that grabbed the wrong number off the page.
+Transaction dates are trusted as printed. Banks send alerts late, batch them, or
+mail a settlement notice days after the fact, so the gap between the transaction
+date and the email `Date:` header carries no meaning and is not checked.
 
 ### Identity
 

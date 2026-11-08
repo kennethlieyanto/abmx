@@ -47,6 +47,21 @@ cargo install --path crates/txp          # from a checkout
 tar xzf txp-parsers-<version>.tar.gz -C ~/.config/txp
 ```
 
+### Nix
+
+The flake provides a dev shell, the `txp` binary, and a build with the parser
+corpus bundled:
+
+```bash
+nix develop            # rust, cargo, clippy, rustfmt, just
+nix build .#           # ./result/bin/txp
+nix run .# -- paths    # run the packaged binary
+```
+
+The packaged binary defaults `TXP_PARSERS` to its bundled corpus
+(`$out/share/txp/parsers`). An explicit `--parsers` or `$TXP_PARSERS` still
+takes precedence, so a local corpus can be layered on top.
+
 As a Rust library:
 
 ```toml

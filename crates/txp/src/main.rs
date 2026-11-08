@@ -45,12 +45,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Print the normalized block list of an email (used to author parsers).
-    Dump { path: PathBuf },
-
-    /// Explain which parser claims an email, and why.
-    Route { path: PathBuf },
-
     /// Parse a `.eml` file or every `.eml` under a directory.
     Parse {
         path: PathBuf,
@@ -65,6 +59,33 @@ enum Command {
         /// Exit 0 even when heuristic transactions are present.
         #[arg(long)]
         allow_heuristic: bool,
+    },
+
+    /// Print the normalized block list of an email (used to author parsers).
+    Dump { path: PathBuf },
+
+    /// Explain which parser claims an email, and why.
+    Route { path: PathBuf },
+
+    /// Print the JSON Schema of the transaction contract.
+    Schema,
+
+    /// Show the parser search order and which directory won.
+    Paths {
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// List the loaded parsers and the file each came from.
+    Specs {
+        #[arg(long, value_enum, default_value_t = Format::Json)]
+        format: Format,
+    },
+
+    /// List the sender addresses the resolved corpus covers.
+    Senders {
+        #[arg(long, value_enum, default_value_t = Format::Plain)]
+        format: Format,
     },
 
     /// Verify every parser against its fixtures.
@@ -84,27 +105,6 @@ enum Command {
         #[arg(long, default_value = "sample")]
         dir: PathBuf,
     },
-
-    /// List the sender addresses the resolved corpus covers.
-    Senders {
-        #[arg(long, value_enum, default_value_t = Format::Plain)]
-        format: Format,
-    },
-
-    /// Show the parser search order and which directory won.
-    Paths {
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// List the loaded parsers and the file each came from.
-    Specs {
-        #[arg(long, value_enum, default_value_t = Format::Json)]
-        format: Format,
-    },
-
-    /// Print the JSON Schema of the transaction contract.
-    Schema,
 
     /// Scaffold a new parser file and its fixture directory.
     Init {

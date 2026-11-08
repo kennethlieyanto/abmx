@@ -1,0 +1,29 @@
+[package]
+name = "txp"
+description = "Indonesian bank transaction email parser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "../../README.md"
+
+[lib]
+name = "txp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "txp"
+path = "src/main.rs"
+
+[dependencies]
+txp-core.workspace = true
+txp-mail.workspace = true
+txp-parse.workspace = true
+anyhow = "1"
+chrono.workspace = true
+clap = { version = "4", features = ["derive"] }
+libc = "0.2"
+regex = "1"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

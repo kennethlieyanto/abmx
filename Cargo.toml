@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/txp-core",
+    "crates/txp-mail",
+    "crates/txp-parse",
+    "crates/txp",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+
+[workspace.dependencies]
+txp-core = { path = "crates/txp-core" }
+txp-mail = { path = "crates/txp-mail" }
+txp-parse = { path = "crates/txp-parse" }
+
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

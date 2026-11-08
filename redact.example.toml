@@ -1,0 +1,40 @@
+# Copy to redact.toml and fill in your own values.
+#
+# redact.toml is gitignored: it contains the real strings. Only the redacted
+# `.eml` files should ever be committed.
+#
+# `cargo xtask redact --in sample --out /tmp/redacted` applies these rules to
+# every text node of every email, then verifies the block structure is unchanged.
+
+# Longest values are applied first, so a full name wins over a surname.
+[[replace]]
+from = "FULL NAME AS PRINTED UPPERCASE"
+to = "ANDI PRATAMA"
+
+[[replace]]
+from = "Full Name As Printed"
+to = "Andi Pratama"
+
+[[replace]]
+from = "your.email@example.com"
+to = "user@example.invalid"
+
+# People or person-named businesses that appear as counterparties.
+[[replace]]
+from = "COUNTERPARTY PERSON NAME"
+to = "EXAMPLE PERSON"
+
+# Masked account/card renderings that regexes cannot classify safely.
+[[replace]]
+from = "****1234"
+to = "****4821"
+
+[[replace]]
+from = "XXXX XXXX XXXX 1234"
+to = "XXXX XXXX XXXX 4821"
+
+[rules]
+# Numeric runs at least this long are treated as account or reference numbers
+# and replaced with deterministic same-length digits. The same input always maps
+# to the same fake, so identities stay consistent across fixtures.
+digits_min = 8

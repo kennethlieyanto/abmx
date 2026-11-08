@@ -1,0 +1,20 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+[dependencies]
+txp-mail = { path = "../crates/txp-mail" }
+mail-parser = "0.11"
+html5ever = "0.27"
+markup5ever_rcdom = "0.3"
+base64 = "0.22"
+regex = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+anyhow = "1"

@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+
+# Real emails and the redaction map contain PII. Never commit them.
+/sample/
+/redact.toml
+
+# Local redaction output.
+/build/

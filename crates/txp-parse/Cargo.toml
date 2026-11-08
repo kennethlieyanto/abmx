@@ -1,0 +1,19 @@
+[package]
+name = "txp-parse"
+description = "Declarative bank email parser engine for txp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+txp-core.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml = "0.8"
+regex = "1"
+
+[dev-dependencies]
+txp-mail.workspace = true

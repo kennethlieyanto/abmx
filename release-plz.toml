@@ -1,0 +1,33 @@
+# Release automation for the txp CLI.
+#
+# The workspace shares a single version ([workspace.package].version), so the
+# libraries are bumped together with the binary. Only `txp` is tagged and
+# released; see https://release-plz.dev/docs/extra/single-tag.
+
+[workspace]
+# Not published to crates.io: git tags are the source of truth for versions.
+git_only = true
+# Only cut a release when the release PR is merged, not on every commit.
+release_always = false
+# One changelog for the whole project, written by the `txp` package.
+changelog_path = "./CHANGELOG.md"
+changelog_update = false
+# All packages read versions from the same `vX.Y.Z` tags, but only `txp`
+# creates them.
+git_tag_name = "v{{ version }}"
+git_tag_enable = false
+git_release_enable = false
+# The crates are not published, so API-compatibility checks add nothing.
+semver_check = false
+
+[[package]]
+name = "txp"
+changelog_update = true
+changelog_include = ["txp-core", "txp-mail", "txp-parse"]
+git_tag_enable = true
+git_release_enable = true
+
+# Dev-only helper, never released.
+[[package]]
+name = "xtask"
+release = false

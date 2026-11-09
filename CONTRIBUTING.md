@@ -49,6 +49,32 @@ txp check --parser <bank>.<type> -v
 just ci
 ```
 
+## Releasing
+
+Releases are automated with [release-plz](https://release-plz.dev) on every push
+to `main`:
+
+1. `release-plz` opens or updates a `chore: release vX.Y.Z` pull request that
+   bumps `[workspace.package].version`, refreshes `Cargo.lock`, and updates
+   `CHANGELOG.md`. Commit messages must follow
+   [Conventional Commits](https://www.conventionalcommits.org) to drive the bump.
+2. Merging that pull request tags `vX.Y.Z` and publishes the GitHub release.
+3. The same workflow builds the musl binaries and the parser corpus tarball and
+   attaches them to the release.
+
+The whole workspace shares one version, but only `txp` is tagged and released:
+the libraries move with it and `xtask` is excluded. Parser-only changes under
+`parsers/` are not part of any crate, so they do not open a release pull request;
+cut those releases manually.
+
+If the repository has no release tag yet, create the baseline once so
+`release-plz` has a starting point:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
 ## Scope
 
 This project parses `.eml` bytes. It does not fetch mail, schedule jobs, map

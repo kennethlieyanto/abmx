@@ -1,0 +1,136 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-pr:
+    name: release-pr
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'kennethlieyanto'
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-pr-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run release-plz
+        id: release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Tags pushed with GITHUB_TOKEN do not trigger `on: push: tags`, so the
+      # artifact jobs below run in this workflow, gated on the released tag.
+      - name: Read release output
+        id: meta
+        if: steps.release-plz.outputs.releases_created == 'true'
+        env:
+          RELEASES: ${{ steps.release-plz.outputs.releases }}
+        run: |
+          set -euo pipefail
+          tag=$(jq -r 'map(select(.package_name == "txp")) | first | .tag // empty' <<<"$RELEASES")
+          version=$(jq -r 'map(select(.package_name == "txp")) | first | .version // empty' <<<"$RELEASES")
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ -n "$tag" ]; then
+            echo "::notice::released txp $tag"
+          else
+            echo "::notice::no txp release this run"
+          fi
+
+  binaries:
+    name: ${{ matrix.target }}
+    needs: release
+    if: needs.release.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@cross
+      - run: cross build --release --target ${{ matrix.target }} -p txp
+      - name: package
+        run: tar -czf "txp-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" txp
+      - uses: actions/upload-artifact@v4
+        with:
+          name: txp-${{ matrix.target }}
+          path: txp-*.tar.gz
+          if-no-files-found: error
+
+  parsers:
+    name: parsers
+    needs: release
+    if: needs.release.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: package
+        run: tar -czf "txp-parsers-${{ needs.release.outputs.version }}.tar.gz" parsers
+      - uses: actions/upload-artifact@v4
+        with:
+          name: txp-parsers
+          path: txp-parsers-*.tar.gz
+          if-no-files-found: error
+
+  upload:
+    name: upload artifacts
+    needs: [release, binaries, parsers]
+    if: needs.release.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Attach artifacts to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: gh release upload "$TAG" dist/*.tar.gz --clobber -R "$GITHUB_REPOSITORY"

@@ -142,6 +142,7 @@ enum AuthProvider {
         /// Print the URL instead of trying to open a browser.
         #[arg(long)]
         no_browser: bool,
+        /// Loopback port for the OAuth redirect; 0 picks a free one.
         #[arg(long, value_name = "PORT")]
         port: Option<u16>,
     },

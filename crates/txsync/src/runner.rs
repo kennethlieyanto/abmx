@@ -37,7 +37,10 @@ impl Runner {
     pub fn plan(&self, fetcher: &dyn Fetcher, request: FetchRequest<'_>) -> Result<Plan> {
         self.state.check_schema()?;
 
-        let cursor = self.state.cursor(fetcher.name())?;
+        // An explicit cursor wins, so a caller can replay a specific window.
+        // Otherwise the checkpoint stored for this fetcher is used.
+        let stored = self.state.cursor(fetcher.name())?;
+        let cursor = request.cursor.cloned().or(stored);
         let request = FetchRequest {
             cursor: cursor.as_ref(),
             limit: request.limit,

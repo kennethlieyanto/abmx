@@ -103,7 +103,7 @@ idempotent sink. `messages` records what `txsync` itself delivered.
 
 ## Plan / apply
 
-`plan` reads state and writes nothing. `apply` is the only writer. That split
+`plan` reads the cursor and the delivered set; it never records progress. `apply` is the only writer. That split
 gives you, for free:
 
 - `--dry-run` (print the plan, apply nothing),

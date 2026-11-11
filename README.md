@@ -37,6 +37,11 @@ cargo install --path crates/txsync
 # Nix
 nix build .#          # ./result/bin/txsync
 nix develop           # rust, cargo, clippy, rustfmt, just, sqlite
+
+# or just try it in place: .envrc adds target/debug to PATH
+direnv allow          # first time only
+cargo build
+txsync --version
 ```
 
 `txp` is not published to crates.io yet, so the workspace consumes it from a

@@ -1,0 +1,45 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/kennethlieyanto/txsync"
+
+[workspace.dependencies]
+txsync-core = { path = "crates/txsync-core" }
+txsync-gmail = { path = "crates/txsync-gmail" }
+txsync-actual = { path = "crates/txsync-actual" }
+txsync-file = { path = "crates/txsync-file" }
+txsync-testkit = { path = "crates/txsync-testkit" }
+
+# txp is not published to crates.io yet, so it is consumed from a sibling
+# checkout. `just use-local-txp` keeps this pointed at the working copy; see
+# docs/architecture.md for the switch to a published dependency.
+txp = { path = "../txp/crates/txp" }
+# `txp` does not re-export `Transaction` (it is `use`d privately), so the
+# contract type is taken from the crate that owns it.
+txp-core = { path = "../txp/crates/txp-core" }
+
+anyhow = "1"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+clap = { version = "4", features = ["derive"] }
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+toml = "0.8"
+url = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

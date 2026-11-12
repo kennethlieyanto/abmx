@@ -120,7 +120,7 @@ a restart.
     }
   ],
   "defaultCleared": false,
-  "reimportDeleted": false,
+  "reimportDeleted": true,
   "payeeNameNormalization": "original",
   "dryRun": false
 }
@@ -178,10 +178,42 @@ date               amount account        counterparty                   ledger
 The match is deliberately conservative: account + date + amount only. Payee
 similarity is Actual's judgement, not ours.
 
-### `reimportDeleted: false`
+### `reimportDeleted: true` — the ledger is a projection
 
-If you delete a transaction in Actual, `txsync` will not resurrect it on the next
-run. This matches the file-import UI's default.
+`txsync` treats the mailbox as the source of truth and the ledger as a
+projection of it:
+
+| What you delete | What happens |
+| --- | --- |
+| the **email** | the row is never re-imported |
+| the **ledger row** | the next full sync recreates it |
+
+This is the Terraform model: lose the state file, apply again, and the resources
+come back. `imported_id` keeps it idempotent — rows that still exist are matched
+and ignored, so only genuinely missing ones are recreated.
+
+```toml
+[sink.actual]
+reimport_deleted = true    # default
+```
+
+Set it to `false` if you want ledger deletions to be permanent (that is what
+Actual's file-import UI does). Then the only way to remove something is to delete
+or filter the email.
+
+Two consequences:
+
+- **Duplicates come back too.** If you deleted a row because it was a duplicate,
+  a full sync recreates it. Fix the source instead, or merge rather than delete.
+- **Incremental syncs won't notice a deletion.** They only ask Gmail for new
+  messages, so use `txsync reset` to force a full re-scan:
+
+  ```bash
+  txsync reset      # forget cursors + delivered messages
+  txsync sync       # rebuild from the mailbox
+  ```
+
+  `txsync reset` never touches the ledger — it only clears local state.
 
 ### `payeeNameNormalization: "original"`
 

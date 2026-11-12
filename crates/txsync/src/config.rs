@@ -97,6 +97,9 @@ pub struct ActualSection {
     /// never | settled | always. Defaults to `never`.
     #[serde(default)]
     pub cleared: Option<ClearedPolicy>,
+    /// Re-import rows deleted in Actual. Defaults to `true`.
+    #[serde(default)]
+    pub reimport_deleted: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -213,6 +216,9 @@ impl Config {
             if let Some(cleared) = actual.cleared {
                 config.cleared = cleared;
             }
+            if let Some(reimport_deleted) = actual.reimport_deleted {
+                config.reimport_deleted = reimport_deleted;
+            }
 
             let sink = ActualSink::new(config, notes)?;
             return Ok(Box::new(sink));
@@ -302,6 +308,9 @@ chunk_size = 50
 # never | settled | always. `never` leaves imported rows uncleared so clearing
 # stays your reconciliation step.
 cleared = "never"
+# true (default): the ledger is a projection of the mailbox, so a rebuild
+# recreates rows you deleted. false makes ledger deletions permanent.
+# reimport_deleted = true
 
 # Map txp's parser-declared account keys to Actual account UUIDs.
 # Run `txsync accounts` to see what Actual calls them.

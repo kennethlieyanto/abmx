@@ -99,7 +99,7 @@ fn import_sends_cents_and_the_dedupe_key() {
     assert_eq!(request.header("x-api-key"), Some("secret-key"));
 
     let body = request.json();
-    assert_eq!(body["reimportDeleted"], false);
+    assert_eq!(body["reimportDeleted"], true);
     assert_eq!(body["payeeNameNormalization"], "original");
     // The default policy leaves rows uncleared.
     assert_eq!(body["defaultCleared"], false);
@@ -113,6 +113,41 @@ fn import_sends_cents_and_the_dedupe_key() {
     assert_eq!(transaction["account"], "acc-1");
     assert_eq!(transaction["payee_name"], "ExamplePay");
     assert_eq!(transaction["cleared"], false);
+}
+
+#[test]
+fn ledger_deletions_are_not_permanent_by_default() {
+    let server = MockServer::start();
+    server.route(
+        "POST",
+        "/v1/budgets/sync-id/accounts/acc-1/transactions/import",
+        vec![Response::json(r#"{"data":{"added":["t1"],"updated":[]}}"#)],
+    );
+
+    sink(&server)
+        .apply(&[row("mail_1", -27_500)], &ApplyOptions::default())
+        .unwrap();
+
+    assert_eq!(server.requests()[0].json()["reimportDeleted"], true);
+}
+
+#[test]
+fn reimport_deleted_can_be_turned_off() {
+    let server = MockServer::start();
+    server.route(
+        "POST",
+        "/v1/budgets/sync-id/accounts/acc-1/transactions/import",
+        vec![Response::json(r#"{"data":{"added":["t1"],"updated":[]}}"#)],
+    );
+
+    let mut config = ActualConfig::new(server.url(), "secret-key", "sync-id");
+    config.reimport_deleted = false;
+    let sink = ActualSink::new(config, NotesConfig::default()).unwrap();
+
+    sink.apply(&[row("mail_1", -27_500)], &ApplyOptions::default())
+        .unwrap();
+
+    assert_eq!(server.requests()[0].json()["reimportDeleted"], false);
 }
 
 #[test]

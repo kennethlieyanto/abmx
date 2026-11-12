@@ -178,6 +178,8 @@ txsync apply [--plan FILE] [--dry-run]
 txsync sync [--dry-run]               plan + apply; the timer entrypoint
 txsync diff [--json] [--since D] [--until D]
                                       compare the plan against what the ledger already holds
+txsync reset [--review] [--all] [--yes]
+                                      forget cursors and delivered messages
 txsync review [--json]                rows waiting for a human
 txsync approve <id>… [--dry-run]      import reviewed rows
 txsync accounts [--json]              sink accounts and how [accounts] maps onto them
@@ -231,8 +233,9 @@ matter:
 
 - **`amount` is value × 100 for every currency.** Rp 27,500 is sent as
   `2_750_000`. `txsync` does this conversion in the sink, with tests.
-- **`imported_id` is `txp`'s id**, and `reimportDeleted` is `false`, so deleting
-  a row in Actual is permanent.
+- **`imported_id` is `txp`'s id**, and `reimportDeleted` is `true`: the ledger is
+  a projection of the mailbox, so a full sync recreates rows you deleted.
+  Delete the email to make a transaction stay gone.
 - **Rows are imported uncleared** (`cleared = "never"`). `txp`'s `settled` means
   the bank completed the transaction; Actual's `cleared` means you reconciled it
   against a statement. Set `cleared = "settled"` if you want the old behaviour.

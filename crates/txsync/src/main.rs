@@ -129,6 +129,22 @@ enum Command {
         limit: Option<usize>,
     },
 
+    /// Forget the local state so the next sync re-fetches everything.
+    ///
+    /// The ledger is not touched. Rows deleted in the ledger come back on the
+    /// next sync, because it is a projection of the mailbox.
+    Reset {
+        /// Also clear the review queue.
+        #[arg(long)]
+        review: bool,
+        /// Delete the state database entirely, including the schema marker.
+        #[arg(long)]
+        all: bool,
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+    },
+
     /// Show rows waiting for a human.
     Review {
         /// Machine-readable output.
@@ -233,6 +249,7 @@ fn run(cli: Cli) -> Result<i32> {
             json,
             limit,
         } => diff(&settings, from_dir, since, until, json, limit),
+        Command::Reset { review, all, yes } => reset(&settings, review, all, yes),
         Command::Review { json } => review(&settings, json),
         Command::Approve { ids, dry_run } => approve(&settings, &ids, dry_run),
         Command::Accounts { json } => accounts(&settings, json),
@@ -756,6 +773,81 @@ fn truncate(value: &str, limit: usize) -> String {
     }
     let shortened: String = value.chars().take(limit.saturating_sub(1)).collect();
     format!("{shortened}…")
+}
+
+fn reset(settings: &Settings, review: bool, all: bool, yes: bool) -> Result<i32> {
+    let (config, base, _) = load_config(settings)?;
+    let path = config.state_path(&base);
+
+    if all {
+        if !path.exists() {
+            println!("no state at {}", path.display());
+            return Ok(EXIT_OK);
+        }
+        if !yes && !confirm(&format!("delete {} entirely?", path.display()))? {
+            println!("aborted");
+            return Ok(EXIT_OK);
+        }
+        for suffix in ["", "-wal", "-shm"] {
+            let candidate = PathBuf::from(format!("{}{suffix}", path.display()));
+            match std::fs::remove_file(&candidate) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(error).with_context(|| format!("removing {}", candidate.display()))
+                }
+            }
+        }
+        println!("removed {}", path.display());
+        return Ok(EXIT_OK);
+    }
+
+    let state = State::open(&path)?;
+    let (cursors, messages, reviews) = state.counts()?;
+
+    if cursors == 0 && messages == 0 && (!review || reviews == 0) {
+        println!("state is already empty");
+        return Ok(EXIT_OK);
+    }
+
+    let mut what = format!("{cursors} cursor(s) and {messages} delivered message(s)");
+    if review {
+        what.push_str(&format!(" and {reviews} review row(s)"));
+    }
+
+    if !yes && !confirm(&format!("clear {what}?"))? {
+        println!("aborted");
+        return Ok(EXIT_OK);
+    }
+
+    state.reset_progress()?;
+    if review {
+        state.clear_reviews()?;
+    }
+
+    println!("cleared {what}");
+    println!(
+        "next `txsync sync` re-fetches and re-applies; rows deleted in the ledger are re-imported"
+    );
+
+    Ok(EXIT_OK)
+}
+
+fn confirm(question: &str) -> Result<bool> {
+    use std::io::{IsTerminal, Write};
+
+    if !std::io::stdin().is_terminal() {
+        bail!("refusing to reset without --yes (no terminal to confirm)");
+    }
+
+    eprint!("{question} [y/N] ");
+    std::io::stderr().flush().ok();
+
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    let answer = line.trim().to_ascii_lowercase();
+
+    Ok(answer == "y" || answer == "yes")
 }
 
 fn review(settings: &Settings, json: bool) -> Result<i32> {

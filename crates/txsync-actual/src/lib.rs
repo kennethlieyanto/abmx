@@ -36,6 +36,12 @@ pub struct ActualConfig {
     pub budget_password: Option<String>,
     /// Whether imported rows are marked cleared in Actual.
     pub cleared: ClearedPolicy,
+    /// Re-import rows that were previously imported and then deleted.
+    ///
+    /// `true` treats the ledger as a projection of the mailbox: if a row is
+    /// gone, a rebuild puts it back. `false` makes a ledger deletion permanent,
+    /// which is what Actual's file-import UI does.
+    pub reimport_deleted: bool,
     pub timeout: Duration,
 }
 
@@ -51,6 +57,7 @@ impl ActualConfig {
             budget_sync_id: budget_sync_id.into(),
             budget_password: None,
             cleared: ClearedPolicy::Never,
+            reimport_deleted: true,
             timeout: Duration::from_secs(120),
         }
     }
@@ -120,8 +127,10 @@ impl ActualSink {
             // Only used for rows that omit `cleared`, which we never do; keep it
             // consistent with the policy instead of asserting the opposite.
             "defaultCleared": self.config.cleared == ClearedPolicy::Always,
-            // Anything deleted in Actual must stay deleted.
-            "reimportDeleted": false,
+            // The ledger is a projection of the mailbox: a rebuild recreates
+            // rows that were deleted. Set `reimport_deleted = false` to make
+            // ledger deletions permanent instead.
+            "reimportDeleted": self.config.reimport_deleted,
             // Preserve `ExamplePay`, not `Examplepay`.
             "payeeNameNormalization": "original",
             "dryRun": dry_run,

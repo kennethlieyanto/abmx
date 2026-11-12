@@ -281,6 +281,37 @@ impl State {
         Ok(())
     }
 
+    /// `(cursors, delivered messages, review rows)`.
+    pub fn counts(&self) -> Result<(usize, usize, usize)> {
+        let cursors: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM cursors", [], |row| row.get(0))
+            .map_err(state_error)?;
+        let messages: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
+            .map_err(state_error)?;
+        let reviews: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM review", [], |row| row.get(0))
+            .map_err(state_error)?;
+        Ok((cursors as usize, messages as usize, reviews as usize))
+    }
+
+    /// Forget the cursor and what has been delivered. Leaves `meta` alone.
+    pub fn reset_progress(&self) -> Result<()> {
+        self.conn
+            .execute_batch("DELETE FROM cursors; DELETE FROM messages;")
+            .map_err(state_error)
+    }
+
+    pub fn clear_reviews(&self) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM review", [])
+            .map_err(state_error)?;
+        Ok(())
+    }
+
     pub fn seen_count(&self) -> Result<usize> {
         let count: i64 = self
             .conn
@@ -296,4 +327,45 @@ fn now() -> String {
 
 fn state_error(error: rusqlite::Error) -> Error {
     Error::State(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reset_clears_progress_but_keeps_the_schema_marker() {
+        let state = State::open_in_memory().unwrap();
+        state.check_schema().unwrap();
+        state
+            .set_cursor("gmail", &serde_json::json!({ "history_id": "1" }))
+            .unwrap();
+        state
+            .mark_seen("gmail:1", "actual", "mail_1", "imported")
+            .unwrap();
+
+        assert_eq!(state.counts().unwrap(), (1, 1, 0));
+
+        state.reset_progress().unwrap();
+        assert_eq!(state.counts().unwrap(), (0, 0, 0));
+        assert!(state.cursor("gmail").unwrap().is_none());
+        assert!(!state.is_seen("gmail:1").unwrap());
+
+        // The schema guard survives a reset; it is not progress.
+        assert_eq!(
+            state.meta_get("txp_schema_version").unwrap(),
+            Some(TXP_SCHEMA_VERSION.to_string())
+        );
+    }
+
+    #[test]
+    fn clearing_reviews_leaves_progress_alone() {
+        let state = State::open_in_memory().unwrap();
+        state
+            .mark_seen("gmail:1", "actual", "mail_1", "imported")
+            .unwrap();
+
+        state.clear_reviews().unwrap();
+        assert_eq!(state.counts().unwrap(), (0, 1, 0));
+    }
 }

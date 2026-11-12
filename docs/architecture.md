@@ -105,6 +105,12 @@ review    (tx_id, message, reason, payload, created_at)
 What is **not** stored: which transactions the sink accepted. That belongs to an
 idempotent sink. `messages` records what `txsync` itself delivered.
 
+The model, in one line: **the mailbox is the source of truth, the ledger is a
+projection, and this database is a cache.** Losing the cache costs a re-fetch,
+never correctness — `imported_id` makes re-application idempotent. Deleting a
+projected row is drift, and a full sync recreates it; to make something stay
+gone, remove the source (`txsync reset` forces the rebuild).
+
 ## Plan / apply
 
 `plan` reads the cursor and the delivered set; it never records progress. `apply` is the only writer. That split

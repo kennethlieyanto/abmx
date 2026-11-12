@@ -146,6 +146,16 @@ Resolution order: `--config` → `$TXSYNC_CONFIG` → `$XDG_CONFIG_HOME/txsync/c
 Never in the config file if you can avoid it. Precedence is **environment →
 literal → file**, so systemd can override whatever is on disk:
 
+For local runs, copy the template and let direnv load it:
+
+```bash
+cp .env.example .env     # .env is gitignored
+$EDITOR .env
+```
+
+`.envrc` runs `dotenv_if_exists .env`, so every `txsync` invocation in this
+directory sees the secrets without exporting them by hand.
+
 | Secret | Environment | Config field |
 | --- | --- | --- |
 | Gmail client secret | `TXSYNC_GMAIL_CLIENT_SECRET` | `client_secret` / `client_secret_file` |

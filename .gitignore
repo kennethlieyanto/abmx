@@ -6,3 +6,6 @@ result
 *.db-shm
 /tmp
 .env
+
+# direnv / nix-direnv cache
+.direnv/

@@ -44,6 +44,71 @@ demo dir parsers="../txp/parsers":
     echo "ledger: $work/ledger.jsonl"
     cat "$work/ledger.jsonl"
 
+# Start the actual-http-api wrapper on :5007. Needs docker and a .env.
+actual-api:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ ! -f .env ]]; then
+      echo "no .env: cp .env.example .env, then fill in ACTUAL_SERVER_PASSWORD and TXSYNC_ACTUAL_API_KEY" >&2
+      exit 1
+    fi
+    missing=()
+    grep -qE '^ACTUAL_SERVER_PASSWORD=.+' .env || missing+=("ACTUAL_SERVER_PASSWORD")
+    grep -qE '^TXSYNC_ACTUAL_API_KEY=.+' .env || missing+=("TXSYNC_ACTUAL_API_KEY")
+    if (( ${#missing[@]} )); then
+      printf 'fill in .env first: %s\n' "${missing[*]}" >&2
+      exit 1
+    fi
+    # Owned by the caller, and the container runs as the caller, so the budget
+    # cache is never root-owned.
+    mkdir -p var/actual-http-api
+    export ACTUAL_HTTP_API_UID="$(id -u)"
+    export ACTUAL_HTTP_API_GID="$(id -g)"
+    docker compose up -d --pull missing
+    port="${ACTUAL_HTTP_API_PORT:-5007}"
+    for _ in $(seq 1 40); do
+      curl -fsS -o /dev/null "http://localhost:${port}/api-docs/" && break
+      sleep 0.25
+    done
+    printf '\nactual-http-api: http://localhost:%s\n' "$port"
+    printf 'swagger:         http://localhost:%s/api-docs/\n\n' "$port"
+    printf 'In txsync.toml:\n\n'
+    printf '  [sink.actual]\n'
+    printf '  url = "http://localhost:%s"\n' "$port"
+    printf '  budget_sync_id = "<Settings -> Show advanced settings -> Sync ID>"\n\n'
+    printf 'Then: txsync accounts   # prints the account UUIDs to map\n'
+
+# Follow the wrapper's logs.
+actual-api-logs:
+    docker compose logs -f actual-http-api
+
+# Stop the wrapper. The budget cache in ./var is kept.
+actual-api-down:
+    docker compose down
+
+# Is the wrapper up and serving its docs?
+actual-api-status:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    docker compose ps
+    port="${ACTUAL_HTTP_API_PORT:-5007}"
+    printf '\n'
+    ready=""
+    for _ in $(seq 1 20); do
+      if curl -fsS -o /dev/null "http://localhost:${port}/api-docs/"; then
+        ready=1
+        break
+      fi
+      sleep 0.25
+    done
+    if [[ -n "$ready" ]]; then
+      echo "swagger reachable on :${port}"
+    else
+      echo "swagger not reachable on :${port}; start it with: just actual-api" >&2
+      docker compose logs --tail=20 actual-http-api >&2 || true
+      exit 1
+    fi
+
 # txp is consumed from a sibling checkout. Use a git tag instead.
 txp-git tag="v0.1.0":
     #!/usr/bin/env bash

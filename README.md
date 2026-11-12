@@ -72,7 +72,8 @@ Then put `txsync sync` on a timer (see the NixOS module below).
    app client. See [docs/gmail.md](docs/gmail.md).
 3. **A ledger endpoint** — for Actual Budget that is
    [`actual-http-api`](https://github.com/jhonderson/actual-http-api) on `:5007`.
-   See [docs/actual.md](docs/actual.md).
+   From a checkout: `cp .env.example .env`, fill in the Actual password and API
+   key, then `just actual-api`. See [docs/actual.md](docs/actual.md).
 
 ## The four primitives
 
@@ -293,6 +294,7 @@ crates/txsync-actual/  Sink: actual-http-api
 crates/txsync-file/    Sink: append-only JSONL (reference implementation)
 crates/txsync/         config, SQLite state, runner, CLI
 crates/txsync-testkit/ a blocking HTTP mock server for tests
+docker-compose.yml     actual-http-api wrapper for local testing
 ```
 
 MIT.

@@ -13,20 +13,62 @@ stays in Rust; nothing shells out to Node.
 txsync ──HTTP──► actual-http-api ──► @actual-app/api ──► actual-server
 ```
 
-## Run `actual-http-api`
+## Quick start (docker compose)
+
+The repo ships a compose file for the wrapper. It is meant to sit next to an
+Actual server you already run.
+
+```bash
+cp .env.example .env
+$EDITOR .env          # ACTUAL_SERVER_PASSWORD, TXSYNC_ACTUAL_API_KEY, ACTUAL_SERVER_URL
+just actual-api       # docker compose up, waits until it serves /api-docs/
+just actual-api-status
+just actual-api-logs
+just actual-api-down
+```
+
+Three variables matter:
+
+| Variable | Meaning |
+| --- | --- |
+| `ACTUAL_SERVER_URL` | Actual as seen **from inside the container** |
+| `ACTUAL_SERVER_PASSWORD` | your Actual server password |
+| `TXSYNC_ACTUAL_API_KEY` | the wrapper's own key; `txsync` sends it as `x-api-key` |
+
+`ACTUAL_SERVER_URL` is the one people get wrong. The container's `localhost` is
+not your host's `localhost`:
+
+| Where Actual runs | `ACTUAL_SERVER_URL` |
+| --- | --- |
+| on this host | `http://host.docker.internal:5006` |
+| on another machine | `http://192.168.1.10:5006` |
+| in this compose file | `http://actual-server:5006` |
+
+The image tag must match your Actual server's version. Set
+`ACTUAL_HTTP_API_TAG` in `.env` to your Actual version.
+
+### A throwaway Actual instead
+
+`docker-compose.yml` has a commented-out `actual-server` service. Uncomment it,
+run `just actual-api`, open <http://localhost:5006>, set a password and create a
+budget, then set `ACTUAL_SERVER_URL=http://actual-server:5006`. Nothing touches
+your real budget.
+
+## Manual `docker run`
+
+If you would rather not use compose:
 
 ```bash
 docker run -d --name actualhttpapi \
-  -v "$PWD/actual-http-api-data:/data:rw" \
+  -v "$PWD/var/actual-http-api:/data:rw" \
   -p 5007:5007 \
-  -e ACTUAL_SERVER_URL="http://localhost:5006/" \
+  --user "$(id -u):$(id -g)" \
+  --add-host host.docker.internal:host-gateway \
+  -e ACTUAL_SERVER_URL="http://host.docker.internal:5006" \
   -e ACTUAL_SERVER_PASSWORD="your-actual-server-password" \
   -e API_KEY="$(openssl rand -hex 24)" \
   jhonderson/actual-http-api:26.10.0
 ```
-
-Pin the wrapper's tag to your Actual server's version — the wrapper and Actual
-must match. `latest` will eventually drift.
 
 `API_KEY` is the wrapper's own credential. It is **not** your Actual password;
 keep them separate so a leaked ledger API key does not expose the server.
@@ -133,10 +175,11 @@ still validates the account ids and the payload.
 | --- | --- | --- |
 | `401 invalid api key` | `API_KEY` mismatch | check `TXSYNC_ACTUAL_API_KEY` against the container env |
 | `404` on every request | wrong Sync ID | Settings → advanced → Sync ID |
-| `Budget … is not loaded` / timeouts | wrapper cannot reach Actual | check `ACTUAL_SERVER_URL` and `ACTUAL_SERVER_PASSWORD` |
+| `Unknown error while interacting with Actual Api` | wrapper cannot reach Actual | check `ACTUAL_SERVER_URL` from *inside* the container; `just actual-api-logs` |
 | amounts are 100× too big | you are not using `txsync`'s sink | do not hand-write the `amount` field |
 | rows appear twice | a sink other than `importTransactions` was used | `txsync` always uses the reconciling import endpoint |
 | `account not found` | mapping points at a deleted account | `txsync accounts`, then fix `[accounts]` |
+| container exits immediately | `./var/actual-http-api` not writable | `just actual-api` creates it owned by you; if it is root-owned, remove it and retry |
 
 ## Concurrency
 

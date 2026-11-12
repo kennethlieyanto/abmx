@@ -1,0 +1,58 @@
+# actual-http-api: the bridge between txsync and Actual Budget.
+#
+#   just actual-api          # start
+#   just actual-api-logs     # follow
+#   just actual-api-down     # stop
+#
+# Secrets and URLs come from .env (see .env.example). The image tag must match
+# your Actual server's version, otherwise the wrapper's bundled client may not
+# speak the same protocol.
+
+services:
+  actual-http-api:
+    image: jhonderson/actual-http-api:${ACTUAL_HTTP_API_TAG:-26.10.0}
+    container_name: txsync-actual-http-api
+    restart: "no"
+
+    # Run as the invoking user so the budget cache in ./var is not root-owned.
+    # `just actual-api` exports these; plain `docker compose up` falls back to 0.
+    user: "${ACTUAL_HTTP_API_UID:-0}:${ACTUAL_HTTP_API_GID:-0}"
+
+    ports:
+      - "${ACTUAL_HTTP_API_PORT:-5007}:5007"
+
+    environment:
+      # Where the wrapper reaches Actual *from inside this container*.
+      # - Actual on this host:      http://host.docker.internal:5006
+      # - Actual on another machine: http://192.168.1.10:5006
+      # - Actual in this compose:    http://actual-server:5006
+      ACTUAL_SERVER_URL: ${ACTUAL_SERVER_URL:-http://host.docker.internal:5006}
+      # Empty defaults keep `docker compose ps` / `down` working when .env is
+      # missing; `just actual-api` refuses to start without them.
+      ACTUAL_SERVER_PASSWORD: ${ACTUAL_SERVER_PASSWORD:-}
+      # The wrapper's own key. txsync sends it as x-api-key.
+      API_KEY: ${TXSYNC_ACTUAL_API_KEY:-}
+
+    volumes:
+      # The wrapper keeps a local copy of the budget here. Persistent, so a
+      # restart does not re-download the whole budget.
+      - ./var/actual-http-api:/data
+
+    # Makes host.docker.internal resolve to the host on Linux too. Harmless on
+    # Docker Desktop, which provides it already.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Optional: a throwaway Actual server for trying things out without touching
+  # your real budget. Uncomment, run `just actual-api`, open
+  # http://localhost:5006, set a password and create a budget, then set
+  # ACTUAL_SERVER_URL=http://actual-server:5006 in .env.
+  #
+  # actual-server:
+  #   image: actualbudget/actual-server:latest
+  #   container_name: txsync-actual-server
+  #   restart: "no"
+  #   ports:
+  #     - "5006:5006"
+  #   volumes:
+  #     - ./var/actual-server:/data

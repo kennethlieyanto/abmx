@@ -153,6 +153,31 @@ That id is a hash of the email's `Message-ID`, so it is stable across parser
 changes and re-runs. Actual's `importTransactions` will never add the same
 `imported_id` twice.
 
+### Seeing what will happen first: `txsync diff`
+
+`importTransactions` reconciles by `imported_id` **and** by a fuzzy
+amount/date/payee match. That second path is where surprises live: a row that
+already exists under a *different* importer's id (a CSV import, a bank sync)
+can end up duplicated instead of reconciled.
+
+`txsync diff` reads the ledger for the plan's date window and classifies every
+row before anything is written:
+
+```
+date               amount account        counterparty                   ledger
+2026-11-12    -128000 IDR example-account    EXAMPLE PAYEE               new
+2026-11-07    -372000 IDR example-account    EXAMPLE PAYEE            match (manual entry)
+2026-11-06     -72000 IDR example-account    EXAMPLE MERCHANT         match (foreign id example-2026-11-06-merchant)
+```
+
+- `new` — nothing in the ledger has this account, date and amount.
+- `match (manual entry)` — a manual row will be reconciled (usually what you want).
+- `match (foreign id …)` — the existing row came from another importer, so expect
+  a duplicate; `diff` exits `3` when any row looks like this.
+
+The match is deliberately conservative: account + date + amount only. Payee
+similarity is Actual's judgement, not ours.
+
 ### `reimportDeleted: false`
 
 If you delete a transaction in Actual, `txsync` will not resurrect it on the next

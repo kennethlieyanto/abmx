@@ -8,7 +8,9 @@ use txsync::fetchers::DirFetcher;
 use txsync::paths;
 use txsync::state::State;
 use txsync::Runner;
-use txsync_core::{ApplyOptions, FetchRequest, Fetcher, Plan, Report};
+use txsync_core::{
+    classify, ApplyOptions, FetchRequest, Fetcher, ImportRow, LedgerMatch, Plan, Report,
+};
 use txsync_gmail::{authorize, authorize_manual, OAuthConfig, TokenStore};
 
 /// Clean run.
@@ -103,6 +105,25 @@ enum Command {
         /// Ask the sink what it would do; write nothing.
         #[arg(long)]
         dry_run: bool,
+        /// Maximum messages to fetch in this run.
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+    },
+
+    /// Compare the current plan against what the ledger already holds.
+    Diff {
+        /// Read `.eml` files instead of using the configured fetcher.
+        #[arg(long, value_name = "DIR")]
+        from_dir: Option<PathBuf>,
+        /// Restrict the ledger lookup to this date (YYYY-MM-DD). The plan is unchanged.
+        #[arg(long, value_name = "DATE")]
+        since: Option<String>,
+        /// Restrict the ledger lookup up to this date (YYYY-MM-DD).
+        #[arg(long, value_name = "DATE")]
+        until: Option<String>,
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
         /// Maximum messages to fetch in this run.
         #[arg(long, value_name = "N")]
         limit: Option<usize>,
@@ -205,6 +226,13 @@ fn run(cli: Cli) -> Result<i32> {
             dry_run,
             limit,
         } => sync(&settings, from_dir, dry_run, limit),
+        Command::Diff {
+            from_dir,
+            since,
+            until,
+            json,
+            limit,
+        } => diff(&settings, from_dir, since, until, json, limit),
         Command::Review { json } => review(&settings, json),
         Command::Approve { ids, dry_run } => approve(&settings, &ids, dry_run),
         Command::Accounts { json } => accounts(&settings, json),
@@ -573,6 +601,161 @@ fn sync(
 
     summarize_report(&report);
     Ok(exit_for_report(&report, &plan))
+}
+
+fn diff(
+    settings: &Settings,
+    from_dir: Option<PathBuf>,
+    since: Option<String>,
+    until: Option<String>,
+    json: bool,
+    limit: Option<usize>,
+) -> Result<i32> {
+    let (config, base, _) = load_config(settings)?;
+    let runner = build_runner(&config, &base)?;
+    let fetcher = build_fetcher(&config, &base, from_dir, &runner.parser)?;
+
+    let request = FetchRequest::new(None).with_limit(limit.unwrap_or(txsync_core::DEFAULT_LIMIT));
+    let plan = runner.plan(fetcher.as_ref(), request)?;
+    summarize_plan(&plan, false);
+
+    let rows = plan.import_rows();
+    if rows.is_empty() {
+        eprintln!("txsync: nothing to import, so there is nothing to diff");
+        return Ok(EXIT_OK);
+    }
+
+    let mut accounts: Vec<String> = rows.iter().map(|row| row.account.clone()).collect();
+    accounts.sort();
+    accounts.dedup();
+
+    let dates: Vec<chrono::NaiveDate> =
+        rows.iter().map(|row| row.transaction.occurred_on).collect();
+    let earliest = *dates.iter().min().expect("at least one row");
+    let latest = *dates.iter().max().expect("at least one row");
+
+    let since = match since {
+        Some(value) => parse_date(&value, "--since")?,
+        None => earliest - chrono::Duration::days(1),
+    };
+    let until = match until {
+        Some(value) => parse_date(&value, "--until")?,
+        None => latest + chrono::Duration::days(1),
+    };
+
+    let sink = config.build_sink(&base)?;
+    let ledger = sink.snapshot(&accounts, since, until)?;
+
+    let mut entries: Vec<(&ImportRow, LedgerMatch)> = Vec::with_capacity(rows.len());
+    let mut foreign = 0usize;
+    let mut matched = 0usize;
+
+    for row in &rows {
+        let decision = classify(row, &ledger);
+        if !decision.is_new() {
+            matched += 1;
+        }
+        if decision.is_foreign() {
+            foreign += 1;
+        }
+        entries.push((row, decision));
+    }
+
+    if json {
+        let rows: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|(row, decision)| {
+                serde_json::json!({
+                    "id": row.tx_id,
+                    "date": row.transaction.occurred_on.to_string(),
+                    "amount": row.transaction.amount_decimal,
+                    "currency": row.transaction.amount.currency,
+                    "account_key": row.transaction.account,
+                    "account": row.account,
+                    "counterparty": row.transaction.counterparty,
+                    "ledger": decision,
+                })
+            })
+            .collect();
+
+        let report = serde_json::json!({
+            "window": { "since": since.to_string(), "until": until.to_string() },
+            "rows": rows,
+            "summary": {
+                "planned": entries.len(),
+                "new": entries.len() - matched,
+                "match": matched,
+                "foreign": foreign,
+            },
+        });
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "{:<10} {:>14} {:<14} {:<30} ledger",
+            "date", "amount", "account", "counterparty"
+        );
+        for (row, decision) in &entries {
+            println!(
+                "{:<10} {:>14} {:<14} {:<30} {}",
+                row.transaction.occurred_on,
+                format!(
+                    "{} {}",
+                    row.transaction.amount_decimal, row.transaction.amount.currency
+                ),
+                row.transaction.account,
+                truncate(row.transaction.counterparty.as_deref().unwrap_or("-"), 30),
+                ledger_label(decision, &row.tx_id),
+            );
+        }
+    }
+
+    eprintln!(
+        "txsync: window {since}..{until}: {} planned, {} new, {} match existing, {} with a foreign imported_id",
+        entries.len(),
+        entries.len() - matched,
+        matched,
+        foreign,
+    );
+
+    if foreign > 0 {
+        eprintln!(
+            "txsync: a foreign imported_id means the ledger already has this row from another \
+             importer; expect a duplicate rather than a reconcile"
+        );
+        Ok(EXIT_REVIEW)
+    } else {
+        Ok(EXIT_OK)
+    }
+}
+
+fn parse_date(value: &str, flag: &str) -> Result<chrono::NaiveDate> {
+    chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        .with_context(|| format!("{flag}: expected YYYY-MM-DD, got `{value}`"))
+}
+
+fn ledger_label(decision: &LedgerMatch, tx_id: &str) -> String {
+    match decision {
+        LedgerMatch::New => "new".to_owned(),
+        LedgerMatch::Existing {
+            imported_id: None, ..
+        } => "match (manual entry)".to_owned(),
+        LedgerMatch::Existing {
+            imported_id: Some(id),
+            ..
+        } if id == tx_id => "already imported".to_owned(),
+        LedgerMatch::Existing {
+            imported_id: Some(id),
+            ..
+        } => format!("match (foreign id {})", truncate(id, 32)),
+    }
+}
+
+fn truncate(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.to_owned();
+    }
+    let shortened: String = value.chars().take(limit.saturating_sub(1)).collect();
+    format!("{shortened}…")
 }
 
 fn review(settings: &Settings, json: bool) -> Result<i32> {

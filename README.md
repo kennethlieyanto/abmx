@@ -174,6 +174,8 @@ txsync plan [--from-dir DIR] [--out FILE]
 txsync apply [--plan FILE] [--dry-run]
                                       write a plan (current or saved)
 txsync sync [--dry-run]               plan + apply; the timer entrypoint
+txsync diff [--json] [--since D] [--until D]
+                                      compare the plan against what the ledger already holds
 txsync review [--json]                rows waiting for a human
 txsync approve <id>… [--dry-run]      import reviewed rows
 txsync accounts [--json]              sink accounts and how [accounts] maps onto them
@@ -198,7 +200,7 @@ way to test a config, and the recovery path if a mailbox provider breaks.
 | `0` | clean |
 | `1` | the tool failed (config, network, state) |
 | `2` | at least one message or row failed |
-| `3` | `plan` / `review` only: nothing failed, but rows are waiting for review |
+| `3` | `plan` / `review` / `diff` only: rows are waiting for review, or `diff` found a row the ledger already holds under a foreign `imported_id` |
 
 `sync` and `apply` return `0` when the only outstanding work is a review row —
 a timer that fails every 15 minutes because one heuristic email is waiting is a

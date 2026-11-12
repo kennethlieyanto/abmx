@@ -317,6 +317,30 @@ impl Sink for FailingSink {
 }
 
 #[test]
+fn diff_sees_rows_the_file_sink_already_has() {
+    let fixture = Fixture::new(&[("one", "Rp 27.500", "Successful")]);
+    let runner = fixture.runner();
+    let fetcher = DirFetcher::new(fixture.mail_dir());
+    let sink = FileSink::new(fixture.out_path());
+
+    let plan = runner.plan(&fetcher, FetchRequest::new(None)).unwrap();
+    runner
+        .apply(&sink, &plan, &ApplyOptions::default())
+        .unwrap();
+
+    let rows = plan.import_rows();
+    let date = rows[0].transaction.occurred_on;
+    let ledger = sink
+        .snapshot(&[rows[0].account.clone()], date, date)
+        .unwrap();
+
+    let decision = txsync_core::classify(&rows[0], &ledger);
+    assert!(!decision.is_new());
+    assert!(decision.is_same_id(&rows[0].tx_id));
+    assert!(!decision.is_foreign());
+}
+
+#[test]
 fn a_failed_apply_does_not_advance_the_cursor() {
     let fixture = Fixture::new(&[("one", "Rp 27.500", "Successful")]);
     let runner = fixture.runner();

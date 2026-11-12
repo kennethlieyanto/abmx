@@ -13,14 +13,18 @@
 //! *parsing*, `txsync` owns *delivery*. A new bank is a TOML file in `txp`; a new
 //! mailbox or ledger is an implementation of one trait here.
 
+pub mod diff;
 pub mod error;
 pub mod fetcher;
+pub mod money;
 pub mod plan;
 pub mod policy;
 pub mod sink;
 
+pub use diff::{classify, LedgerMatch, LedgerRow};
 pub use error::{Error, Result};
 pub use fetcher::{FetchBatch, FetchRequest, Fetcher, MessageKey, RawMessage, DEFAULT_LIMIT};
+pub use money::cents;
 pub use plan::{Plan, PlannedRow, SourceReport, Stats, PLAN_VERSION};
 pub use policy::{
     decide, AccountMap, Decision, FailedPolicy, HeuristicPolicy, PolicyConfig, ReviewReason,

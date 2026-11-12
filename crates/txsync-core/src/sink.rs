@@ -1,6 +1,8 @@
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
+use crate::diff::LedgerRow;
+use crate::error::{Error, Result};
 
 /// One row handed to a sink. Everything the sink needs, and nothing about where
 /// it came from.
@@ -102,4 +104,22 @@ pub trait Sink {
     /// Write a batch. Partial success is expected and reported, not returned as
     /// an error: a sink that imported 49 of 50 rows should say so.
     fn apply(&self, rows: &[ImportRow], options: &ApplyOptions) -> Result<Report>;
+
+    /// Read back what the ledger already holds for these accounts and dates.
+    ///
+    /// Read-only by contract: `txsync diff` calls this and must never be able
+    /// to mutate a budget. Sinks that cannot read their own ledger return an
+    /// error here rather than an empty list, so "no matches" is never confused
+    /// with "I cannot see".
+    fn snapshot(
+        &self,
+        _accounts: &[String],
+        _since: NaiveDate,
+        _until: NaiveDate,
+    ) -> Result<Vec<LedgerRow>> {
+        Err(Error::Sink(format!(
+            "sink `{}` cannot read its ledger, so `txsync diff` is unavailable",
+            self.name()
+        )))
+    }
 }

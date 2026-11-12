@@ -9,11 +9,11 @@ repository.workspace = true
 
 [dependencies]
 txsync-core.workspace = true
+chrono.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 txp.workspace = true
 
 [dev-dependencies]
-chrono.workspace = true
 txsync-testkit.workspace = true

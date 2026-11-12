@@ -86,6 +86,10 @@ pub trait Sink {
 - **Partial success is a `Report`, not an error.** A sink that imported 49 of 50
   rows should say so. The Actual sink bisects a failing chunk into single rows so
   one bad row cannot cost the rest.
+- **`snapshot()` is the read side.** `txsync diff` needs to know what the ledger
+  already holds, and only the sink knows how to ask. The method is read-only by
+  contract, and a sink that cannot answer returns an error rather than an empty
+  list, so "no matches" is never confused with "I cannot see".
 
 ### State
 

@@ -15,9 +15,12 @@ pub mod convert;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use chrono::NaiveDate;
 use serde_json::{json, Value};
 
-use txsync_core::{ApplyOptions, Error, ImportRow, Report, Result, RowError, Sink, SinkAccount};
+use txsync_core::{
+    ApplyOptions, Error, ImportRow, LedgerRow, Report, Result, RowError, Sink, SinkAccount,
+};
 
 pub use convert::{to_actual, to_cents, NotesConfig};
 
@@ -204,6 +207,78 @@ impl Sink for ActualSink {
                 })
             })
             .collect())
+    }
+
+    /// Read the account's transactions for a date window.
+    ///
+    /// Amounts come back in Actual's "value × 100", which is why the exponent
+    /// is reported as 2 regardless of the currency.
+    fn snapshot(
+        &self,
+        accounts: &[String],
+        since: NaiveDate,
+        until: NaiveDate,
+    ) -> Result<Vec<LedgerRow>> {
+        let mut rows = Vec::new();
+
+        for account in accounts {
+            let url = format!(
+                "{}?since_date={since}&until_date={until}",
+                self.url(&format!("/accounts/{account}/transactions"))
+            );
+
+            let response = self
+                .request(reqwest::Method::GET, &url)
+                .send()
+                .map_err(|error| Error::Sink(format!("actual: {error}")))?;
+
+            let status = response.status();
+            let text = response
+                .text()
+                .map_err(|error| Error::Sink(format!("actual: {error}")))?;
+
+            if !status.is_success() {
+                return Err(Error::Sink(format!(
+                    "actual {status}: {}",
+                    error_message(&text)
+                )));
+            }
+
+            let value: Value = serde_json::from_str(&text)?;
+            let transactions = value.get("data").and_then(Value::as_array).ok_or_else(|| {
+                Error::Sink(format!("actual: transactions response had no data: {text}"))
+            })?;
+
+            for transaction in transactions {
+                let Some(date) = transaction
+                    .get("date")
+                    .and_then(Value::as_str)
+                    .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+                else {
+                    continue;
+                };
+
+                rows.push(LedgerRow {
+                    account: account.clone(),
+                    date,
+                    amount_minor: transaction
+                        .get("amount")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(0),
+                    currency_exponent: 2,
+                    payee: transaction
+                        .get("imported_payee")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    imported_id: transaction
+                        .get("imported_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                });
+            }
+        }
+
+        Ok(rows)
     }
 
     fn apply(&self, rows: &[ImportRow], options: &ApplyOptions) -> Result<Report> {

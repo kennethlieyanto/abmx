@@ -1836,7 +1836,9 @@ dependencies = [
 name = "txsync-file"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde_json",
+ "tempfile",
  "txsync-core",
 ]
 

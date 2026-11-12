@@ -39,16 +39,9 @@ impl Default for NotesConfig {
 /// `None` means the multiplication overflowed, which is a data error worth
 /// surfacing rather than wrapping.
 pub fn to_cents(amount_minor: i64, currency_exponent: u32) -> Option<i64> {
-    if currency_exponent <= 2 {
-        let factor = 10i64.checked_pow(2 - currency_exponent)?;
-        amount_minor.checked_mul(factor)
-    } else {
-        // Actual has no representation finer than two decimals. A 3-decimal
-        // currency loses its last digit; that is a property of the target, not
-        // of the conversion.
-        let factor = 10i64.checked_pow(currency_exponent - 2)?;
-        Some(amount_minor / factor)
-    }
+    // Shared with the ledger comparison, so `txsync diff` and the importer can
+    // never disagree about what a row is worth.
+    txsync_core::cents(amount_minor, currency_exponent)
 }
 
 pub fn notes(tx: &Transaction, config: &NotesConfig) -> Option<String> {

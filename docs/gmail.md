@@ -42,16 +42,57 @@ the refresh token is written to
 
 Flags: `--no-browser` prints the URL only, `--port N` pins the loopback port.
 
-### Headless server
+### Headless server (or a browser on another machine)
 
-The loopback flow needs a browser somewhere. Run `txsync auth gmail` on your
-laptop and copy the credentials file to the server:
+`txsync auth gmail` listens on `127.0.0.1` **on the machine running it**. If you
+approve in a browser on a different machine, the redirect goes to *that*
+machine's localhost, where nothing is listening — you get "This site can't be
+reached" even though authorization succeeded.
+
+Use `--manual`:
+
+```bash
+txsync auth gmail --manual
+```
+
+1. It prints the authorization URL. Open it in any browser, on any machine.
+2. The browser lands on `http://127.0.0.1:<port>/callback?code=…&state=…` and
+   fails to load. That is expected.
+3. Copy the **whole address** from the address bar and paste it into the
+   terminal.
+4. `txsync` checks `state` and exchanges the code using the PKCE verifier it
+   still holds in memory.
+
+Pasting just the `code=…` value also works; PKCE still binds the exchange to
+this request, but the `state` check is skipped.
+
+#### Alternative: forward the port over SSH
+
+If you prefer the automatic flow, forward the loopback port from the browser's
+machine:
+
+```bash
+# on the server
+txsync auth gmail --port 43323 --no-browser
+
+# on the browser's machine
+ssh -N -L 43323:127.0.0.1:43323 you@server
+```
+
+Then open the printed URL. `--port` matters: the default is a random ephemeral
+port, so the tunnel would not match.
+
+#### Alternative: authorize elsewhere, copy the token
+
+Run the flow on a machine that has a browser and `txsync`, then copy the
+credential file. The `client_id` must be the same on both sides:
 
 ```bash
 scp ~/.local/state/txsync/gmail-credentials.json server:~/.local/state/txsync/
+ssh server 'chmod 600 ~/.local/state/txsync/gmail-credentials.json'
 ```
 
-The file only contains a client id and a refresh token — no mail, no password.
+The file contains a client id and a refresh token — no mail, no password.
 
 ## What `txsync` asks Gmail for
 
@@ -93,6 +134,8 @@ since the cursor and let `txp` route it.
 | `403 … insufficient authentication scopes` | wrong scope on the token | revoke at <https://myaccount.google.com/permissions>, re-authorize |
 | full sync every run | `historyId` rejected as expired | normal after long downtime; the state database still prevents duplicates |
 | `no refresh token returned` | Google only returns one on the first consent | remove app access, re-authorize (the flow already sends `prompt=consent`) |
+| browser shows "This site can't be reached" after approving | the redirect's `127.0.0.1` is the browser's machine, not the CLI's | `txsync auth gmail --manual`, then paste the URL from the address bar |
+| `state mismatch` | the pasted URL came from a different run | re-run `--manual` and paste the URL from that same run |
 | nothing found | sender list does not match your bank's actual address | `txsync parsers`, then compare with a real email |
 
 ## Verifying without Gmail

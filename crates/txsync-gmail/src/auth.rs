@@ -135,48 +135,84 @@ pub struct TokenResponse {
     pub scope: Option<String>,
 }
 
-/// Run the interactive flow and return credentials ready to persist.
+/// Fixed loopback port used in `--manual` mode. Nothing listens on it; it only
+/// has to be a loopback URI that Google will redirect to. Any port works,
+/// because desktop clients accept `http://127.0.0.1:<any>`.
+pub const MANUAL_REDIRECT_PORT: u16 = 53682;
+
+/// Run the loopback flow and return credentials ready to persist.
 pub fn authorize(config: &OAuthConfig) -> Result<Credentials, GmailError> {
-    let listener = TcpListener::bind(("127.0.0.1", config.port))
-        .map_err(|error| GmailError::Auth(format!("binding loopback listener: {error}")))?;
-    listener
-        .set_nonblocking(true)
-        .map_err(|error| GmailError::Auth(format!("loopback listener: {error}")))?;
-    let port = listener
-        .local_addr()
-        .map_err(|error| GmailError::Auth(format!("loopback listener: {error}")))?
-        .port();
-    let redirect = format!("http://127.0.0.1:{port}/callback");
+    authorize_with(config, Mode::Loopback)
+}
+
+/// Run the flow without a local listener.
+///
+/// Prints the authorization URL, waits for the user to paste the callback URL
+/// (or just the code) from whatever browser they approved in, then exchanges
+/// it. This is the only workable flow when the CLI runs on one machine and the
+/// browser on another: the redirect's `127.0.0.1` belongs to the browser's
+/// machine, not this one.
+pub fn authorize_manual(config: &OAuthConfig) -> Result<Credentials, GmailError> {
+    authorize_with(config, Mode::Manual)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Loopback,
+    Manual,
+}
+
+fn authorize_with(config: &OAuthConfig, mode: Mode) -> Result<Credentials, GmailError> {
+    let (redirect, listener) = match mode {
+        Mode::Loopback => {
+            let listener = TcpListener::bind(("127.0.0.1", config.port))
+                .map_err(|error| GmailError::Auth(format!("binding loopback listener: {error}")))?;
+            listener
+                .set_nonblocking(true)
+                .map_err(|error| GmailError::Auth(format!("loopback listener: {error}")))?;
+            let port = listener
+                .local_addr()
+                .map_err(|error| GmailError::Auth(format!("loopback listener: {error}")))?
+                .port();
+            (format!("http://127.0.0.1:{port}/callback"), Some(listener))
+        }
+        Mode::Manual => (manual_redirect(config), None),
+    };
 
     let verifier = pkce_verifier();
     let challenge = pkce_challenge(&verifier);
     let state = pkce_verifier();
 
-    let mut url = Url::parse(&config.auth_url)
-        .map_err(|error| GmailError::Auth(format!("auth url: {error}")))?;
-    url.query_pairs_mut()
-        .append_pair("client_id", &config.client_id)
-        .append_pair("redirect_uri", &redirect)
-        .append_pair("response_type", "code")
-        .append_pair("scope", SCOPE)
-        .append_pair("state", &state)
-        .append_pair("code_challenge", &challenge)
-        .append_pair("code_challenge_method", "S256")
-        .append_pair("access_type", "offline")
-        // Without `consent` Google only returns a refresh token on the very
-        // first grant, which makes re-running auth silently fail later.
-        .append_pair("prompt", "consent");
+    let url = authorization_url(config, &redirect, &state, &challenge)?;
 
     eprintln!("Open this URL and approve read-only Gmail access:\n\n  {url}\n");
-    if config.open_browser {
+
+    if mode == Mode::Manual {
+        eprintln!(
+            "After approving, the browser will try to open a 127.0.0.1 page and fail.\n\
+             That is expected: copy the whole address from the address bar and paste it here.\n"
+        );
+    } else if config.open_browser {
         let _ = open_in_browser(url.as_str());
     }
 
-    let (code, returned_state) = wait_for_callback(&listener, config.timeout)?;
-    if returned_state != state {
-        return Err(GmailError::Auth(
-            "state mismatch: the callback did not come from this request".to_owned(),
-        ));
+    let (code, returned_state) = match mode {
+        Mode::Loopback => {
+            let listener = listener.ok_or_else(|| {
+                GmailError::Auth("internal error: loopback mode without a listener".to_owned())
+            })?;
+            let (code, returned_state) = wait_for_callback(&listener, config.timeout)?;
+            (code, Some(returned_state))
+        }
+        Mode::Manual => read_callback_from_stdin()?,
+    };
+
+    if let Some(returned_state) = returned_state {
+        if returned_state != state {
+            return Err(GmailError::Auth(
+                "state mismatch: the pasted URL did not come from this request".to_owned(),
+            ));
+        }
     }
 
     let http = reqwest::blocking::Client::builder()
@@ -210,6 +246,106 @@ pub fn authorize(config: &OAuthConfig) -> Result<Credentials, GmailError> {
             .map(|scope| scope.split_whitespace().map(str::to_owned).collect())
             .unwrap_or_else(|| vec![SCOPE.to_owned()]),
     })
+}
+
+/// The redirect URI used in manual mode. Nothing listens on it; it only has to
+/// be a loopback URI that Google will send the browser to.
+fn manual_redirect(config: &OAuthConfig) -> String {
+    let port = if config.port == 0 {
+        MANUAL_REDIRECT_PORT
+    } else {
+        config.port
+    };
+    format!("http://127.0.0.1:{port}/callback")
+}
+
+fn authorization_url(
+    config: &OAuthConfig,
+    redirect: &str,
+    state: &str,
+    challenge: &str,
+) -> Result<Url, GmailError> {
+    let mut url = Url::parse(&config.auth_url)
+        .map_err(|error| GmailError::Auth(format!("auth url: {error}")))?;
+    url.query_pairs_mut()
+        .append_pair("client_id", &config.client_id)
+        .append_pair("redirect_uri", redirect)
+        .append_pair("response_type", "code")
+        .append_pair("scope", SCOPE)
+        .append_pair("state", state)
+        .append_pair("code_challenge", challenge)
+        .append_pair("code_challenge_method", "S256")
+        .append_pair("access_type", "offline")
+        // Without `consent` Google only returns a refresh token on the very
+        // first grant, which makes re-running auth silently fail later.
+        .append_pair("prompt", "consent");
+    Ok(url)
+}
+
+fn read_callback_from_stdin() -> Result<(String, Option<String>), GmailError> {
+    eprint!("Paste the full callback URL (or just the code): ");
+    std::io::stderr()
+        .flush()
+        .map_err(|error| GmailError::Auth(format!("writing prompt: {error}")))?;
+
+    let mut line = String::new();
+    let read = std::io::stdin()
+        .read_line(&mut line)
+        .map_err(|error| GmailError::Auth(format!("reading stdin: {error}")))?;
+
+    if read == 0 {
+        return Err(GmailError::Auth(
+            "no input on stdin; paste the callback URL and try again".to_owned(),
+        ));
+    }
+
+    parse_callback_input(&line)
+}
+
+/// Accept a full callback URL, a bare query string, or just the code.
+///
+/// Returns `(code, state)`. `state` is `None` when the user pasted only the
+/// code; PKCE still binds the exchange to this request, but the state check is
+/// skipped in that case.
+fn parse_callback_input(input: &str) -> Result<(String, Option<String>), GmailError> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Err(GmailError::Auth("nothing pasted".to_owned()));
+    }
+
+    let query = if let Some((_, query)) = input.split_once('?') {
+        query
+    } else if input.contains("code=") || input.contains("error=") {
+        input
+    } else {
+        return Ok((input.to_owned(), None));
+    };
+
+    let mut code = None;
+    let mut state = None;
+    let mut error = None;
+
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        match key.as_ref() {
+            "code" => code = Some(value.into_owned()),
+            "state" => state = Some(value.into_owned()),
+            "error" => error = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+
+    if let Some(error) = error {
+        return Err(GmailError::Auth(format!("authorization denied: {error}")));
+    }
+
+    let code = code.ok_or_else(|| {
+        GmailError::Auth(
+            "no `code` in the pasted input; paste the whole callback URL from the address bar"
+                .to_owned(),
+        )
+    })?;
+
+    Ok((code, state))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -434,5 +570,57 @@ mod tests {
             let mode = fs::metadata(store.path()).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn parses_a_full_callback_url() {
+        let (code, state) = parse_callback_input(
+            "  http://127.0.0.1:53682/callback?code=4/0Ax%2Fabc&state=xyz&scope=mail  \n",
+        )
+        .unwrap();
+        assert_eq!(code, "4/0Ax/abc");
+        assert_eq!(state.as_deref(), Some("xyz"));
+    }
+
+    #[test]
+    fn parses_a_bare_query_string() {
+        let (code, state) = parse_callback_input("code=abc123&state=st").unwrap();
+        assert_eq!(code, "abc123");
+        assert_eq!(state.as_deref(), Some("st"));
+    }
+
+    #[test]
+    fn parses_a_bare_code_without_state() {
+        let (code, state) = parse_callback_input("4/0Aabcdef-_").unwrap();
+        assert_eq!(code, "4/0Aabcdef-_");
+        assert_eq!(state, None);
+    }
+
+    #[test]
+    fn rejects_an_error_callback() {
+        let error =
+            parse_callback_input("http://127.0.0.1:1/callback?error=access_denied").unwrap_err();
+        assert!(error.to_string().contains("access_denied"));
+    }
+
+    #[test]
+    fn rejects_a_callback_without_a_code() {
+        let error = parse_callback_input("http://127.0.0.1:1/callback?state=xyz").unwrap_err();
+        assert!(error.to_string().contains("no `code`"));
+    }
+
+    #[test]
+    fn rejects_empty_input() {
+        assert!(parse_callback_input("   \n").is_err());
+    }
+
+    #[test]
+    fn manual_mode_uses_a_stable_loopback_redirect() {
+        let mut config = OAuthConfig::new("client");
+        config.port = 0;
+        assert_eq!(manual_redirect(&config), "http://127.0.0.1:53682/callback");
+
+        config.port = 4444;
+        assert_eq!(manual_redirect(&config), "http://127.0.0.1:4444/callback");
     }
 }

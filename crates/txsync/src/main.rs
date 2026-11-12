@@ -9,7 +9,7 @@ use txsync::paths;
 use txsync::state::State;
 use txsync::Runner;
 use txsync_core::{ApplyOptions, FetchRequest, Fetcher, Plan, Report};
-use txsync_gmail::{authorize, OAuthConfig, TokenStore};
+use txsync_gmail::{authorize, authorize_manual, OAuthConfig, TokenStore};
 
 /// Clean run.
 const EXIT_OK: i32 = 0;
@@ -137,7 +137,7 @@ enum Command {
 
 #[derive(Subcommand)]
 enum AuthProvider {
-    /// OAuth2 with PKCE and a loopback redirect.
+    /// OAuth2 with PKCE: a loopback listener, or `--manual` on a headless box.
     Gmail {
         /// Print the URL instead of trying to open a browser.
         #[arg(long)]
@@ -145,6 +145,13 @@ enum AuthProvider {
         /// Loopback port for the OAuth redirect; 0 picks a free one.
         #[arg(long, value_name = "PORT")]
         port: Option<u16>,
+        /// Approve in any browser and paste the callback URL back.
+        ///
+        /// Use this when the CLI and the browser are on different machines:
+        /// the redirect's 127.0.0.1 belongs to the browser's machine, so a
+        /// local listener can never receive it.
+        #[arg(long)]
+        manual: bool,
     },
 }
 
@@ -175,7 +182,11 @@ fn run(cli: Cli) -> Result<i32> {
     match cli.command {
         Command::Init { path, force } => init(path, force),
         Command::Auth { provider } => match provider {
-            AuthProvider::Gmail { no_browser, port } => auth_gmail(&settings, no_browser, port),
+            AuthProvider::Gmail {
+                no_browser,
+                port,
+                manual,
+            } => auth_gmail(&settings, no_browser, port, manual),
         },
         Command::Doctor { online } => doctor(&settings, online),
         Command::Plan {
@@ -282,14 +293,19 @@ fn init(path: Option<PathBuf>, force: bool) -> Result<i32> {
         "  1. edit {} and set [fetch.gmail] + [sink.actual]",
         path.display()
     );
-    println!("  2. txsync auth gmail");
+    println!("  2. txsync auth gmail            (headless: --manual)");
     println!("  3. txsync doctor --online");
     println!("  4. txsync sync --dry-run");
 
     Ok(EXIT_OK)
 }
 
-fn auth_gmail(settings: &Settings, no_browser: bool, port: Option<u16>) -> Result<i32> {
+fn auth_gmail(
+    settings: &Settings,
+    no_browser: bool,
+    port: Option<u16>,
+    manual: bool,
+) -> Result<i32> {
     let (config, base, _) = load_config(settings)?;
 
     let Some(gmail) = &config.fetch.gmail else {
@@ -300,9 +316,13 @@ fn auth_gmail(settings: &Settings, no_browser: bool, port: Option<u16>) -> Resul
     let mut oauth = OAuthConfig::new(&gmail.client_id);
     oauth.client_secret = client_secret;
     oauth.port = port.unwrap_or_else(|| config.gmail_oauth_port());
-    oauth.open_browser = !no_browser;
+    oauth.open_browser = !no_browser && !manual;
 
-    let credentials = authorize(&oauth)?;
+    let credentials = if manual {
+        authorize_manual(&oauth)?
+    } else {
+        authorize(&oauth)?
+    };
     let store = TokenStore::new(config.gmail_token_path(&base));
     store.save(&credentials)?;
 

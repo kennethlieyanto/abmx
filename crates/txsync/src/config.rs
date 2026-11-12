@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
-use txsync_actual::{ActualConfig, ActualSink, NotesConfig};
+use txsync_actual::{ActualConfig, ActualSink, ClearedPolicy, NotesConfig};
 use txsync_core::{AccountMap, PolicyConfig, Sink};
 use txsync_file::FileSink;
 use txsync_gmail::{build_query, GmailConfig, GmailFetcher};
@@ -94,6 +94,9 @@ pub struct ActualSection {
     pub chunk_size: Option<usize>,
     #[serde(default)]
     pub notes_fields: Option<Vec<String>>,
+    /// never | settled | always. Defaults to `never`.
+    #[serde(default)]
+    pub cleared: Option<ClearedPolicy>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -207,6 +210,9 @@ impl Config {
             let mut config =
                 ActualConfig::new(actual.url.as_str(), api_key, actual.budget_sync_id.as_str());
             config.budget_password = budget_password;
+            if let Some(cleared) = actual.cleared {
+                config.cleared = cleared;
+            }
 
             let sink = ActualSink::new(config, notes)?;
             return Ok(Box::new(sink));
@@ -293,6 +299,9 @@ budget_sync_id = "REPLACE"
 # api_key_file = "/run/credentials/txsync.service/actual-api-key"
 # budget_password_file = "/run/credentials/txsync.service/actual-budget-password"
 chunk_size = 50
+# never | settled | always. `never` leaves imported rows uncleared so clearing
+# stays your reconciliation step.
+cleared = "never"
 
 # Map txp's parser-declared account keys to Actual account UUIDs.
 # Run `txsync accounts` to see what Actual calls them.

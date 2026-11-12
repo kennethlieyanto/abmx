@@ -116,17 +116,17 @@ a restart.
       "payee_name": "ExamplePay",
       "imported_payee": "ExamplePay",
       "notes": "DEBIT ONLINE | example.card_debit",
-      "cleared": true
+      "cleared": false
     }
   ],
-  "defaultCleared": true,
+  "defaultCleared": false,
   "reimportDeleted": false,
   "payeeNameNormalization": "original",
   "dryRun": false
 }
 ```
 
-Four decisions worth knowing:
+Five decisions worth knowing:
 
 ### `amount` is value × 100 — for every currency
 
@@ -187,6 +187,32 @@ run. This matches the file-import UI's default.
 
 The wrapper's default title-cases payee names, turning `ExamplePay` into `Examplepay`.
 `original` keeps what the bank printed.
+
+### `cleared` — off by default
+
+Actual's importer resolves it as `cleared: trans.cleared ?? defaultCleared`, so
+the per-row value wins.
+
+`txsync` sends `cleared: false` by default:
+
+```toml
+[sink.actual]
+cleared = "never"    # never | settled | always
+```
+
+| Policy | Behaviour |
+| --- | --- |
+| `never` (default) | import uncleared; clearing stays your reconciliation step |
+| `settled` | clear rows whose `txp` status is `settled` |
+| `always` | clear everything |
+
+The distinction matters: `txp`'s `status: settled` means "the bank says the
+transaction completed", while Actual's `cleared` means "I reconciled this
+against my bank statement". Making the second claim automatically would be
+guessing, which is why it is opt-in.
+
+Changing the policy only affects future imports; rows already imported stay
+cleared until you un-clear them in Actual.
 
 ## `dryRun`
 

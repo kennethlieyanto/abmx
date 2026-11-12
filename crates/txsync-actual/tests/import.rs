@@ -1,5 +1,5 @@
 use txp::{Extraction, Kind, Money, Source, Status};
-use txsync_actual::{ActualConfig, ActualSink, NotesConfig};
+use txsync_actual::{ActualConfig, ActualSink, ClearedPolicy, NotesConfig};
 use txsync_core::{ApplyOptions, ImportRow, Sink};
 use txsync_testkit::{MockServer, Response};
 
@@ -46,12 +46,14 @@ fn row(id: &str, amount_minor: i64) -> ImportRow {
     }
 }
 
+fn sink_with(server: &MockServer, cleared: ClearedPolicy) -> ActualSink {
+    let mut config = ActualConfig::new(server.url(), "secret-key", "sync-id");
+    config.cleared = cleared;
+    ActualSink::new(config, NotesConfig::default()).unwrap()
+}
+
 fn sink(server: &MockServer) -> ActualSink {
-    ActualSink::new(
-        ActualConfig::new(server.url(), "secret-key", "sync-id"),
-        NotesConfig::default(),
-    )
-    .unwrap()
+    sink_with(server, ClearedPolicy::Never)
 }
 
 #[test]
@@ -99,7 +101,8 @@ fn import_sends_cents_and_the_dedupe_key() {
     let body = request.json();
     assert_eq!(body["reimportDeleted"], false);
     assert_eq!(body["payeeNameNormalization"], "original");
-    assert_eq!(body["defaultCleared"], true);
+    // The default policy leaves rows uncleared.
+    assert_eq!(body["defaultCleared"], false);
     assert_eq!(body["dryRun"], false);
 
     let transaction = &body["transactions"][0];
@@ -109,7 +112,45 @@ fn import_sends_cents_and_the_dedupe_key() {
     assert_eq!(transaction["date"], "2026-10-30");
     assert_eq!(transaction["account"], "acc-1");
     assert_eq!(transaction["payee_name"], "ExamplePay");
-    assert_eq!(transaction["cleared"], true);
+    assert_eq!(transaction["cleared"], false);
+}
+
+#[test]
+fn the_settled_policy_marks_rows_cleared() {
+    let server = MockServer::start();
+    server.route(
+        "POST",
+        "/v1/budgets/sync-id/accounts/acc-1/transactions/import",
+        vec![Response::json(r#"{"data":{"added":["t1"],"updated":[]}}"#)],
+    );
+
+    let report = sink_with(&server, ClearedPolicy::Settled)
+        .apply(&[row("mail_1", -27_500)], &ApplyOptions::default())
+        .unwrap();
+
+    assert_eq!(report.added, 1);
+    assert_eq!(
+        server.requests()[0].json()["transactions"][0]["cleared"],
+        true
+    );
+}
+
+#[test]
+fn the_always_policy_also_sets_default_cleared() {
+    let server = MockServer::start();
+    server.route(
+        "POST",
+        "/v1/budgets/sync-id/accounts/acc-1/transactions/import",
+        vec![Response::json(r#"{"data":{"added":["t1"],"updated":[]}}"#)],
+    );
+
+    sink_with(&server, ClearedPolicy::Always)
+        .apply(&[row("mail_1", -27_500)], &ApplyOptions::default())
+        .unwrap();
+
+    let body = server.requests()[0].json();
+    assert_eq!(body["defaultCleared"], true);
+    assert_eq!(body["transactions"][0]["cleared"], true);
 }
 
 #[test]

@@ -22,7 +22,7 @@ use txsync_core::{
     ApplyOptions, Error, ImportRow, LedgerRow, Report, Result, RowError, Sink, SinkAccount,
 };
 
-pub use convert::{to_actual, to_cents, NotesConfig};
+pub use convert::{to_actual, to_cents, ClearedPolicy, NotesConfig};
 
 #[derive(Debug, Clone)]
 pub struct ActualConfig {
@@ -34,6 +34,8 @@ pub struct ActualConfig {
     pub budget_sync_id: String,
     /// Only for end-to-end encrypted budgets.
     pub budget_password: Option<String>,
+    /// Whether imported rows are marked cleared in Actual.
+    pub cleared: ClearedPolicy,
     pub timeout: Duration,
 }
 
@@ -48,6 +50,7 @@ impl ActualConfig {
             api_key: api_key.into(),
             budget_sync_id: budget_sync_id.into(),
             budget_password: None,
+            cleared: ClearedPolicy::Never,
             timeout: Duration::from_secs(120),
         }
     }
@@ -104,13 +107,19 @@ impl ActualSink {
     ) -> std::result::Result<(usize, usize), String> {
         let mut transactions = Vec::with_capacity(rows.len());
         for row in rows {
-            transactions.push(to_actual(&row.transaction, account, &self.notes)?);
+            transactions.push(to_actual(
+                &row.transaction,
+                account,
+                &self.notes,
+                self.config.cleared,
+            )?);
         }
 
         let body = json!({
             "transactions": transactions,
-            // Match the file-import UI's defaults rather than the API's.
-            "defaultCleared": true,
+            // Only used for rows that omit `cleared`, which we never do; keep it
+            // consistent with the policy instead of asserting the opposite.
+            "defaultCleared": self.config.cleared == ClearedPolicy::Always,
             // Anything deleted in Actual must stay deleted.
             "reimportDeleted": false,
             // Preserve `ExamplePay`, not `Examplepay`.

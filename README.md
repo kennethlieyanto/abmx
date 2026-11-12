@@ -128,6 +128,8 @@ max_messages = 200
 url = "http://localhost:5007"
 budget_sync_id = "…"
 chunk_size = 50
+# never (default) | settled | always — see docs/actual.md
+cleared = "never"
 # notes_fields = ["description", "reference_id", "channel", "parser"]
 
 [accounts]
@@ -231,6 +233,9 @@ matter:
   `2_750_000`. `txsync` does this conversion in the sink, with tests.
 - **`imported_id` is `txp`'s id**, and `reimportDeleted` is `false`, so deleting
   a row in Actual is permanent.
+- **Rows are imported uncleared** (`cleared = "never"`). `txp`'s `settled` means
+  the bank completed the transaction; Actual's `cleared` means you reconciled it
+  against a statement. Set `cleared = "settled"` if you want the old behaviour.
 
 ## Security
 

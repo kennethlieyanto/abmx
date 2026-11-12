@@ -12,6 +12,34 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use txsync_core::Transaction;
 
+/// Whether imported rows are marked cleared in Actual.
+///
+/// `txp`'s `status: settled` means "the bank says the transaction completed".
+/// Actual's `cleared` means "I have reconciled this against my bank statement".
+/// Those are different claims, so the default does not make the second one for
+/// you.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ClearedPolicy {
+    /// Import uncleared; clearing is the user's reconciliation step.
+    #[default]
+    Never,
+    /// Clear rows the bank reported as settled.
+    Settled,
+    /// Clear everything.
+    Always,
+}
+
+impl ClearedPolicy {
+    pub fn is_cleared(self, status: txp::Status) -> bool {
+        match self {
+            Self::Never => false,
+            Self::Settled => status == txp::Status::Settled,
+            Self::Always => true,
+        }
+    }
+}
+
 /// Which `txp` fields end up in Actual's `notes`.
 ///
 /// Order is preserved and duplicates collapse, so a parser that sets both
@@ -94,6 +122,7 @@ pub fn to_actual(
     tx: &Transaction,
     account: &str,
     notes_config: &NotesConfig,
+    cleared: ClearedPolicy,
 ) -> Result<Value, String> {
     let amount = to_cents(tx.amount.amount_minor, tx.currency_exponent).ok_or_else(|| {
         format!(
@@ -135,7 +164,7 @@ pub fn to_actual(
 
     object.insert(
         "cleared".to_owned(),
-        Value::Bool(tx.status == txp::Status::Settled),
+        Value::Bool(cleared.is_cleared(tx.status)),
     );
 
     Ok(Value::Object(object))
@@ -203,7 +232,13 @@ mod tests {
 
     #[test]
     fn mapping_sets_the_dedupe_key_and_sign() {
-        let value = to_actual(&tx(-27_500, "IDR", 0), "uuid-example", &NotesConfig::default()).unwrap();
+        let value = to_actual(
+            &tx(-27_500, "IDR", 0),
+            "uuid-example",
+            &NotesConfig::default(),
+            ClearedPolicy::Settled,
+        )
+        .unwrap();
         assert_eq!(value["amount"], -2_750_000);
         assert_eq!(value["imported_id"], "mail_a631e3d89a232b55");
         assert_eq!(value["date"], "2026-10-30");
@@ -221,24 +256,71 @@ mod tests {
         let mut transaction = tx(-1000, "IDR", 0);
         transaction.counterparty = None;
         transaction.description = Some("Transfer to savings".into());
-        let value = to_actual(&transaction, "uuid", &NotesConfig::default()).unwrap();
+        let value = to_actual(
+            &transaction,
+            "uuid",
+            &NotesConfig::default(),
+            ClearedPolicy::Never,
+        )
+        .unwrap();
         assert!(value.get("payee_name").is_none());
         assert_eq!(value["imported_payee"], "Transfer to savings");
     }
 
     #[test]
-    fn pending_rows_are_not_cleared() {
-        let mut transaction = tx(-1000, "IDR", 0);
-        transaction.status = Status::Pending;
-        let value = to_actual(&transaction, "uuid", &NotesConfig::default()).unwrap();
+    fn the_cleared_policy_controls_the_flag() {
+        let settled = tx(-1000, "IDR", 0);
+
+        let mut pending = tx(-1000, "IDR", 0);
+        pending.status = Status::Pending;
+
+        assert!(!ClearedPolicy::Never.is_cleared(Status::Settled));
+        assert!(!ClearedPolicy::Never.is_cleared(Status::Pending));
+
+        assert!(ClearedPolicy::Settled.is_cleared(Status::Settled));
+        assert!(!ClearedPolicy::Settled.is_cleared(Status::Pending));
+
+        assert!(ClearedPolicy::Always.is_cleared(Status::Pending));
+
+        let value = to_actual(
+            &settled,
+            "uuid",
+            &NotesConfig::default(),
+            ClearedPolicy::Never,
+        )
+        .unwrap();
         assert_eq!(value["cleared"], false);
+
+        let value = to_actual(
+            &pending,
+            "uuid",
+            &NotesConfig::default(),
+            ClearedPolicy::Settled,
+        )
+        .unwrap();
+        assert_eq!(value["cleared"], false);
+
+        let value = to_actual(
+            &settled,
+            "uuid",
+            &NotesConfig::default(),
+            ClearedPolicy::Always,
+        )
+        .unwrap();
+        assert_eq!(value["cleared"], true);
     }
 
     #[test]
     fn notes_skip_empty_and_duplicate_parts() {
         let mut transaction = tx(-1000, "IDR", 0);
         transaction.description = Some("DEBIT ONLINE".into());
-        let value = to_actual(&transaction, "uuid", &NotesConfig::default()).unwrap();
+        let value = to_actual(
+            &transaction,
+            "uuid",
+            &NotesConfig::default(),
+            ClearedPolicy::Never,
+        )
+        .unwrap();
         // `description` duplicates `channel`, so it appears once.
         assert_eq!(value["notes"], "DEBIT ONLINE | example.card_debit");
     }

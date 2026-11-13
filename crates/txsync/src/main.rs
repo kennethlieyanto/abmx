@@ -210,6 +210,12 @@ enum AuthCommand {
 }
 
 fn main() {
+    // Behave like a normal Unix filter when the reader goes away (e.g. `| head`).
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     let cli = Cli::parse();
     match run(cli) {
         Ok(code) => std::process::exit(code),
@@ -715,7 +721,7 @@ fn plan(
         None => println!("{json}"),
     }
 
-    summarize_plan(&plan, settings.quiet, settings.verbose);
+    summarize_plan(&plan, settings.quiet, settings.verbose, false);
     Ok(exit_for_plan(&plan))
 }
 
@@ -735,7 +741,7 @@ fn apply(
                 .with_context(|| format!("reading {}", path.display()))?;
             let plan: Plan = serde_json::from_str(&text)
                 .with_context(|| format!("parsing plan {}", path.display()))?;
-            summarize_plan(&plan, settings.quiet, settings.verbose);
+            summarize_plan(&plan, settings.quiet, settings.verbose, !dry_run);
             plan
         }
         None => {
@@ -743,7 +749,7 @@ fn apply(
             let request =
                 FetchRequest::new(None).with_limit(limit.unwrap_or(txsync_core::DEFAULT_LIMIT));
             let plan = runner.plan(fetcher.as_ref(), request)?;
-            summarize_plan(&plan, settings.quiet, settings.verbose);
+            summarize_plan(&plan, settings.quiet, settings.verbose, !dry_run);
             plan
         }
     };
@@ -768,7 +774,7 @@ fn sync(
 
     let request = FetchRequest::new(None).with_limit(limit.unwrap_or(txsync_core::DEFAULT_LIMIT));
     let plan = runner.plan(fetcher.as_ref(), request)?;
-    summarize_plan(&plan, settings.quiet, settings.verbose);
+    summarize_plan(&plan, settings.quiet, settings.verbose, !dry_run);
 
     let sink = config.build_sink(&base)?;
     let options = apply_options(&config, dry_run);
@@ -792,7 +798,7 @@ fn diff(
 
     let request = FetchRequest::new(None).with_limit(limit.unwrap_or(txsync_core::DEFAULT_LIMIT));
     let plan = runner.plan(fetcher.as_ref(), request)?;
-    summarize_plan(&plan, true, false);
+    summarize_plan(&plan, true, false, false);
 
     let rows = plan.import_rows();
     if rows.is_empty() {
@@ -1046,6 +1052,9 @@ fn review(settings: &Settings, json: bool) -> Result<i32> {
         }
         println!();
         println!("approve with: txsync approve {}", entries[0].tx_id);
+        println!(
+            "rows are re-checked on every sync: fixing [accounts] or [policy] imports them without approve"
+        );
     }
 
     if entries.is_empty() {
@@ -1153,7 +1162,7 @@ fn parsers(settings: &Settings) -> Result<i32> {
 
 const UNMATCHED_PREVIEW: usize = 10;
 
-fn summarize_plan(plan: &Plan, quiet: bool, verbose: bool) {
+fn summarize_plan(plan: &Plan, quiet: bool, verbose: bool, persisted: bool) {
     eprintln!(
         "fetched {}, parsed {} — import {}, review {}, skip {}, unmatched {}, failed {}",
         plan.stats.fetched,
@@ -1164,6 +1173,13 @@ fn summarize_plan(plan: &Plan, quiet: bool, verbose: bool) {
         plan.stats.unmatched,
         plan.stats.failed,
     );
+
+    if plan.stats.recovered > 0 {
+        eprintln!(
+            "{} row(s) re-checked from the review queue",
+            plan.stats.recovered
+        );
+    }
 
     for error in &plan.stats.errors {
         eprintln!("error: {error}");
@@ -1233,10 +1249,17 @@ fn summarize_plan(plan: &Plan, quiet: bool, verbose: bool) {
         if !quiet {
             eprintln!();
         }
-        eprintln!(
-            "{} row(s) waiting for review; run `txsync review`",
-            plan.stats.review
-        );
+        if persisted {
+            eprintln!(
+                "{} row(s) waiting for review; run `txsync review`",
+                plan.stats.review
+            );
+        } else {
+            eprintln!(
+                "{} row(s) would be held for review; nothing recorded (a real `txsync sync` queues them)",
+                plan.stats.review
+            );
+        }
     }
 
     if !quiet && (!plan.rows.is_empty() || !plan.unmatched.is_empty()) {

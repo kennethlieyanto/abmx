@@ -284,6 +284,47 @@ impl Fetcher for OnceFetcher {
     }
 }
 
+/// Returns its message once, then nothing — the shape of a fetcher whose cursor
+/// has moved past the message.
+struct OnceOnlyFetcher {
+    message: RawMessage,
+    cursor: serde_json::Value,
+    used: Cell<bool>,
+}
+
+impl OnceOnlyFetcher {
+    fn new() -> Self {
+        Self {
+            message: RawMessage::new(
+                "once:1",
+                "once:1",
+                email("one", "Rp 27.500", "Successful").into_bytes(),
+            ),
+            cursor: serde_json::json!({ "history_id": "7" }),
+            used: Cell::new(false),
+        }
+    }
+}
+
+impl Fetcher for OnceOnlyFetcher {
+    fn name(&self) -> &str {
+        "once"
+    }
+
+    fn fetch(&self, _request: FetchRequest<'_>) -> Result<FetchBatch> {
+        let already_used = self.used.replace(true);
+        Ok(FetchBatch {
+            messages: if already_used {
+                Vec::new()
+            } else {
+                vec![self.message.clone()]
+            },
+            next_cursor: Some(self.cursor.clone()),
+            skipped: 0,
+        })
+    }
+}
+
 struct FailingSink {
     fail: Cell<bool>,
 }
@@ -349,6 +390,57 @@ fn unmatched_messages_carry_subject_sender_and_reason() {
     assert_eq!(
         entry.date,
         Some(chrono::NaiveDate::from_ymd_opt(2026, 10, 30).unwrap())
+    );
+}
+
+#[test]
+fn fixing_the_mapping_reimports_queued_rows_without_a_reset() {
+    let fixture = Fixture::new(&[("one", "Rp 27.500", "Successful")]);
+    let fetcher = OnceOnlyFetcher::new();
+    let sink = FileSink::new(fixture.out_path());
+
+    let (parser, _) = txp::Parser::load(&txp::Options {
+        parsers: vec![fixture.dir.path().join("parsers")],
+        router: None,
+    })
+    .unwrap();
+
+    let mut runner = Runner::new(
+        parser,
+        PolicyConfig::default(),
+        AccountMap::new(),
+        State::open_in_memory().unwrap(),
+    );
+
+    // First run: no mapping, so the row is queued and the cursor advances.
+    let plan = runner.plan(&fetcher, FetchRequest::new(None)).unwrap();
+    assert_eq!(plan.stats.review, 1);
+    assert_eq!(plan.stats.import, 0);
+    runner
+        .apply(&sink, &plan, &ApplyOptions::default())
+        .unwrap();
+    assert_eq!(runner.state.review().unwrap().len(), 1);
+
+    // Fix the mapping. The fetcher now returns nothing: the message is behind
+    // the cursor, so only the stored review row can be re-decided.
+    runner.accounts.insert("test-account", "uuid-test");
+
+    let plan = runner.plan(&fetcher, FetchRequest::new(None)).unwrap();
+    assert_eq!(plan.stats.fetched, 0);
+    assert_eq!(plan.stats.recovered, 1);
+    assert_eq!(plan.stats.import, 1);
+    assert_eq!(plan.stats.review, 0);
+
+    runner
+        .apply(&sink, &plan, &ApplyOptions::default())
+        .unwrap();
+    assert!(runner.state.review().unwrap().is_empty());
+    assert_eq!(
+        std::fs::read_to_string(fixture.out_path())
+            .unwrap()
+            .lines()
+            .count(),
+        1
     );
 }
 

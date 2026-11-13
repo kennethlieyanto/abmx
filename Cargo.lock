@@ -1794,6 +1794,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "clap",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",

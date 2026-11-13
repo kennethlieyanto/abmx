@@ -83,6 +83,11 @@ pub struct Stats {
     pub import: usize,
     pub review: usize,
     pub skip: usize,
+    /// Rows re-decided from the review queue rather than freshly fetched.
+    /// Their messages are behind the cursor, so this is how a mapping or
+    /// policy fix takes effect without a reset.
+    #[serde(default)]
+    pub recovered: usize,
     /// Parse-level problems that did not stop the run (an email that claimed to
     /// be a transaction but could not be extracted).
     #[serde(default)]

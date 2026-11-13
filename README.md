@@ -235,9 +235,13 @@ timer nobody reads. Use `txsync review` (exit `3` when non-empty) to detect them
 | account not in `[accounts]` | review | never guess a ledger account |
 | everything else | import | |
 
-Review and skip rows are **not** marked delivered, so changing the policy picks
-them up on the next run. Rows already in the review queue can be imported
-individually with `txsync approve`.
+Review rows are **re-checked on every sync**, even though their messages are
+behind the cursor: the queue stores the transaction, so fixing `[accounts]` or
+`[policy]` imports them on the next run — no reset and no per-row approval.
+`txsync approve` is only for forcing a row the policy still rejects.
+
+`plan` and `--dry-run` do not record the queue (a dry run must not write state),
+so they say "would be held for review" rather than pointing at `txsync review`.
 
 ## Actual Budget specifics
 

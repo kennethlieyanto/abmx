@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 
 use txsync_core::{
-    decide, AccountMap, ApplyOptions, Decision, Error, FetchRequest, Fetcher, ImportRow, Plan,
-    PlannedRow, PolicyConfig, Report, Result, Sink, SourceReport, UnmatchedMessage,
+    decide, AccountMap, ApplyOptions, Decision, Error, FetchRequest, Fetcher, ImportRow,
+    MessageKey, Plan, PlannedRow, PolicyConfig, Report, Result, Sink, SourceReport,
+    UnmatchedMessage,
 };
 
 use crate::state::{ReviewEntry, State};
@@ -159,6 +160,39 @@ impl Runner {
             next_cursor: batch.next_cursor,
         });
 
+        // Re-decide what is already in the review queue. Those messages are
+        // behind the cursor, so they will never be fetched again; the stored
+        // transaction is enough to apply a new mapping or policy. This is what
+        // makes "fix [accounts], run sync again" work without approve.
+        for entry in self.state.review()? {
+            if !seen_transactions.insert(entry.tx_id.clone()) {
+                continue;
+            }
+
+            let decision = decide(&entry.transaction, &self.policy, &self.accounts);
+            let account = decision
+                .is_import()
+                .then(|| self.accounts.get(&entry.transaction.account))
+                .flatten()
+                .map(str::to_owned);
+
+            match &decision {
+                Decision::Import => plan.stats.import += 1,
+                Decision::Review(_) => plan.stats.review += 1,
+                Decision::Skip(_) => plan.stats.skip += 1,
+            }
+            plan.stats.recovered += 1;
+
+            plan.rows.push(PlannedRow {
+                id: entry.tx_id,
+                message: MessageKey::new(entry.message),
+                account_key: entry.transaction.account.clone(),
+                account,
+                decision,
+                transaction: entry.transaction,
+            });
+        }
+
         Ok(plan)
     }
 
@@ -194,8 +228,13 @@ impl Runner {
                         .mark_seen(row.message.as_str(), sink.name(), &row.id, "imported")?;
                     self.state.clear_review(&row.id)?;
                 }
-                // Review and skip rows are deliberately *not* marked seen. They
-                // are decisions, not deliveries: a policy change must be able to
+                // A row that was in the queue and is now skipped is resolved:
+                // drop it so it stops showing up.
+                Decision::Skip(_) => {
+                    self.state.clear_review(&row.id)?;
+                }
+                // Review rows are deliberately *not* marked seen. They are
+                // decisions, not deliveries: a policy change must be able to
                 // pick them up on the next run.
                 Decision::Review(reason) => {
                     self.state.upsert_review(&ReviewEntry {
@@ -206,7 +245,6 @@ impl Runner {
                         created_at: chrono::Utc::now().to_rfc3339(),
                     })?;
                 }
-                Decision::Skip(_) => {}
             }
         }
 

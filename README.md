@@ -14,9 +14,23 @@ Gmail ──► txsync ──► txp (library) ──► policy ──► plan �
 
 ```
 $ txsync sync
-txsync: fetched 3  parsed 3  import 2  review 1  skip 0  unmatched 0  failed 0
-txsync: applied: added 2  updated 0  skipped 0  errors 0
+fetched 15, parsed 12 — import 12, review 0, skip 0, unmatched 3, failed 0
+
+date                 amount account        decision counterparty
+2026-11-12     -128,000 IDR example-account    import   EXAMPLE PAYEE
+2026-11-11     -124,300 IDR example-account    import   EXAMPLE MERCHANT
+...
+
+unmatched (3), no parser claimed them:
+  2026-11-06  "Login with Biometrics Activation Notification"   example@example.invalid
+  2026-11-06  "New Device Accessing myBank"                      example@example.invalid
+  2026-11-06  "Your example ID Password has been changed"           example@example.invalid
+
+applied: added 12, updated 0, skipped 0, errors 0
 ```
+
+`-q` prints only the two summary lines; `-v` adds the parser id and source
+message key to each row.
 
 Nothing is guessed. A transaction the parser was unsure about, an account that
 has no mapping, or a row the bank reported as failed never reaches the ledger —

@@ -39,9 +39,13 @@ struct Cli {
     #[arg(long, global = true, value_name = "FILE")]
     config: Option<PathBuf>,
 
-    /// Print each planned row to stderr.
+    /// Print parser and message ids next to each row.
     #[arg(long, short, global = true)]
     verbose: bool,
+
+    /// Only print the summary, not each row.
+    #[arg(long, short, global = true, conflicts_with = "verbose")]
+    quiet: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -210,7 +214,7 @@ fn main() {
     match run(cli) {
         Ok(code) => std::process::exit(code),
         Err(error) => {
-            eprintln!("txsync: {error:#}");
+            eprintln!("error: {error:#}");
             std::process::exit(EXIT_TOOL);
         }
     }
@@ -221,12 +225,14 @@ fn main() {
 struct Settings {
     config: Option<PathBuf>,
     verbose: bool,
+    quiet: bool,
 }
 
 fn run(cli: Cli) -> Result<i32> {
     let settings = Settings {
         config: cli.config,
         verbose: cli.verbose,
+        quiet: cli.quiet,
     };
 
     match cli.command {
@@ -405,8 +411,8 @@ fn auth_logout(settings: &Settings, no_revoke: bool) -> Result<i32> {
         match revoke_refresh_token(REVOKE_URL, &credentials.refresh_token) {
             Ok(()) => println!("revoked the refresh token with Google"),
             Err(error) => {
-                eprintln!("txsync: warning: could not revoke the token ({error})");
-                eprintln!("txsync: revoke it manually at https://myaccount.google.com/permissions");
+                eprintln!("warning: could not revoke the token ({error})");
+                eprintln!("revoke it manually at https://myaccount.google.com/permissions");
             }
         }
     }
@@ -591,12 +597,12 @@ fn plan(
         Some(path) => {
             std::fs::write(&path, format!("{json}\n"))
                 .with_context(|| format!("writing {}", path.display()))?;
-            eprintln!("txsync: wrote plan to {}", path.display());
+            eprintln!("wrote plan to {}", path.display());
         }
         None => println!("{json}"),
     }
 
-    summarize_plan(&plan, settings.verbose);
+    summarize_plan(&plan, settings.quiet, settings.verbose);
     Ok(exit_for_plan(&plan))
 }
 
@@ -616,7 +622,7 @@ fn apply(
                 .with_context(|| format!("reading {}", path.display()))?;
             let plan: Plan = serde_json::from_str(&text)
                 .with_context(|| format!("parsing plan {}", path.display()))?;
-            summarize_plan(&plan, settings.verbose);
+            summarize_plan(&plan, settings.quiet, settings.verbose);
             plan
         }
         None => {
@@ -624,7 +630,7 @@ fn apply(
             let request =
                 FetchRequest::new(None).with_limit(limit.unwrap_or(txsync_core::DEFAULT_LIMIT));
             let plan = runner.plan(fetcher.as_ref(), request)?;
-            summarize_plan(&plan, settings.verbose);
+            summarize_plan(&plan, settings.quiet, settings.verbose);
             plan
         }
     };
@@ -649,7 +655,7 @@ fn sync(
 
     let request = FetchRequest::new(None).with_limit(limit.unwrap_or(txsync_core::DEFAULT_LIMIT));
     let plan = runner.plan(fetcher.as_ref(), request)?;
-    summarize_plan(&plan, settings.verbose);
+    summarize_plan(&plan, settings.quiet, settings.verbose);
 
     let sink = config.build_sink(&base)?;
     let options = apply_options(&config, dry_run);
@@ -673,11 +679,11 @@ fn diff(
 
     let request = FetchRequest::new(None).with_limit(limit.unwrap_or(txsync_core::DEFAULT_LIMIT));
     let plan = runner.plan(fetcher.as_ref(), request)?;
-    summarize_plan(&plan, false);
+    summarize_plan(&plan, true, false);
 
     let rows = plan.import_rows();
     if rows.is_empty() {
-        eprintln!("txsync: nothing to import, so there is nothing to diff");
+        eprintln!("nothing to import, so there is nothing to diff");
         return Ok(EXIT_OK);
     }
 
@@ -754,10 +760,7 @@ fn diff(
             println!(
                 "{:<10} {:>14} {:<14} {:<30} {}",
                 row.transaction.occurred_on,
-                format!(
-                    "{} {}",
-                    row.transaction.amount_decimal, row.transaction.amount.currency
-                ),
+                format_amount(&row.transaction),
                 row.transaction.account,
                 truncate(row.transaction.counterparty.as_deref().unwrap_or("-"), 30),
                 ledger_label(decision, &row.tx_id),
@@ -766,7 +769,7 @@ fn diff(
     }
 
     eprintln!(
-        "txsync: window {since}..{until}: {} planned, {} new, {} match existing, {} with a foreign imported_id",
+        "window {since}..{until}: {} planned, {} new, {} match existing, {} with a foreign imported_id",
         entries.len(),
         entries.len() - matched,
         matched,
@@ -775,7 +778,7 @@ fn diff(
 
     if foreign > 0 {
         eprintln!(
-            "txsync: a foreign imported_id means the ledger already has this row from another \
+            "warning: a foreign imported_id means the ledger already has this row from another \
              importer; expect a duplicate rather than a reconcile"
         );
         Ok(EXIT_REVIEW)
@@ -1035,9 +1038,11 @@ fn parsers(settings: &Settings) -> Result<i32> {
 
 // ---------------------------------------------------------------- output
 
-fn summarize_plan(plan: &Plan, verbose: bool) {
+const UNMATCHED_PREVIEW: usize = 10;
+
+fn summarize_plan(plan: &Plan, quiet: bool, verbose: bool) {
     eprintln!(
-        "txsync: fetched {}  parsed {}  import {}  review {}  skip {}  unmatched {}  failed {}",
+        "fetched {}, parsed {} — import {}, review {}, skip {}, unmatched {}, failed {}",
         plan.stats.fetched,
         plan.stats.parsed,
         plan.stats.import,
@@ -1047,33 +1052,82 @@ fn summarize_plan(plan: &Plan, verbose: bool) {
         plan.stats.failed,
     );
 
-    for warning in &plan.stats.warnings {
-        eprintln!("txsync: unmatched: {warning}");
-    }
     for error in &plan.stats.errors {
-        eprintln!("txsync: failed: {error}");
+        eprintln!("error: {error}");
+    }
+
+    if !quiet && !plan.rows.is_empty() {
+        eprintln!();
+        eprintln!(
+            "{:<10} {:>16} {:<14} {:<8} counterparty",
+            "date", "amount", "account", "decision"
+        );
+        for row in &plan.rows {
+            let transaction = &row.transaction;
+            let mut line = format!(
+                "{:<10} {:>16} {:<14} {:<8} {}",
+                transaction.occurred_on,
+                format_amount(transaction),
+                row.account_key,
+                decision_label(&row.decision),
+                truncate(transaction.counterparty.as_deref().unwrap_or("-"), 40),
+            );
+            if verbose {
+                line.push_str(&format!("  · {} · {}", transaction.parser, row.message));
+            }
+            eprintln!("{line}");
+        }
+    }
+
+    if !quiet && !plan.unmatched.is_empty() {
+        eprintln!();
+        eprintln!(
+            "unmatched ({}), no parser claimed them:",
+            plan.unmatched.len()
+        );
+        for (index, entry) in plan.unmatched.iter().enumerate() {
+            if index == UNMATCHED_PREVIEW {
+                eprintln!(
+                    "  … and {} more (see `txsync plan --out`)",
+                    plan.unmatched.len() - UNMATCHED_PREVIEW
+                );
+                break;
+            }
+
+            let date = entry
+                .date
+                .map(|date| date.to_string())
+                .unwrap_or_else(|| "----------".to_owned());
+            let subject = entry
+                .subject
+                .as_deref()
+                .map(|subject| format!("\"{}\"", truncate(subject, 50)))
+                .unwrap_or_else(|| "(no subject)".to_owned());
+            let from = entry.from.as_deref().unwrap_or("-");
+
+            eprintln!("  {date}  {subject:<54} {from}");
+            if verbose {
+                eprintln!(
+                    "             {} · {}",
+                    entry.message,
+                    entry.code.as_deref().unwrap_or(&entry.reason)
+                );
+            }
+        }
     }
 
     if plan.stats.review > 0 {
+        if !quiet {
+            eprintln!();
+        }
         eprintln!(
-            "txsync: {} row(s) waiting for review; run `txsync review`",
+            "{} row(s) waiting for review; run `txsync review`",
             plan.stats.review
         );
     }
 
-    if verbose {
-        for row in &plan.rows {
-            let transaction = &row.transaction;
-            eprintln!(
-                "txsync:   {:<10} {:<12} {:>14} {:<4} {:<10} {}",
-                decision_label(&row.decision),
-                row.account_key,
-                transaction.amount_decimal,
-                transaction.amount.currency,
-                transaction.occurred_on,
-                transaction.counterparty.as_deref().unwrap_or("-"),
-            );
-        }
+    if !quiet && (!plan.rows.is_empty() || !plan.unmatched.is_empty()) {
+        eprintln!();
     }
 }
 
@@ -1085,10 +1139,37 @@ fn decision_label(decision: &txsync_core::Decision) -> &'static str {
     }
 }
 
+/// Group the integer part for readability. Display only: `amount_decimal`
+/// stays exact and `amount_minor` stays authoritative.
+fn format_amount(transaction: &txsync_core::Transaction) -> String {
+    let raw = transaction.amount_decimal.as_str();
+    let (sign, rest) = match raw.strip_prefix('-') {
+        Some(rest) => ("-", rest),
+        None => ("", raw),
+    };
+    let (integer, fraction) = match rest.split_once('.') {
+        Some((integer, fraction)) => (integer, Some(fraction)),
+        None => (rest, None),
+    };
+
+    let mut grouped = String::with_capacity(integer.len() + integer.len() / 3);
+    for (index, digit) in integer.chars().enumerate() {
+        if index > 0 && (integer.len() - index) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+
+    match fraction {
+        Some(fraction) => format!("{sign}{grouped}.{fraction} {}", transaction.amount.currency),
+        None => format!("{sign}{grouped} {}", transaction.amount.currency),
+    }
+}
+
 fn summarize_report(report: &Report) {
-    let prefix = if report.dry_run { "dry-run" } else { "applied" };
+    let prefix = if report.dry_run { "dry run" } else { "applied" };
     eprintln!(
-        "txsync: {prefix}: added {}  updated {}  skipped {}  errors {}",
+        "{prefix}: added {}, updated {}, skipped {}, errors {}",
         report.added,
         report.updated,
         report.skipped.len(),
@@ -1097,14 +1178,14 @@ fn summarize_report(report: &Report) {
 
     for skipped in &report.skipped {
         eprintln!(
-            "txsync: skipped: {}: {}",
+            "skipped: {}: {}",
             skipped.tx_id.as_deref().unwrap_or("(batch)"),
             skipped.message
         );
     }
     for error in &report.errors {
         eprintln!(
-            "txsync: error: {}: {}",
+            "error: {}: {}",
             error.tx_id.as_deref().unwrap_or("(batch)"),
             error.message
         );

@@ -8,7 +8,7 @@ use crate::sink::ImportRow;
 use crate::TXP_SCHEMA_VERSION;
 
 /// Version of the plan document. Bumped when the shape changes incompatibly.
-pub const PLAN_VERSION: u32 = 1;
+pub const PLAN_VERSION: u32 = 2;
 
 /// The inspectable artifact between deciding and writing.
 ///
@@ -25,6 +25,10 @@ pub struct Plan {
     #[serde(default)]
     pub sources: Vec<SourceReport>,
     pub rows: Vec<PlannedRow>,
+    /// Messages the fetcher returned that no parser claimed. Structured so the
+    /// CLI can say *what* was skipped, and so `plan --out` carries it.
+    #[serde(default)]
+    pub unmatched: Vec<UnmatchedMessage>,
     pub stats: Stats,
 }
 
@@ -36,6 +40,22 @@ pub struct SourceReport {
     /// Persist this only after the batch applies cleanly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnmatchedMessage {
+    pub message: MessageKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<chrono::NaiveDate>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// Human-readable explanation, e.g. "no parser matched the sender or subject".
+    pub reason: String,
+    /// The raw router code (`no_match`, `disabled`, …), for debugging.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,10 +87,6 @@ pub struct Stats {
     /// be a transaction but could not be extracted).
     #[serde(default)]
     pub errors: Vec<String>,
-    /// Messages that parsed but were not claimed by any parser. Usually a
-    /// corpus gap rather than a failure.
-    #[serde(default)]
-    pub warnings: Vec<String>,
 }
 
 impl Plan {
@@ -81,6 +97,7 @@ impl Plan {
             generated_at: Utc::now(),
             sources: Vec::new(),
             rows: Vec::new(),
+            unmatched: Vec::new(),
             stats: Stats::default(),
         }
     }

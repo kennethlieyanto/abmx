@@ -317,6 +317,42 @@ impl Sink for FailingSink {
 }
 
 #[test]
+fn unmatched_messages_carry_subject_sender_and_reason() {
+    let fixture = Fixture::new(&[("one", "Rp 27.500", "Successful")]);
+    std::fs::write(
+        fixture.mail_dir().join("promo.eml"),
+        "From: alerts@bank.example\r\n\
+         To: me@example.invalid\r\n\
+         Subject: Promo 20% cashback\r\n\
+         Date: Thu, 30 Oct 2026 10:00:00 +0700\r\n\
+         Message-ID: <promo@example.invalid>\r\n\
+         Content-Type: text/plain; charset=utf-8\r\n\
+         \r\n\
+         Not a transaction.\r\n",
+    )
+    .unwrap();
+
+    let runner = fixture.runner();
+    let plan = runner
+        .plan(
+            &DirFetcher::new(fixture.mail_dir()),
+            FetchRequest::new(None),
+        )
+        .unwrap();
+
+    assert_eq!(plan.stats.unmatched, 1);
+    let entry = &plan.unmatched[0];
+    assert_eq!(entry.subject.as_deref(), Some("Promo 20% cashback"));
+    assert_eq!(entry.from.as_deref(), Some("alerts@bank.example"));
+    assert_eq!(entry.reason, "no parser matched the sender or subject");
+    assert_eq!(entry.code.as_deref(), Some("no_match"));
+    assert_eq!(
+        entry.date,
+        Some(chrono::NaiveDate::from_ymd_opt(2026, 10, 30).unwrap())
+    );
+}
+
+#[test]
 fn diff_sees_rows_the_file_sink_already_has() {
     let fixture = Fixture::new(&[("one", "Rp 27.500", "Successful")]);
     let runner = fixture.runner();

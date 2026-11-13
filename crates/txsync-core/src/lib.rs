@@ -25,7 +25,7 @@ pub use diff::{classify, LedgerMatch, LedgerRow};
 pub use error::{Error, Result};
 pub use fetcher::{FetchBatch, FetchRequest, Fetcher, MessageKey, RawMessage, DEFAULT_LIMIT};
 pub use money::cents;
-pub use plan::{Plan, PlannedRow, SourceReport, Stats, PLAN_VERSION};
+pub use plan::{Plan, PlannedRow, SourceReport, Stats, UnmatchedMessage, PLAN_VERSION};
 pub use policy::{
     decide, AccountMap, Decision, FailedPolicy, HeuristicPolicy, PolicyConfig, ReviewReason,
     SkipReason,

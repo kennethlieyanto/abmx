@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use txsync_core::{
     decide, AccountMap, ApplyOptions, Decision, Error, FetchRequest, Fetcher, ImportRow, Plan,
-    PlannedRow, PolicyConfig, Report, Result, Sink, SourceReport,
+    PlannedRow, PolicyConfig, Report, Result, Sink, SourceReport, UnmatchedMessage,
 };
 
 use crate::state::{ReviewEntry, State};
@@ -11,6 +11,25 @@ use crate::state::{ReviewEntry, State};
 ///
 /// `plan` reads state but never writes it; `apply` is the only writer. That split
 /// is what makes `--dry-run` free and plans replayable.
+/// Turn the router's raw reason (`unmatched (no_match)`) into something a human
+/// can act on, keeping the code for `-v` and the plan JSON.
+fn unmatched_parts(raw: &str) -> (String, Option<String>) {
+    let code = raw
+        .split_once('(')
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(code, _)| code.trim().to_owned());
+
+    let reason = match code.as_deref() {
+        Some("no_match") => "no parser matched the sender or subject".to_owned(),
+        Some("disabled") => "the matching parser is disabled".to_owned(),
+        Some("rejected") => "a parser matched but its guards rejected it".to_owned(),
+        Some(other) => other.to_owned(),
+        None => raw.to_owned(),
+    };
+
+    (reason, code)
+}
+
 pub struct Runner {
     pub parser: txp::Parser,
     pub policy: PolicyConfig,
@@ -99,11 +118,26 @@ impl Runner {
                 }
                 Ok(txp::Outcome::Unmatched(reason)) => {
                     plan.stats.unmatched += 1;
-                    // A parser-corpus gap, not a delivery failure: the mailbox
-                    // query should already have excluded unrelated mail.
-                    plan.stats
-                        .warnings
-                        .push(format!("{}: {reason}", message.key));
+                    // A parser-corpus gap, not a delivery failure. Re-read the
+                    // headers so the report can say which message it was; the
+                    // router only returns a code.
+                    let details = txp::parse_eml(&message.bytes, Some(message.origin.clone())).ok();
+                    let (reason, code) = unmatched_parts(&reason);
+
+                    plan.unmatched.push(UnmatchedMessage {
+                        message: message.key.clone(),
+                        date: details.as_ref().map(|email| email.date.date_naive()),
+                        subject: details
+                            .as_ref()
+                            .map(|email| email.subject.clone())
+                            .filter(|subject| !subject.is_empty()),
+                        from: details
+                            .as_ref()
+                            .map(|email| email.from.email.clone())
+                            .filter(|from| !from.is_empty()),
+                        reason,
+                        code,
+                    });
                 }
                 Ok(txp::Outcome::Failed { parser, error }) => {
                     plan.stats.failed += 1;

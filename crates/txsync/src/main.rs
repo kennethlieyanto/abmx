@@ -133,15 +133,16 @@ enum Command {
 
     /// Forget the local state so the next sync re-fetches everything.
     ///
-    /// The ledger is not touched. Rows deleted in the ledger come back on the
-    /// next sync, because it is a projection of the mailbox.
+    /// No ledger is modified. Rows deleted in a ledger come back on the next
+    /// sync, because the ledger is a projection of the mailbox.
     Reset {
         /// Also clear the review queue.
         #[arg(long)]
         review: bool,
         /// Delete the state database entirely, including the schema marker.
+        /// Implies --review.
         #[arg(long)]
-        all: bool,
+        purge: bool,
         /// Skip the confirmation prompt.
         #[arg(long)]
         yes: bool,
@@ -262,7 +263,7 @@ fn run(cli: Cli) -> Result<i32> {
             json,
             limit,
         } => diff(&settings, from_dir, since, until, json, limit),
-        Command::Reset { review, all, yes } => reset(&settings, review, all, yes),
+        Command::Reset { review, purge, yes } => reset(&settings, review, purge, yes),
         Command::Review { json } => review(&settings, json),
         Command::Approve { ids, dry_run } => approve(&settings, &ids, dry_run),
         Command::Accounts { json } => accounts(&settings, json),
@@ -813,16 +814,21 @@ fn truncate(value: &str, limit: usize) -> String {
     format!("{shortened}…")
 }
 
-fn reset(settings: &Settings, review: bool, all: bool, yes: bool) -> Result<i32> {
+fn reset(settings: &Settings, review: bool, purge: bool, yes: bool) -> Result<i32> {
     let (config, base, _) = load_config(settings)?;
     let path = config.state_path(&base);
 
-    if all {
+    if purge {
         if !path.exists() {
-            println!("no state at {}", path.display());
+            println!("no local state at {}", path.display());
             return Ok(EXIT_OK);
         }
-        if !yes && !confirm(&format!("delete {} entirely?", path.display()))? {
+        let question = format!(
+            "This removes the local state database only. No ledger is modified.\n\
+             delete {} entirely?",
+            path.display()
+        );
+        if !yes && !confirm(&question)? {
             println!("aborted");
             return Ok(EXIT_OK);
         }
@@ -837,6 +843,7 @@ fn reset(settings: &Settings, review: bool, all: bool, yes: bool) -> Result<i32>
             }
         }
         println!("removed {}", path.display());
+        println!("No ledger was modified.");
         return Ok(EXIT_OK);
     }
 
@@ -844,7 +851,7 @@ fn reset(settings: &Settings, review: bool, all: bool, yes: bool) -> Result<i32>
     let (cursors, messages, reviews) = state.counts()?;
 
     if cursors == 0 && messages == 0 && (!review || reviews == 0) {
-        println!("state is already empty");
+        println!("local state is already empty");
         return Ok(EXIT_OK);
     }
 
@@ -853,7 +860,9 @@ fn reset(settings: &Settings, review: bool, all: bool, yes: bool) -> Result<i32>
         what.push_str(&format!(" and {reviews} review row(s)"));
     }
 
-    if !yes && !confirm(&format!("clear {what}?"))? {
+    let question =
+        format!("This clears txsync's local state only. No ledger is modified.\nclear {what}?");
+    if !yes && !confirm(&question)? {
         println!("aborted");
         return Ok(EXIT_OK);
     }
@@ -865,7 +874,8 @@ fn reset(settings: &Settings, review: bool, all: bool, yes: bool) -> Result<i32>
 
     println!("cleared {what}");
     println!(
-        "next `txsync sync` re-fetches and re-applies; rows deleted in the ledger are re-imported"
+        "No ledger was modified. The next `txsync sync` re-fetches and re-applies; \
+         rows deleted in a ledger are re-imported."
     );
 
     Ok(EXIT_OK)

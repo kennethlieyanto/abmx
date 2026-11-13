@@ -179,7 +179,7 @@ txsync apply [--plan FILE] [--dry-run]
 txsync sync [--dry-run]               plan + apply; the timer entrypoint
 txsync diff [--json] [--since D] [--until D]
                                       compare the plan against what the ledger already holds
-txsync reset [--review] [--all] [--yes]
+txsync reset [--review] [--purge] [--yes]
                                       forget cursors and delivered messages
 txsync review [--json]                rows waiting for a human
 txsync approve <id>… [--dry-run]      import reviewed rows

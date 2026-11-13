@@ -89,6 +89,56 @@ Then put `txsync sync` on a timer (see the NixOS module below).
    From a checkout: `cp .env.example .env`, fill in the Actual password and API
    key, then `just actual-api`. See [docs/actual.md](docs/actual.md).
 
+## Authoring a parser with an AI
+
+`txsync` does not write bank templates — that is `txp`'s corpus. What it can do
+is package the evidence: normalized block dumps, cross-sample variance, the
+current corpus, and the spec contract into one prompt an agent can act on.
+
+```bash
+txsync generate prompt parser \
+  --input ./eml-dir \
+  --out ./parser-prompt.md
+
+opencode --prompt="$(cat ./parser-prompt.md)"
+```
+
+The prompt is self-contained, so it works for a one-shot agent. For interactive
+work, install the reusable skills instead:
+
+```bash
+txsync generate skill parser --global   # ~/.config/opencode/skills
+txsync generate skill parser --out .opencode/skills
+```
+
+The agent can inspect one message with `txsync dump <file.eml>` and validate a
+candidate spec against saved samples:
+
+```bash
+txsync verify parser ./drafts/my.bank.toml --input ./eml-dir
+```
+
+`verify` never touches the live corpus. A spec is only done when every sample is
+`strict`; `heuristic` means the amount is zero or a field is missing, and
+`unmatched` means the routing is wrong. The agent writes drafts first and asks
+before copying anything into `[general].parsers` or changing `[accounts]`.
+
+### Sampling from Gmail labels
+
+If you have labelled a set of emails that share a structure, let txsync fetch the
+samples:
+
+```bash
+txsync generate prompt parser \
+  --from-gmail-label 'example/QRIS,example/Transfer' \
+  --id-from label \
+  --out ./parser-prompt.md
+```
+
+Samples are written under the state directory with `0600` files. The label is a
+hint that the samples share one template; the prompt still asks the agent to
+split them if the block shapes disagree. See [docs/authoring.md](docs/authoring.md).
+
 ## The four primitives
 
 | Primitive | Responsibility | Ships with |
@@ -199,6 +249,11 @@ txsync review [--json]                rows waiting for a human
 txsync approve <id>… [--dry-run]      import reviewed rows
 txsync accounts [--json]              sink accounts and how [accounts] maps onto them
 txsync parsers                        loaded txp parsers and the senders they claim
+txsync dump <path> [--json]           normalized block dump (authoring aid)
+txsync verify parser <spec> --input DIR [--json]
+                                      check a candidate parser against samples
+txsync generate prompt parser …       prompt an AI to author a parser
+txsync generate skill parser …        write the OpenCode authoring skills
 ```
 
 **stdout is data, stderr is diagnostics.** `txsync plan` writes the plan JSON to

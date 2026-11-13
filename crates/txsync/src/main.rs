@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use txsync::authoring::{self, prompt::IdFrom, PromptContext};
 use txsync::config::{Config, INIT_TEMPLATE};
 use txsync::fetchers::DirFetcher;
 use txsync::paths;
@@ -177,6 +178,124 @@ enum Command {
 
     /// Show the loaded txp parsers and the senders they claim.
     Parsers,
+
+    /// Generate AI authoring artifacts: a parser prompt or reusable skills.
+    Generate {
+        #[command(subcommand)]
+        command: GenerateCommand,
+    },
+
+    /// Verify a candidate parser spec against a directory of `.eml` samples.
+    Verify {
+        #[command(subcommand)]
+        command: VerifyCommand,
+    },
+
+    /// Print the normalized block list of an email (an authoring aid).
+    Dump {
+        /// A `.eml` file or a directory of them.
+        path: PathBuf,
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum GenerateCommand {
+    /// Generate a prompt for an AI agent.
+    Prompt {
+        #[command(subcommand)]
+        command: PromptCommand,
+    },
+
+    /// Write reusable OpenCode skills.
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum PromptCommand {
+    /// Generate a prompt that asks an agent to author txp parser specs.
+    Parser(PromptParserArgs),
+}
+
+#[derive(Subcommand)]
+enum SkillCommand {
+    /// Write `txp-parser-authoring` and `txsync-parser-install`.
+    Parser(SkillParserArgs),
+}
+
+#[derive(Subcommand)]
+enum VerifyCommand {
+    /// Verify one candidate spec against a file or directory of samples.
+    Parser {
+        /// The candidate TOML file.
+        spec: PathBuf,
+        /// Samples to parse: a `.eml` file or a directory.
+        #[arg(long, value_name = "DIR|FILE")]
+        input: PathBuf,
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(clap::Args)]
+struct PromptParserArgs {
+    /// Directory or `.eml` file with samples. `-` reads one message from stdin.
+    #[arg(long, visible_alias = "from-dir", value_name = "DIR|FILE")]
+    input: Option<PathBuf>,
+
+    /// Sample from one or more Gmail labels. Repeat or comma-separate.
+    #[arg(
+        long = "from-gmail-label",
+        value_name = "LABEL",
+        value_delimiter = ',',
+        action = clap::ArgAction::Append
+    )]
+    from_gmail_label: Vec<String>,
+
+    /// Where Gmail samples are written. Defaults to the state directory.
+    #[arg(long, value_name = "DIR")]
+    samples_dir: Option<PathBuf>,
+
+    /// Explicit parser id. Only valid for a single template.
+    #[arg(long, value_name = "ID")]
+    id: Option<String>,
+
+    /// How to derive parser ids from Gmail labels.
+    #[arg(long = "id-from", value_enum, default_value_t = IdFrom::Infer)]
+    id_from: IdFrom,
+
+    /// Prompt destination: a file, or a directory for `parser-prompt.md`.
+    #[arg(long, visible_alias = "output", value_name = "FILE|DIR")]
+    out: Option<PathBuf>,
+
+    /// Directory the agent should install verified specs into.
+    #[arg(long, value_name = "DIR")]
+    corpus: Option<PathBuf>,
+
+    /// Maximum samples per label/group.
+    #[arg(long, value_name = "N", default_value_t = 8)]
+    max_samples: usize,
+}
+
+#[derive(clap::Args)]
+struct SkillParserArgs {
+    /// Destination directory. Defaults to `./.opencode/skills`.
+    #[arg(long, value_name = "DIR")]
+    out: Option<PathBuf>,
+
+    /// Install into `$XDG_CONFIG_HOME/opencode/skills` instead.
+    #[arg(long)]
+    global: bool,
+
+    /// Overwrite generated files that were edited locally.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Subcommand)]
@@ -280,6 +399,18 @@ fn run(cli: Cli) -> Result<i32> {
         Command::Approve { ids, dry_run } => approve(&settings, &ids, dry_run),
         Command::Accounts { json } => accounts(&settings, json),
         Command::Parsers => parsers(&settings),
+        Command::Generate { command } => match command {
+            GenerateCommand::Prompt { command } => match command {
+                PromptCommand::Parser(args) => generate_prompt_parser(&settings, args),
+            },
+            GenerateCommand::Skill { command } => match command {
+                SkillCommand::Parser(args) => generate_skill_parser(args),
+            },
+        },
+        Command::Verify { command } => match command {
+            VerifyCommand::Parser { spec, input, json } => verify_parser(&spec, &input, json),
+        },
+        Command::Dump { path, json } => dump(&path, json),
     }
 }
 
@@ -1155,6 +1286,445 @@ fn parsers(settings: &Settings) -> Result<i32> {
         println!("  {sender}");
     }
 
+    Ok(EXIT_OK)
+}
+
+// ---------------------------------------------------------------- authoring
+
+/// Load a config if one exists. Prompt generation must work in a scratch
+/// directory with no config, but an explicit `--config` or `$TXSYNC_CONFIG`
+/// that points at a broken file must still fail loudly.
+fn load_optional_config(settings: &Settings) -> Result<(Option<Config>, Option<PathBuf>, PathBuf)> {
+    if let Some(path) = &settings.config {
+        let config = Config::load(path)?;
+        return Ok((Some(config), Some(path.clone()), Config::base_dir(path)));
+    }
+
+    match paths::config_path(None) {
+        Ok(path) => {
+            let config = Config::load(&path)?;
+            let base = Config::base_dir(&path);
+            Ok((Some(config), Some(path), base))
+        }
+        Err(error) => {
+            if std::env::var_os("TXSYNC_CONFIG").is_some() {
+                Err(error)
+            } else {
+                Ok((None, None, std::env::current_dir()?))
+            }
+        }
+    }
+}
+
+fn generate_prompt_parser(settings: &Settings, args: PromptParserArgs) -> Result<i32> {
+    let has_input = args.input.is_some();
+    let has_labels = !args.from_gmail_label.is_empty();
+    if has_input == has_labels {
+        bail!("pass exactly one of --input or --from-gmail-label");
+    }
+    if has_labels && args.from_gmail_label.len() > 1 && args.id.is_some() {
+        bail!("--id names one parser; omit it when sampling several labels");
+    }
+    if has_input && args.id_from == IdFrom::Label {
+        eprintln!("warning: --id-from only applies to --from-gmail-label; ignoring");
+    }
+    if has_input && args.samples_dir.is_some() {
+        eprintln!("warning: --samples-dir only applies to --from-gmail-label; ignoring");
+    }
+
+    let (config, config_path, base) = load_optional_config(settings)?;
+    let cwd = std::env::current_dir().context("resolving the working directory")?;
+
+    let (set, input_hint) = if let Some(input) = &args.input {
+        let input = paths::resolve_path(&cwd, input);
+        (
+            authoring::samples::load_path(&input, args.max_samples)?,
+            Some(input),
+        )
+    } else {
+        let (set, dir) = sample_gmail_labels(
+            &config,
+            &base,
+            &args.from_gmail_label,
+            args.samples_dir.as_deref(),
+            args.max_samples,
+            &cwd,
+        )?;
+        (set, Some(dir))
+    };
+
+    if has_labels {
+        if let Some(path) = &input_hint {
+            eprintln!(
+                "warning: wrote raw Gmail samples to {}; the prompt contains real transaction data",
+                path.display()
+            );
+        }
+    }
+
+    if set.is_empty() {
+        bail!("no samples found; check --input or --from-gmail-label");
+    }
+
+    let options = config
+        .as_ref()
+        .map(|config| config.txp_options(&base))
+        .unwrap_or_default();
+    let discovery = txp::discover(&options);
+    let corpus_explicit = args.corpus.is_some();
+    let corpus = match args.corpus {
+        Some(path) => paths::resolve_path(&cwd, &path),
+        None => discovery
+            .dirs
+            .first()
+            .cloned()
+            .unwrap_or_else(|| paths::xdg_config_dir().join("txp/parsers")),
+    };
+
+    let parser = match txp::Parser::load(&options) {
+        Ok((parser, _)) => Some(parser),
+        Err(error) => {
+            if config.is_some() || corpus_explicit {
+                eprintln!("warning: could not load the configured parser corpus: {error}");
+            }
+            None
+        }
+    };
+    let summaries = parser
+        .as_ref()
+        .map(|parser| parser.registry().summaries())
+        .unwrap_or_default();
+    let accounts = config
+        .as_ref()
+        .map(|config| config.accounts.clone())
+        .unwrap_or_default();
+
+    let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let draft_dir = paths::xdg_state_dir().join("txsync/drafts").join(timestamp);
+    if let Err(error) = std::fs::create_dir_all(&draft_dir) {
+        eprintln!(
+            "warning: could not create the draft directory {}: {error}",
+            draft_dir.display()
+        );
+    } else if let Err(error) = restrict_permissions(&draft_dir, 0o700) {
+        eprintln!("warning: {error}");
+    }
+
+    let context = PromptContext {
+        config_path,
+        corpus,
+        draft_dir,
+        input: input_hint,
+        explicit_id: args.id,
+        id_from: args.id_from,
+        from_gmail: has_labels,
+        summaries,
+        accounts,
+        parser,
+    };
+
+    let prompt = authoring::render_prompt(&set, &context);
+
+    match args.out {
+        Some(path) => {
+            let path = paths::resolve_path(&cwd, &path);
+            let file = write_prompt(&path, &prompt)?;
+            eprintln!("wrote {}", file.display());
+        }
+        None => print!("{prompt}"),
+    }
+
+    for failure in &set.failures {
+        eprintln!("sample failed: {}", failure.error);
+    }
+    if set.truncated > 0 {
+        eprintln!("{} sample(s) omitted by --max-samples", set.truncated);
+    }
+    eprintln!(
+        "{} sample(s) in {} group(s)",
+        set.sample_count(),
+        set.groups.len()
+    );
+
+    Ok(if set.failures.is_empty() {
+        EXIT_OK
+    } else {
+        EXIT_FAILED
+    })
+}
+
+fn sample_gmail_labels(
+    config: &Option<Config>,
+    base: &Path,
+    labels: &[String],
+    dir: Option<&Path>,
+    max_samples: usize,
+    cwd: &Path,
+) -> Result<(authoring::SampleSet, PathBuf)> {
+    let config = config.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Gmail sampling needs a config with [fetch.gmail]; run `txsync init` or pass --config"
+        )
+    })?;
+    let fetcher = config.build_gmail(base, &[])?;
+
+    let dir = dir
+        .map(|path| paths::resolve_path(cwd, path))
+        .unwrap_or_else(|| {
+            paths::xdg_state_dir()
+                .join("txsync/samples")
+                .join(chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string())
+        });
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    restrict_permissions(&dir, 0o700)?;
+
+    let mut set = authoring::SampleSet::default();
+    let mut seen = BTreeSet::new();
+
+    for label in labels {
+        let slug = {
+            let slug = authoring::samples::slug(label);
+            if slug.is_empty() {
+                "samples".to_owned()
+            } else {
+                slug
+            }
+        };
+        let label_dir = dir.join(slug);
+        std::fs::create_dir_all(&label_dir)
+            .with_context(|| format!("creating {}", label_dir.display()))?;
+        restrict_permissions(&label_dir, 0o700)?;
+
+        let messages = fetcher
+            .client()
+            .sample_label(label, max_samples)
+            .map_err(|error| anyhow::anyhow!("sampling Gmail label `{label}`: {error}"))?;
+
+        if messages.is_empty() {
+            eprintln!("warning: no messages found for Gmail label `{label}`");
+            continue;
+        }
+
+        let mut group = authoring::SampleGroup {
+            label: Some(label.clone()),
+            samples: Vec::new(),
+        };
+
+        for message in messages {
+            if !seen.insert(message.id.clone()) {
+                continue;
+            }
+
+            let path = label_dir.join(format!("{}.eml", message.id));
+            std::fs::write(&path, &message.bytes)
+                .with_context(|| format!("writing {}", path.display()))?;
+            restrict_permissions(&path, 0o600)?;
+
+            match authoring::samples::sample_from_bytes(path.display().to_string(), &message.bytes)
+            {
+                Ok(sample) => group.samples.push(sample),
+                Err(error) => set.failures.push(authoring::SampleFailure {
+                    origin: path.display().to_string(),
+                    error,
+                }),
+            }
+        }
+
+        if !group.samples.is_empty() {
+            set.groups.push(group);
+        }
+    }
+
+    Ok((set, dir))
+}
+
+#[cfg(unix)]
+fn restrict_permissions(path: &Path, mode: u32) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let permissions = std::fs::Permissions::from_mode(mode);
+    std::fs::set_permissions(path, permissions)
+        .with_context(|| format!("setting permissions on {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn restrict_permissions(_path: &Path, _mode: u32) -> Result<()> {
+    Ok(())
+}
+
+fn write_prompt(path: &Path, content: &str) -> Result<PathBuf> {
+    // A path with no extension is treated as a directory, which also supports
+    // the `--out ./bundle` form without requiring a second flag.
+    let is_dir = path.is_dir() || path.extension().is_none();
+    let file = if is_dir {
+        std::fs::create_dir_all(path).with_context(|| format!("creating {}", path.display()))?;
+        path.join("parser-prompt.md")
+    } else {
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("creating {}", parent.display()))?;
+            }
+        }
+        path.to_path_buf()
+    };
+
+    std::fs::write(&file, content).with_context(|| format!("writing {}", file.display()))?;
+    Ok(file)
+}
+
+fn generate_skill_parser(args: SkillParserArgs) -> Result<i32> {
+    if args.global && args.out.is_some() {
+        bail!("--global and --out conflict");
+    }
+
+    let cwd = std::env::current_dir().context("resolving the working directory")?;
+    let out = if args.global {
+        paths::xdg_config_dir().join("opencode/skills")
+    } else {
+        paths::resolve_path(
+            &cwd,
+            args.out
+                .as_deref()
+                .unwrap_or_else(|| Path::new(".opencode/skills")),
+        )
+    };
+
+    let written = authoring::skill::write_skills(&out, args.force)?;
+    for path in &written {
+        println!("{}", path.display());
+    }
+    eprintln!(
+        "wrote {} file(s) under {}; OpenCode discovers skills automatically",
+        written.len(),
+        out.display()
+    );
+
+    Ok(EXIT_OK)
+}
+
+fn verify_parser(spec: &Path, input: &Path, json: bool) -> Result<i32> {
+    let report = authoring::verify::verify(spec, input)?;
+
+    if let Some(stem) = spec.file_stem().and_then(|stem| stem.to_str()) {
+        if stem != report.spec_id {
+            eprintln!(
+                "note: file stem `{stem}` differs from the spec id `{}`; install it as `{}.toml`",
+                report.spec_id, report.spec_id
+            );
+        }
+    }
+
+    if json {
+        let samples: Vec<serde_json::Value> = report
+            .samples
+            .iter()
+            .map(|sample| {
+                let mut row = serde_json::json!({
+                    "file": sample.file.display().to_string(),
+                    "status": sample.outcome.label(),
+                });
+                match &sample.outcome {
+                    authoring::VerifyOutcome::Strict(transaction)
+                    | authoring::VerifyOutcome::Heuristic(transaction) => {
+                        row["transaction"] = serde_json::to_value(transaction)?;
+                        if !transaction.warnings.is_empty() {
+                            row["warnings"] = serde_json::json!(transaction.warnings);
+                        }
+                    }
+                    authoring::VerifyOutcome::Unmatched(reason) => {
+                        row["reason"] = serde_json::json!(reason);
+                    }
+                    authoring::VerifyOutcome::Failed { parser, error } => {
+                        row["parser"] = serde_json::json!(parser);
+                        row["error"] = serde_json::json!(error);
+                    }
+                }
+                Ok(row)
+            })
+            .collect::<Result<_>>()?;
+
+        let report = serde_json::json!({
+            "spec": report.spec_id,
+            "samples": samples,
+            "summary": {
+                "total": report.samples.len(),
+                "strict": report.strict(),
+                "heuristic": report.heuristic(),
+                "failures": report.failures(),
+            },
+        });
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "{:<10} {:<24} {:<12} {:>15} {:<12} counterparty",
+            "status", "file", "date", "amount", "kind"
+        );
+        for sample in &report.samples {
+            let file = sample
+                .file
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| sample.file.display().to_string());
+
+            match &sample.outcome {
+                authoring::VerifyOutcome::Strict(transaction)
+                | authoring::VerifyOutcome::Heuristic(transaction) => {
+                    println!(
+                        "{:<10} {:<24} {:<12} {:>15} {:<12} {}",
+                        sample.outcome.label(),
+                        truncate(&file, 24),
+                        transaction.occurred_on,
+                        format!(
+                            "{} {}",
+                            transaction.amount_decimal, transaction.amount.currency
+                        ),
+                        transaction.kind.as_str(),
+                        truncate(transaction.counterparty.as_deref().unwrap_or("-"), 40),
+                    );
+                    for warning in &transaction.warnings {
+                        eprintln!("  {}: {warning}", file);
+                    }
+                }
+                authoring::VerifyOutcome::Unmatched(reason) => {
+                    println!(
+                        "{:<10} {:<24} {}",
+                        sample.outcome.label(),
+                        truncate(&file, 24),
+                        truncate(reason, 80)
+                    );
+                }
+                authoring::VerifyOutcome::Failed { parser, error } => {
+                    println!(
+                        "{:<10} {:<24} {}: {}",
+                        sample.outcome.label(),
+                        truncate(&file, 24),
+                        parser,
+                        truncate(error, 80)
+                    );
+                }
+            }
+        }
+    }
+
+    eprintln!(
+        "verified {} sample(s) against `{}`: {} strict, {} heuristic, {} failure(s)",
+        report.samples.len(),
+        report.spec_id,
+        report.strict(),
+        report.heuristic(),
+        report.failures()
+    );
+
+    Ok(report.exit_code())
+}
+
+fn dump(path: &Path, json: bool) -> Result<i32> {
+    let emails = authoring::dump::load(path)?;
+    if json {
+        println!("{}", authoring::dump::render_json(&emails)?);
+    } else {
+        print!("{}", authoring::dump::render_text(&emails));
+    }
     Ok(EXIT_OK)
 }
 

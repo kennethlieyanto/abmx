@@ -7,10 +7,13 @@
 //!   review queue.
 //! * [`runner`] — the pipeline: fetch, parse with `txp`, decide, plan, apply.
 //! * [`fetchers`] — the sources that ship with the binary.
+//! * [`authoring`] — block dumps, AI prompts, skills, and candidate-parser
+//!   verification.
 //!
 //! Third-party sources and sinks implement `txsync_core::Fetcher` and
 //! `txsync_core::Sink`; nothing here needs to change for that.
 
+pub mod authoring;
 pub mod config;
 pub mod fetchers;
 pub mod paths;

@@ -14,6 +14,7 @@
 pub mod auth;
 pub mod client;
 pub mod query;
+pub mod sample;
 
 use std::path::PathBuf;
 
@@ -28,6 +29,7 @@ pub use auth::{
 };
 pub use client::{GmailClient, GmailError, Profile};
 pub use query::build_query;
+pub use sample::SampleMessage;
 
 pub const DEFAULT_BASE_URL: &str = "https://gmail.googleapis.com/gmail/v1";
 pub const DEFAULT_USER: &str = "me";

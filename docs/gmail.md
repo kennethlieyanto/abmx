@@ -125,6 +125,27 @@ from:(alerts@example.invalid OR bank.example) -in:spam -in:trash newer_than:7d
 The query only applies to full syncs. Incremental runs ask for everything added
 since the cursor and let `txp` route it.
 
+## Sampling labelled mail for parser authoring
+
+Labels are also the easiest way to hand a set of same-structure emails to an
+agent that will write a new `txp` parser:
+
+```bash
+txsync generate prompt parser \
+  --from-gmail-label 'example/QRIS,example/Transfer' \
+  --id-from label \
+  --out ./parser-prompt.md
+```
+
+This uses `messages.list` with `q=label:"<name>" -in:spam -in:trash`, fetches
+each message with `format=raw`, and writes the samples under
+`~/.local/state/txsync/samples/<timestamp>/<label-slug>/` with `0600` permissions.
+It does not touch the sync cursor or the state database.
+
+A label is a hint that the samples share one template. The generated prompt
+still compares block shapes and asks the agent to split the template if they do
+not match. See [authoring.md](authoring.md) for the full loop.
+
 ## Revoking access
 
 ```bash

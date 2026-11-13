@@ -234,3 +234,36 @@ fn truncation_does_not_advance_the_cursor() {
         serde_json::json!({ "history_id": "1000" })
     );
 }
+
+#[test]
+fn sampling_a_label_returns_raw_messages_and_excludes_spam() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start();
+    token_route(&server);
+
+    server.route(
+        "GET",
+        "/gmail/v1/users/me/messages/m1",
+        vec![Response::json(raw_json("m1", EMAIL))],
+    );
+    server.route(
+        "GET",
+        "/gmail/v1/users/me/messages",
+        vec![Response::json(r#"{"messages":[{"id":"m1"}]}"#)],
+    );
+
+    let fetcher = fetcher(&server, dir.path());
+    let samples = fetcher.client().sample_label("example/QRIS", 5).unwrap();
+
+    assert_eq!(samples.len(), 1);
+    assert_eq!(samples[0].id, "m1");
+    assert_eq!(samples[0].bytes, EMAIL);
+
+    let list = server
+        .requests()
+        .into_iter()
+        .find(|request| request.path_only() == "/gmail/v1/users/me/messages")
+        .expect("messages.list was called");
+    assert!(list.query.contains("label%3A%22Bank%2FQRIS%22"));
+    assert!(list.query.contains("-in%3Aspam"));
+}

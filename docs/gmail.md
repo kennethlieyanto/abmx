@@ -125,6 +125,26 @@ from:(alerts@example.invalid OR bank.example) -in:spam -in:trash newer_than:7d
 The query only applies to full syncs. Incremental runs ask for everything added
 since the cursor and let `txp` route it.
 
+## Revoking access
+
+```bash
+txsync auth logout              # revoke at Google, then delete the local file
+txsync auth logout --no-revoke  # delete the local file only
+```
+
+The default revokes the refresh token at Google first, so a copy of the
+credential file — a backup, an old machine, an image layer — stops working.
+Revocation is per-token: other machines that authorized separately keep working.
+
+If revocation fails (offline, DNS), the local file is still removed, the command
+exits `0`, and it prints a warning with the manual URL:
+
+<https://myaccount.google.com/permissions>
+
+`auth logout` does **not** touch sync state. The cursor, delivered messages and
+review queue stay, so the next sync continues where it left off. Use
+`txsync reset` if you also want it to re-fetch everything.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |

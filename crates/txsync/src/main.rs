@@ -11,7 +11,9 @@ use txsync::Runner;
 use txsync_core::{
     classify, ApplyOptions, FetchRequest, Fetcher, ImportRow, LedgerMatch, Plan, Report,
 };
-use txsync_gmail::{authorize, authorize_manual, OAuthConfig, TokenStore};
+use txsync_gmail::{
+    authorize, authorize_manual, revoke_refresh_token, OAuthConfig, TokenStore, REVOKE_URL,
+};
 
 /// Clean run.
 const EXIT_OK: i32 = 0;
@@ -55,10 +57,10 @@ enum Command {
         force: bool,
     },
 
-    /// Authorize a mail provider.
+    /// Authorize or deauthorize a mail provider.
     Auth {
         #[command(subcommand)]
-        provider: AuthProvider,
+        command: AuthCommand,
     },
 
     /// Check config, parser corpus, state, credentials, and the sink.
@@ -173,7 +175,7 @@ enum Command {
 }
 
 #[derive(Subcommand)]
-enum AuthProvider {
+enum AuthCommand {
     /// OAuth2 with PKCE: a loopback listener, or `--manual` on a headless box.
     Gmail {
         /// Print the URL instead of trying to open a browser.
@@ -189,6 +191,16 @@ enum AuthProvider {
         /// local listener can never receive it.
         #[arg(long)]
         manual: bool,
+    },
+
+    /// Forget the stored Gmail credentials, revoking them at Google.
+    ///
+    /// Deletes the refresh token file. By default the token is also revoked at
+    /// Google, so it cannot be used from a copy of the file.
+    Logout {
+        /// Keep the refresh token valid at Google; delete it locally only.
+        #[arg(long)]
+        no_revoke: bool,
     },
 }
 
@@ -218,12 +230,13 @@ fn run(cli: Cli) -> Result<i32> {
 
     match cli.command {
         Command::Init { path, force } => init(path, force),
-        Command::Auth { provider } => match provider {
-            AuthProvider::Gmail {
+        Command::Auth { command } => match command {
+            AuthCommand::Gmail {
                 no_browser,
                 port,
                 manual,
             } => auth_gmail(&settings, no_browser, port, manual),
+            AuthCommand::Logout { no_revoke } => auth_logout(&settings, no_revoke),
         },
         Command::Doctor { online } => doctor(&settings, online),
         Command::Plan {
@@ -375,6 +388,31 @@ fn auth_gmail(
         "authorized; refresh token stored at {}",
         store.path().display()
     );
+    Ok(EXIT_OK)
+}
+
+fn auth_logout(settings: &Settings, no_revoke: bool) -> Result<i32> {
+    let (config, base, _) = load_config(settings)?;
+    let store = TokenStore::new(config.gmail_token_path(&base));
+
+    let Some(credentials) = store.load()? else {
+        println!("no stored Gmail credentials at {}", store.path().display());
+        return Ok(EXIT_OK);
+    };
+
+    if !no_revoke {
+        match revoke_refresh_token(REVOKE_URL, &credentials.refresh_token) {
+            Ok(()) => println!("revoked the refresh token with Google"),
+            Err(error) => {
+                eprintln!("txsync: warning: could not revoke the token ({error})");
+                eprintln!("txsync: revoke it manually at https://myaccount.google.com/permissions");
+            }
+        }
+    }
+
+    store.clear()?;
+    println!("removed {}", store.path().display());
+
     Ok(EXIT_OK)
 }
 

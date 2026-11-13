@@ -170,6 +170,7 @@ directory sees the secrets without exporting them by hand.
 ```
 txsync init [--path FILE] [--force]   write a starter config
 txsync auth gmail [--manual]          OAuth2 + PKCE; --manual for a headless box
+txsync auth logout [--no-revoke]      revoke the refresh token, then remove it locally
 txsync doctor [--online]              check config, corpus, state, credentials, sink
 txsync plan [--from-dir DIR] [--out FILE]
                                       fetch + parse + decide, print the plan as JSON

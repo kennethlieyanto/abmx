@@ -21,6 +21,8 @@ use crate::client::GmailError;
 
 pub const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 pub const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+/// Revoking a refresh token invalidates it everywhere, not just on this machine.
+pub const REVOKE_URL: &str = "https://oauth2.googleapis.com/revoke";
 /// Read-only is all `txsync` needs. Never request more.
 pub const SCOPE: &str = "https://www.googleapis.com/auth/gmail.readonly";
 
@@ -58,6 +60,20 @@ impl TokenStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(GmailError::Auth(format!(
                 "reading {}: {error}",
+                self.path.display()
+            ))),
+        }
+    }
+
+    /// Remove the credential file. Returns whether something was removed.
+    ///
+    /// A missing file is not an error: `logout` must be idempotent.
+    pub fn clear(&self) -> Result<bool, GmailError> {
+        match fs::remove_file(&self.path) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(GmailError::Auth(format!(
+                "removing {}: {error}",
                 self.path.display()
             ))),
         }
@@ -348,6 +364,34 @@ fn parse_callback_input(input: &str) -> Result<(String, Option<String>), GmailEr
     Ok((code, state))
 }
 
+/// Revoke a refresh token at Google.
+///
+/// `2xx` means revoked. `400` means the token was already invalid, which is
+/// also the outcome we want. Anything else is a real failure, and the caller
+/// should still delete the local credential but warn.
+pub fn revoke_refresh_token(revoke_url: &str, token: &str) -> Result<(), GmailError> {
+    let http = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| GmailError::Http(error.to_string()))?;
+
+    let response = http
+        .post(revoke_url)
+        .form(&[("token", token)])
+        .send()
+        .map_err(|error| GmailError::Http(error.to_string()))?;
+
+    let status = response.status();
+    if status.is_success() || status.as_u16() == 400 {
+        return Ok(());
+    }
+
+    let body = response.text().unwrap_or_default();
+    Err(GmailError::Auth(format!(
+        "revoke returned {status}: {body}"
+    )))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn exchange_code(
     http: &reqwest::blocking::Client,
@@ -570,6 +614,28 @@ mod tests {
             let mode = fs::metadata(store.path()).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn clear_removes_the_credential_file_and_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = TokenStore::new(dir.path().join("creds.json"));
+
+        // Nothing to remove yet.
+        assert!(!store.clear().unwrap());
+
+        store
+            .save(&Credentials {
+                client_id: "client".into(),
+                refresh_token: "refresh".into(),
+                scopes: vec![],
+            })
+            .unwrap();
+
+        assert!(store.clear().unwrap());
+        assert!(store.load().unwrap().is_none());
+        // Second call is still fine.
+        assert!(!store.clear().unwrap());
     }
 
     #[test]

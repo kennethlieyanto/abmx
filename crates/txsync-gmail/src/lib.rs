@@ -22,7 +22,10 @@ use serde_json::json;
 
 use txsync_core::{FetchBatch, FetchRequest, Fetcher, MessageKey, RawMessage};
 
-pub use auth::{authorize, authorize_manual, Credentials, OAuthConfig, TokenStore};
+pub use auth::{
+    authorize, authorize_manual, revoke_refresh_token, Credentials, OAuthConfig, TokenStore,
+    REVOKE_URL,
+};
 pub use client::{GmailClient, GmailError, Profile};
 pub use query::build_query;
 

@@ -68,7 +68,7 @@ switches to the pinned git tag; `just txp-local` switches back.
 txsync init                       # writes ~/.config/txsync/config.toml
 $EDITOR ~/.config/txsync/config.toml
 txsync auth gmail                 # OAuth2 + PKCE, stores a refresh token (0600)
-txsync doctor --online            # config, corpus, credentials, sink, mapping
+txsync doctor --online            # config, parsers, state, accounts, sink, auth
 txsync sync --dry-run             # see the plan, write nothing
 txsync sync                       # for real
 ```
@@ -185,7 +185,7 @@ directory sees the secrets without exporting them by hand.
 txsync init [--path FILE] [--force]   write a starter config
 txsync auth gmail [--manual]          OAuth2 + PKCE; --manual for a headless box
 txsync auth logout [--no-revoke]      revoke the refresh token, then remove it locally
-txsync doctor [--online]              check config, corpus, state, credentials, sink
+txsync doctor [--online]              check config, parsers, state, accounts, sink, auth
 txsync plan [--from-dir DIR] [--out FILE]
                                       fetch + parse + decide, print the plan as JSON
 txsync apply [--plan FILE] [--dry-run]

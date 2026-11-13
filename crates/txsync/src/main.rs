@@ -423,50 +423,170 @@ fn auth_logout(settings: &Settings, no_revoke: bool) -> Result<i32> {
     Ok(EXIT_OK)
 }
 
-fn doctor(settings: &Settings, online: bool) -> Result<i32> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Status {
+    Ok,
+    Warn,
+    Fail,
+    Skip,
+}
+
+impl Status {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Warn => "warn",
+            Self::Fail => "fail",
+            Self::Skip => "skip",
+        }
+    }
+}
+
+struct Line {
+    status: Status,
+    message: String,
+}
+
+struct Section {
+    name: &'static str,
+    lines: Vec<Line>,
+}
+
+impl Section {
+    fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            lines: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, status: Status, message: impl Into<String>) {
+        self.lines.push(Line {
+            status,
+            message: message.into(),
+        });
+    }
+}
+
+fn render_sections(sections: &[Section]) -> (usize, usize, usize) {
     let mut failures = 0usize;
     let mut warnings = 0usize;
+    let mut skipped = 0usize;
 
+    for (index, section) in sections.iter().enumerate() {
+        if index > 0 {
+            println!();
+        }
+        println!("{}", section.name);
+        for line in &section.lines {
+            println!("  {:<5} {}", line.status.label(), line.message);
+            match line.status {
+                Status::Fail => failures += 1,
+                Status::Warn => warnings += 1,
+                Status::Skip => skipped += 1,
+                Status::Ok => {}
+            }
+        }
+    }
+
+    (failures, warnings, skipped)
+}
+
+fn doctor(settings: &Settings, online: bool) -> Result<i32> {
     let (config, base, config_path) = load_config(settings)?;
-    println!("ok    config  {}", config_path.display());
 
-    // Parser corpus.
+    let mut config_section = Section::new("config");
+    config_section.push(Status::Ok, config_path.display().to_string());
+
+    let mut parsers_section = Section::new("parsers");
     let parser = match txp::Parser::load(&config.txp_options(&base)) {
         Ok((parser, discovery)) => {
-            println!(
-                "ok    corpus  {} parsers from {}",
-                parser.registry().summaries().len(),
-                discovery
-                    .dirs
-                    .first()
-                    .map(|dir| dir.display().to_string())
-                    .unwrap_or_else(|| "(built-in)".to_owned())
+            let summaries = parser.registry().summaries();
+            let accounts: BTreeSet<&str> = summaries
+                .iter()
+                .map(|summary| summary.account.as_str())
+                .collect();
+            let dir = discovery
+                .dirs
+                .first()
+                .map(|dir| dir.display().to_string())
+                .unwrap_or_else(|| "(built-in)".to_owned());
+            parsers_section.push(
+                Status::Ok,
+                format!(
+                    "{} parsers, {} account keys, from {dir}",
+                    summaries.len(),
+                    accounts.len()
+                ),
             );
             Some(parser)
         }
         Err(error) => {
-            println!("fail  corpus  {error}");
-            failures += 1;
+            parsers_section.push(Status::Fail, error.to_string());
             None
         }
     };
 
-    // State.
-    match State::open(&config.state_path(&base)) {
+    let mut state_section = Section::new("state");
+    let state_path = config.state_path(&base);
+    match State::open(&state_path) {
         Ok(state) => match state.check_schema() {
-            Ok(()) => println!("ok    state   {}", config.state_path(&base).display()),
-            Err(error) => {
-                println!("fail  state   {error}");
-                failures += 1;
-            }
+            Ok(()) => state_section.push(
+                Status::Ok,
+                format!(
+                    "{} (txp schema {})",
+                    state_path.display(),
+                    txsync_core::TXP_SCHEMA_VERSION
+                ),
+            ),
+            Err(error) => state_section.push(Status::Fail, error.to_string()),
         },
-        Err(error) => {
-            println!("fail  state   {error}");
-            failures += 1;
+        Err(error) => state_section.push(Status::Fail, error.to_string()),
+    }
+
+    // The sink is resolved first so the account section can show names, not
+    // just UUIDs, when --online is set.
+    let mut sink_section = Section::new("sink");
+    let mut sink_accounts: Option<Vec<txsync_core::SinkAccount>> = None;
+    match config.build_sink(&base) {
+        Err(error) => sink_section.push(Status::Fail, error.to_string()),
+        Ok(sink) => {
+            if !online {
+                let location = config
+                    .sink
+                    .actual
+                    .as_ref()
+                    .map(|actual| actual.url.clone())
+                    .or_else(|| {
+                        config
+                            .sink
+                            .file
+                            .as_ref()
+                            .map(|file| file.path.display().to_string())
+                    });
+                let message = match location {
+                    Some(location) => {
+                        format!("{} at {location} (offline; use --online)", sink.name())
+                    }
+                    None => format!("{} (offline; use --online)", sink.name()),
+                };
+                sink_section.push(Status::Skip, message);
+            } else {
+                match sink.accounts() {
+                    Ok(accounts) => {
+                        sink_section.push(
+                            Status::Ok,
+                            format!("{}: {} accounts", sink.name(), accounts.len()),
+                        );
+                        sink_accounts = Some(accounts);
+                    }
+                    Err(error) => sink_section.push(Status::Fail, error.to_string()),
+                }
+            }
         }
     }
 
-    // Account mapping, checked against what the corpus actually declares.
+    let mut accounts_section = Section::new("accounts");
     if let Some(parser) = &parser {
         let declared: BTreeSet<String> = parser
             .registry()
@@ -475,95 +595,86 @@ fn doctor(settings: &Settings, online: bool) -> Result<i32> {
             .map(|summary| summary.account)
             .collect();
         let mapped = config.account_map();
+        let width = declared.iter().map(String::len).max().unwrap_or(0);
+
         for account in &declared {
-            if mapped.contains(account) {
-                println!("ok    map     {account}");
-            } else {
-                println!("warn  map     {account} is not in [accounts]");
-                warnings += 1;
+            let Some(id) = mapped.get(account) else {
+                accounts_section.push(Status::Warn, format!("{account} is not in [accounts]"));
+                continue;
+            };
+
+            let resolved = sink_accounts
+                .as_ref()
+                .and_then(|accounts| accounts.iter().find(|candidate| candidate.id == id));
+
+            match (online, resolved, sink_accounts.is_some()) {
+                (true, Some(sink_account), _) => accounts_section.push(
+                    Status::Ok,
+                    format!("{:<width$} -> {} ({id})", account, sink_account.name),
+                ),
+                (true, None, true) => accounts_section.push(
+                    Status::Fail,
+                    format!("{:<width$} -> {id} is not an account in the sink", account),
+                ),
+                _ => accounts_section.push(Status::Ok, format!("{:<width$} -> {id}", account)),
             }
         }
     }
 
-    // Sink.
-    match config.build_sink(&base) {
-        Ok(sink) => {
-            if !online {
-                println!(
-                    "ok    sink    {} configured (skipped, use --online)",
-                    sink.name()
-                );
-            } else {
-                match sink.accounts() {
-                    Ok(accounts) if accounts.is_empty() => {
-                        println!("ok    sink    {} has no accounts to verify", sink.name());
-                    }
-                    Ok(accounts) => {
-                        let ids: BTreeSet<&str> =
-                            accounts.iter().map(|account| account.id.as_str()).collect();
-                        println!("ok    sink    {} accounts: {}", sink.name(), accounts.len());
-                        for (key, account_id) in config.account_map().iter() {
-                            if !ids.contains(account_id) {
-                                println!(
-                                    "fail  map     {key} -> {account_id} is not an account in {}",
-                                    sink.name()
-                                );
-                                failures += 1;
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        println!("fail  sink    {error}");
-                        failures += 1;
-                    }
-                }
-            }
-        }
-        Err(error) => {
-            println!("fail  sink    {error}");
-            failures += 1;
-        }
-    }
-
-    // Gmail credentials.
+    let mut fetchers_section = Section::new("fetchers");
     match &config.fetch.gmail {
-        None => println!("warn  gmail   no [fetch.gmail] section"),
+        Some(gmail) => fetchers_section.push(
+            Status::Ok,
+            format!(
+                "gmail (lookback {}d, max {})",
+                gmail.lookback_days.unwrap_or(7),
+                gmail.max_messages.unwrap_or(txsync_core::DEFAULT_LIMIT)
+            ),
+        ),
+        None => fetchers_section.push(Status::Warn, "no [fetch.gmail] section"),
+    }
+
+    let mut auth_section = Section::new("auth");
+    match &config.fetch.gmail {
+        None => auth_section.push(Status::Skip, "no fetcher configured"),
         Some(_) => {
             let store = TokenStore::new(config.gmail_token_path(&base));
             match store.load() {
-                Ok(Some(_)) => {
-                    if online {
-                        match config.build_gmail(&base, &[]) {
-                            Ok(fetcher) => match fetcher.client().profile() {
-                                Ok(profile) => println!(
-                                    "ok    gmail   {} (history {})",
-                                    profile.email_address, profile.history_id
-                                ),
-                                Err(error) => {
-                                    println!("fail  gmail   {error}");
-                                    failures += 1;
-                                }
-                            },
-                            Err(error) => {
-                                println!("fail  gmail   {error}");
-                                failures += 1;
-                            }
-                        }
-                    } else {
-                        println!("ok    gmail   token at {}", store.path().display());
-                    }
-                }
+                Ok(Some(_)) if !online => auth_section.push(
+                    Status::Ok,
+                    format!("gmail token at {}", store.path().display()),
+                ),
+                Ok(Some(_)) => match config.build_gmail(&base, &[]) {
+                    Ok(fetcher) => match fetcher.client().profile() {
+                        Ok(profile) => auth_section.push(
+                            Status::Ok,
+                            format!(
+                                "gmail: {} (history {})",
+                                profile.email_address, profile.history_id
+                            ),
+                        ),
+                        Err(error) => auth_section.push(Status::Fail, error.to_string()),
+                    },
+                    Err(error) => auth_section.push(Status::Fail, error.to_string()),
+                },
                 Ok(None) => {
-                    println!("fail  gmail   no token; run `txsync auth gmail`");
-                    failures += 1;
+                    auth_section.push(Status::Fail, "gmail: no token; run `txsync auth gmail`")
                 }
-                Err(error) => {
-                    println!("fail  gmail   {error}");
-                    failures += 1;
-                }
+                Err(error) => auth_section.push(Status::Fail, error.to_string()),
             }
         }
     }
+
+    let sections = [
+        config_section,
+        parsers_section,
+        state_section,
+        accounts_section,
+        sink_section,
+        fetchers_section,
+        auth_section,
+    ];
+    let (failures, warnings, skipped) = render_sections(&sections);
 
     println!();
     if failures > 0 {
@@ -572,6 +683,8 @@ fn doctor(settings: &Settings, online: bool) -> Result<i32> {
     }
     if warnings > 0 {
         println!("0 failures, {warnings} warning(s)");
+    } else if skipped > 0 {
+        println!("all checks passed ({skipped} skipped)");
     } else {
         println!("all checks passed");
     }

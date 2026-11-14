@@ -1,0 +1,19 @@
+[package]
+name = "abmx-parser"
+description = "Parser corpus, discovery, and routing for abmx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "abmx_parser"
+path = "src/lib.rs"
+
+[dependencies]
+abmx-mail.workspace = true
+abmx-parse.workspace = true
+abmx-tx.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

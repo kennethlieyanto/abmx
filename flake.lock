@@ -18,25 +18,7 @@
     },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs",
-        "txp": "txp"
-      }
-    },
-    "txp": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1794196060,
-        "narHash": "sha256-Xm9PMvsq4pBsiGzkZvpWCweoAfZriYqTXJCgpy5YNhk=",
-        "ref": "refs/tags/v0.1.0",
-        "rev": "d2dfbbbd3fb81b6979dc6d1cd5a49fe975aa3742",
-        "revCount": 8,
-        "type": "git",
-        "url": "ssh://git@github.com/kennethlieyanto/txp"
-      },
-      "original": {
-        "ref": "refs/tags/v0.1.0",
-        "type": "git",
-        "url": "ssh://git@github.com/kennethlieyanto/txp"
+        "nixpkgs": "nixpkgs"
       }
     }
   },

@@ -1,0 +1,12 @@
+[package]
+name = "abmx-testkit"
+description = "A tiny blocking HTTP mock server for abmx's integration tests"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+serde_json.workspace = true

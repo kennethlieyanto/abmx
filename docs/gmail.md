@@ -1,6 +1,6 @@
 # Gmail
 
-`txsync` uses the Gmail API rather than IMAP because `historyId` is a real
+`abmx` uses the Gmail API rather than IMAP because `historyId` is a real
 incremental cursor: the server knows what "new" means, so the common run is one
 request instead of a mailbox scan.
 
@@ -12,39 +12,39 @@ request instead of a mailbox scan.
    - User type: **External**.
    - Add your own Google account under **Test users**.
    - While the app is in "Testing", refresh tokens expire after 7 days. For a
-     personal tool, either re-run `txsync auth gmail` weekly or publish the app
+     personal tool, either re-run `abmx auth gmail` weekly or publish the app
      (Publishing status → Publish app). Publishing an app that only uses
      `gmail.readonly` does not require Google verification for personal use, but
      the consent screen will show an "unverified app" warning.
 4. **Create credentials** — APIs & Services → Credentials → Create credentials →
    OAuth client ID → **Desktop app**.
-5. Copy the **client ID** and **client secret** into `txsync.toml`:
+5. Copy the **client ID** and **client secret** into `abmx.toml`:
 
 ```toml
 [fetch.gmail]
 client_id = "1234567890-abcdef.apps.googleusercontent.com"
-client_secret_file = "/run/credentials/txsync.service/gmail-client-secret"
+client_secret_file = "/run/credentials/abmx.service/gmail-client-secret"
 ```
 
-Prefer `TXSYNC_GMAIL_CLIENT_SECRET` or `client_secret_file` over pasting the
+Prefer `ABMX_GMAIL_CLIENT_SECRET` or `client_secret_file` over pasting the
 secret into the file.
 
 ## Authorize
 
 ```bash
-txsync auth gmail
+abmx auth gmail
 ```
 
 This starts a loopback listener on `127.0.0.1:<random port>`, prints an
 authorization URL, and tries to open a browser. Approve read-only Gmail access;
 the refresh token is written to
-`~/.local/state/txsync/gmail-credentials.json` with mode `0600`.
+`~/.local/state/abmx/gmail-credentials.json` with mode `0600`.
 
 Flags: `--no-browser` prints the URL only, `--port N` pins the loopback port.
 
 ### Headless server (or a browser on another machine)
 
-`txsync auth gmail` listens on `127.0.0.1` **on the machine running it**. If you
+`abmx auth gmail` listens on `127.0.0.1` **on the machine running it**. If you
 approve in a browser on a different machine, the redirect goes to *that*
 machine's localhost, where nothing is listening — you get "This site can't be
 reached" even though authorization succeeded.
@@ -52,7 +52,7 @@ reached" even though authorization succeeded.
 Use `--manual`:
 
 ```bash
-txsync auth gmail --manual
+abmx auth gmail --manual
 ```
 
 1. It prints the authorization URL. Open it in any browser, on any machine.
@@ -60,7 +60,7 @@ txsync auth gmail --manual
    fails to load. That is expected.
 3. Copy the **whole address** from the address bar and paste it into the
    terminal.
-4. `txsync` checks `state` and exchanges the code using the PKCE verifier it
+4. `abmx` checks `state` and exchanges the code using the PKCE verifier it
    still holds in memory.
 
 Pasting just the `code=…` value also works; PKCE still binds the exchange to
@@ -73,7 +73,7 @@ machine:
 
 ```bash
 # on the server
-txsync auth gmail --port 43323 --no-browser
+abmx auth gmail --port 43323 --no-browser
 
 # on the browser's machine
 ssh -N -L 43323:127.0.0.1:43323 you@server
@@ -84,17 +84,17 @@ port, so the tunnel would not match.
 
 #### Alternative: authorize elsewhere, copy the token
 
-Run the flow on a machine that has a browser and `txsync`, then copy the
+Run the flow on a machine that has a browser and `abmx`, then copy the
 credential file. The `client_id` must be the same on both sides:
 
 ```bash
-scp ~/.local/state/txsync/gmail-credentials.json server:~/.local/state/txsync/
-ssh server 'chmod 600 ~/.local/state/txsync/gmail-credentials.json'
+scp ~/.local/state/abmx/gmail-credentials.json server:~/.local/state/abmx/
+ssh server 'chmod 600 ~/.local/state/abmx/gmail-credentials.json'
 ```
 
 The file contains a client id and a refresh token — no mail, no password.
 
-## What `txsync` asks Gmail for
+## What `abmx` asks Gmail for
 
 Scope: `https://www.googleapis.com/auth/gmail.readonly`. Nothing else.
 
@@ -105,13 +105,13 @@ Scope: `https://www.googleapis.com/auth/gmail.readonly`. Nothing else.
 | `users.history.list?startHistoryId=…&historyTypes=messageAdded` | incremental |
 | `users.messages.get?id=…&format=raw` | every new message |
 
-`format=raw` returns the full RFC 5322 message, which is exactly what `txp`
-consumes — no re-encoding, no body extraction in `txsync`.
+`format=raw` returns the full RFC 5322 message, which is exactly what the parser
+consumes — no re-encoding, no body extraction in `abmx`.
 
 ## The query
 
-The sender list is not maintained by hand: `txsync` reads every `senders` entry
-from the loaded `txp` corpus.
+The sender list is not maintained by hand: `abmx` reads every `senders` entry
+from the loaded parser corpus.
 
 ```
 from:(alerts@example.invalid OR bank.example) -in:spam -in:trash newer_than:7d
@@ -119,19 +119,19 @@ from:(alerts@example.invalid OR bank.example) -in:spam -in:trash newer_than:7d
 
 - `*@bank.example` in a parser spec becomes `bank.example`.
 - `lookback_days` is a floor for full syncs, not a filter on incremental runs.
-- `query_extra` is appended verbatim, e.g. `"-label:txsync-ignored"`.
+- `query_extra` is appended verbatim, e.g. `"-label:abmx-ignored"`.
 - `labels = ["INBOX"]` restricts the search further if you have filters.
 
 The query only applies to full syncs. Incremental runs ask for everything added
-since the cursor and let `txp` route it.
+since the cursor and let the parser route it.
 
 ## Sampling labelled mail for parser authoring
 
 Labels are also the easiest way to hand a set of same-structure emails to an
-agent that will write a new `txp` parser:
+agent that will write a new bank parser:
 
 ```bash
-txsync generate prompt parser \
+abmx generate prompt parser \
   --from-gmail-label 'example/QRIS,example/Transfer' \
   --id-from label \
   --out ./parser-prompt.md
@@ -139,7 +139,7 @@ txsync generate prompt parser \
 
 This uses `messages.list` with `q=label:"<name>" -in:spam -in:trash`, fetches
 each message with `format=raw`, and writes the samples under
-`~/.local/state/txsync/samples/<timestamp>/<label-slug>/` with `0600` permissions.
+`~/.local/state/abmx/samples/<timestamp>/<label-slug>/` with `0600` permissions.
 It does not touch the sync cursor or the state database.
 
 A label is a hint that the samples share one template. The generated prompt
@@ -149,8 +149,8 @@ not match. See [authoring.md](authoring.md) for the full loop.
 ## Revoking access
 
 ```bash
-txsync auth logout              # revoke at Google, then delete the local file
-txsync auth logout --no-revoke  # delete the local file only
+abmx auth logout              # revoke at Google, then delete the local file
+abmx auth logout --no-revoke  # delete the local file only
 ```
 
 The default revokes the refresh token at Google first, so a copy of the
@@ -164,27 +164,27 @@ exits `0`, and it prints a warning with the manual URL:
 
 `auth logout` does **not** touch sync state. The cursor, delivered messages and
 review queue stay, so the next sync continues where it left off. Use
-`txsync reset` if you also want it to re-fetch everything.
+`abmx reset` if you also want it to re-fetch everything.
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `gmail: not authorized` | no credentials file | `txsync auth gmail` |
-| `invalid_grant` on refresh | token expired (testing app) or revoked | re-run `txsync auth gmail` |
+| `gmail: not authorized` | no credentials file | `abmx auth gmail` |
+| `invalid_grant` on refresh | token expired (testing app) or revoked | re-run `abmx auth gmail` |
 | `403 … insufficient authentication scopes` | wrong scope on the token | revoke at <https://myaccount.google.com/permissions>, re-authorize |
 | full sync every run | `historyId` rejected as expired | normal after long downtime; the state database still prevents duplicates |
 | `no refresh token returned` | Google only returns one on the first consent | remove app access, re-authorize (the flow already sends `prompt=consent`) |
-| browser shows "This site can't be reached" after approving | the redirect's `127.0.0.1` is the browser's machine, not the CLI's | `txsync auth gmail --manual`, then paste the URL from the address bar |
+| browser shows "This site can't be reached" after approving | the redirect's `127.0.0.1` is the browser's machine, not the CLI's | `abmx auth gmail --manual`, then paste the URL from the address bar |
 | `state mismatch` | the pasted URL came from a different run | re-run `--manual` and paste the URL from that same run |
-| nothing found | sender list does not match your bank's actual address | `txsync parsers`, then compare with a real email |
+| nothing found | sender list does not match your bank's actual address | `abmx parsers`, then compare with a real email |
 
 ## Verifying without Gmail
 
 You do not need OAuth to test the pipeline:
 
 ```bash
-txsync plan --from-dir ./saved-emails/
+abmx plan --from-dir ./saved-emails/
 ```
 
 Save a few real `.eml` files (or export them) and run against those. Same parser,

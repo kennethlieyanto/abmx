@@ -1,0 +1,16 @@
+[package]
+name = "abmx-core"
+description = "Transport-neutral primitives for abmx: fetchers, sinks, policy, plans"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+abmx-parser.workspace = true
+abmx-tx.workspace = true

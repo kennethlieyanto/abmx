@@ -1,0 +1,323 @@
+use std::collections::HashSet;
+
+use abmx_core::{
+    decide, AccountMap, ApplyOptions, Decision, Error, FetchRequest, Fetcher, ImportRow,
+    MessageKey, Plan, PlannedRow, PolicyConfig, Report, Result, Sink, SourceReport,
+    UnmatchedMessage,
+};
+
+use crate::state::{ReviewEntry, State};
+
+/// The pipeline: fetch → parse with `abmx-parser` → decide → plan → apply.
+///
+/// `plan` reads state but never writes it; `apply` is the only writer. That split
+/// is what makes `--dry-run` free and plans replayable.
+/// Turn the router's raw reason (`unmatched (no_match)`) into something a human
+/// can act on, keeping the code for `-v` and the plan JSON.
+fn unmatched_parts(raw: &str) -> (String, Option<String>) {
+    let code = raw
+        .split_once('(')
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(code, _)| code.trim().to_owned());
+
+    let reason = match code.as_deref() {
+        Some("no_match") => "no parser matched the sender or subject".to_owned(),
+        Some("disabled") => "the matching parser is disabled".to_owned(),
+        Some("rejected") => "a parser matched but its guards rejected it".to_owned(),
+        Some(other) => other.to_owned(),
+        None => raw.to_owned(),
+    };
+
+    (reason, code)
+}
+
+pub struct Runner {
+    pub parser: abmx_parser::Parser,
+    pub policy: PolicyConfig,
+    pub accounts: AccountMap,
+    pub state: State,
+}
+
+impl Runner {
+    pub fn new(
+        parser: abmx_parser::Parser,
+        policy: PolicyConfig,
+        accounts: AccountMap,
+        state: State,
+    ) -> Self {
+        Self {
+            parser,
+            policy,
+            accounts,
+            state,
+        }
+    }
+
+    /// Produce a plan without touching the mailbox twice or writing anything.
+    pub fn plan(&self, fetcher: &dyn Fetcher, request: FetchRequest<'_>) -> Result<Plan> {
+        self.state.check_schema()?;
+
+        // An explicit cursor wins, so a caller can replay a specific window.
+        // Otherwise the checkpoint stored for this fetcher is used.
+        let stored = self.state.cursor(fetcher.name())?;
+        let cursor = request.cursor.cloned().or(stored);
+        let request = FetchRequest {
+            cursor: cursor.as_ref(),
+            limit: request.limit,
+        };
+
+        let batch = fetcher.fetch(request)?;
+
+        let mut plan = Plan::new();
+        plan.stats.fetched = batch.messages.len();
+
+        let mut skipped = batch.skipped;
+        let mut seen_transactions: HashSet<String> = HashSet::new();
+
+        for message in &batch.messages {
+            // Already delivered on a previous run. Cheap and, for an idempotent
+            // sink, merely an optimisation.
+            if self.state.is_seen(message.key.as_str())? {
+                skipped += 1;
+                continue;
+            }
+
+            match self
+                .parser
+                .parse_bytes(&message.bytes, Some(message.origin.clone()))
+            {
+                Ok(abmx_parser::Outcome::Parsed(transaction)) => {
+                    plan.stats.parsed += 1;
+                    let transaction = *transaction;
+
+                    // Two byte-identical emails share a `abmx-parser` id by design.
+                    if !seen_transactions.insert(transaction.id.clone()) {
+                        continue;
+                    }
+
+                    let decision = decide(&transaction, &self.policy, &self.accounts);
+                    let account = decision
+                        .is_import()
+                        .then(|| self.accounts.get(&transaction.account))
+                        .flatten()
+                        .map(str::to_owned);
+
+                    match &decision {
+                        Decision::Import => plan.stats.import += 1,
+                        Decision::Review(_) => plan.stats.review += 1,
+                        Decision::Skip(_) => plan.stats.skip += 1,
+                    }
+
+                    plan.rows.push(PlannedRow {
+                        id: transaction.id.clone(),
+                        message: message.key.clone(),
+                        account_key: transaction.account.clone(),
+                        account,
+                        decision,
+                        transaction,
+                    });
+                }
+                Ok(abmx_parser::Outcome::Unmatched(reason)) => {
+                    plan.stats.unmatched += 1;
+                    // A parser-corpus gap, not a delivery failure. Re-read the
+                    // headers so the report can say which message it was; the
+                    // router only returns a code.
+                    let details =
+                        abmx_parser::parse_eml(&message.bytes, Some(message.origin.clone())).ok();
+                    let (reason, code) = unmatched_parts(&reason);
+
+                    plan.unmatched.push(UnmatchedMessage {
+                        message: message.key.clone(),
+                        date: details.as_ref().map(|email| email.date.date_naive()),
+                        subject: details
+                            .as_ref()
+                            .map(|email| email.subject.clone())
+                            .filter(|subject| !subject.is_empty()),
+                        from: details
+                            .as_ref()
+                            .map(|email| email.from.email.clone())
+                            .filter(|from| !from.is_empty()),
+                        reason,
+                        code,
+                    });
+                }
+                Ok(abmx_parser::Outcome::Failed { parser, error }) => {
+                    plan.stats.failed += 1;
+                    plan.stats
+                        .errors
+                        .push(format!("{}: {parser}: {error}", message.key));
+                }
+                Err(error) => {
+                    plan.stats.failed += 1;
+                    plan.stats.errors.push(format!("{}: {error}", message.key));
+                }
+            }
+        }
+
+        plan.sources.push(SourceReport {
+            fetcher: fetcher.name().to_owned(),
+            fetched: batch.messages.len(),
+            skipped,
+            next_cursor: batch.next_cursor,
+        });
+
+        // Re-decide what is already in the review queue. Those messages are
+        // behind the cursor, so they will never be fetched again; the stored
+        // transaction is enough to apply a new mapping or policy. This is what
+        // makes "fix [accounts], run sync again" work without approve.
+        for entry in self.state.review()? {
+            if !seen_transactions.insert(entry.tx_id.clone()) {
+                continue;
+            }
+
+            let decision = decide(&entry.transaction, &self.policy, &self.accounts);
+            let account = decision
+                .is_import()
+                .then(|| self.accounts.get(&entry.transaction.account))
+                .flatten()
+                .map(str::to_owned);
+
+            match &decision {
+                Decision::Import => plan.stats.import += 1,
+                Decision::Review(_) => plan.stats.review += 1,
+                Decision::Skip(_) => plan.stats.skip += 1,
+            }
+            plan.stats.recovered += 1;
+
+            plan.rows.push(PlannedRow {
+                id: entry.tx_id,
+                message: MessageKey::new(entry.message),
+                account_key: entry.transaction.account.clone(),
+                account,
+                decision,
+                transaction: entry.transaction,
+            });
+        }
+
+        Ok(plan)
+    }
+
+    /// Write the plan's import rows, then record what happened.
+    ///
+    /// The cursor only advances when every row succeeded. A partial failure
+    /// leaves the cursor in place, so the next run replays the batch and the
+    /// state database skips what already landed.
+    pub fn apply(&self, sink: &dyn Sink, plan: &Plan, options: &ApplyOptions) -> Result<Report> {
+        plan.check_compatible().map_err(Error::Config)?;
+        self.state.check_schema()?;
+
+        let rows = plan.import_rows();
+        let report = sink.apply(&rows, options)?;
+
+        if options.dry_run {
+            return Ok(report);
+        }
+
+        let failed: HashSet<&str> = report
+            .errors
+            .iter()
+            .filter_map(|error| error.tx_id.as_deref())
+            .collect();
+
+        for row in &plan.rows {
+            match &row.decision {
+                Decision::Import => {
+                    if failed.contains(row.id.as_str()) {
+                        continue;
+                    }
+                    self.state
+                        .mark_seen(row.message.as_str(), sink.name(), &row.id, "imported")?;
+                    self.state.clear_review(&row.id)?;
+                }
+                // A row that was in the queue and is now skipped is resolved:
+                // drop it so it stops showing up.
+                Decision::Skip(_) => {
+                    self.state.clear_review(&row.id)?;
+                }
+                // Review rows are deliberately *not* marked seen. They are
+                // decisions, not deliveries: a policy change must be able to
+                // pick them up on the next run.
+                Decision::Review(reason) => {
+                    self.state.upsert_review(&ReviewEntry {
+                        tx_id: row.id.clone(),
+                        message: row.message.as_str().to_owned(),
+                        reason: reason.as_str().to_owned(),
+                        transaction: row.transaction.clone(),
+                        created_at: chrono::Utc::now().to_rfc3339(),
+                    })?;
+                }
+            }
+        }
+
+        if report.errors.is_empty() {
+            for source in &plan.sources {
+                if let Some(cursor) = &source.next_cursor {
+                    self.state.set_cursor(&source.fetcher, cursor)?;
+                }
+            }
+        }
+
+        Ok(report)
+    }
+
+    /// Import specific rows that a human approved from the review queue.
+    pub fn approve(
+        &self,
+        sink: &dyn Sink,
+        ids: &[String],
+        options: &ApplyOptions,
+    ) -> Result<Report> {
+        self.state.check_schema()?;
+
+        let mut rows = Vec::new();
+        let mut entries = Vec::new();
+
+        for id in ids {
+            let entry = self
+                .state
+                .review_entry(id)?
+                .ok_or_else(|| Error::Config(format!("no review row for {id}")))?;
+
+            let account = self
+                .accounts
+                .get(&entry.transaction.account)
+                .ok_or_else(|| {
+                    Error::Config(format!(
+                        "account `{}` is not mapped in [accounts]",
+                        entry.transaction.account
+                    ))
+                })?
+                .to_owned();
+
+            rows.push(ImportRow {
+                tx_id: entry.tx_id.clone(),
+                account,
+                transaction: entry.transaction.clone(),
+            });
+            entries.push(entry);
+        }
+
+        let report = sink.apply(&rows, options)?;
+
+        if options.dry_run {
+            return Ok(report);
+        }
+
+        let failed: HashSet<&str> = report
+            .errors
+            .iter()
+            .filter_map(|error| error.tx_id.as_deref())
+            .collect();
+
+        for entry in &entries {
+            if failed.contains(entry.tx_id.as_str()) {
+                continue;
+            }
+            self.state
+                .mark_seen(&entry.message, sink.name(), &entry.tx_id, "approved")?;
+            self.state.clear_review(&entry.tx_id)?;
+        }
+
+        Ok(report)
+    }
+}

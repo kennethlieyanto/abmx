@@ -1,22 +1,12 @@
 {
-  description = "txsync — deliver parsed bank transactions to a budget ledger";
+  description = "abmx — sync bank transaction emails into an Actual Budget ledger";
 
-  inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-
-    # txp is not on crates.io yet. `flake = false` pulls the source tree so the
-    # cargo build can resolve the `../txp` path dependency.
-    txp = {
-      url = "git+ssh://git@github.com/kennethlieyanto/txp?ref=refs/tags/v0.1.0";
-      flake = false;
-    };
-  };
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs =
     {
       self,
       nixpkgs,
-      txp,
       ...
     }:
     let
@@ -27,6 +17,9 @@
         "aarch64-darwin"
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
+
+      # Keep the package version in sync with `[workspace.package] version`.
+      version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
     in
     {
       packages = forAllSystems (
@@ -36,31 +29,44 @@
         in
         {
           default = pkgs.rustPlatform.buildRustPackage {
-            pname = "txsync";
-            version = "0.1.0";
+            pname = "abmx";
+            inherit version;
 
             src = ./.;
 
             cargoLock.lockFile = ./Cargo.lock;
 
-            # The workspace depends on `../txp`. Materialise it next to the
-            # build root so cargo resolves the same path it does locally.
-            postPatch = ''
-              mkdir -p ../txp
-              cp -r ${txp}/. ../txp/
-              chmod -R u+w ../txp
-            '';
-
-            nativeBuildInputs = [ pkgs.pkg-config ];
+            nativeBuildInputs = [
+              pkgs.makeWrapper
+              pkgs.pkg-config
+            ];
             buildInputs = [ pkgs.sqlite ];
 
+            # Build only the CLI. Without this the install hook also picks up
+            # the dev-only `xtask` binary.
+            cargoBuildFlags = [
+              "--package"
+              "abmx"
+              "--bin"
+              "abmx"
+            ];
+
+            postInstall = ''
+              mkdir -p $out/share/abmx
+              cp -r parsers $out/share/abmx/parsers
+              wrapProgram $out/bin/abmx \
+                --set-default ABMX_PARSERS "$out/share/abmx/parsers"
+            '';
+
+            # `cargo` needs a C compiler for the bundled SQLite, which stdenv
+            # provides. Nothing else is required: TLS is rustls, not OpenSSL.
             doCheck = true;
 
             meta = {
-              description = "Deliver parsed bank transactions to a budget ledger";
-              homepage = "https://github.com/kennethlieyanto/txsync";
+              description = "Sync bank transaction emails into an Actual Budget ledger";
+              homepage = "https://github.com/kennethlieyanto/actual-gmail-tx-sync";
               license = pkgs.lib.licenses.mit;
-              mainProgram = "txsync";
+              mainProgram = "abmx";
             };
           };
         }
@@ -82,12 +88,24 @@
               sqlite
             ];
 
-            # `cargo` needs a C compiler for the bundled SQLite, which stdenv
-            # provides. Nothing else is required: TLS is rustls, not OpenSSL.
             RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
           };
         }
       );
+
+      checks = forAllSystems (system: {
+        default = self.packages.${system}.default;
+      });
+
+      formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixfmt);
+
+      apps = forAllSystems (system: {
+        default = {
+          type = "app";
+          program = "${self.packages.${system}.default}/bin/abmx";
+          meta.description = "Sync bank transaction emails into an Actual Budget ledger";
+        };
+      });
 
       nixosModules.default =
         {
@@ -97,23 +115,23 @@
           ...
         }:
         let
-          cfg = config.services.txsync;
+          cfg = config.services.abmx;
         in
         {
-          options.services.txsync = {
-            enable = lib.mkEnableOption "the txsync mail-to-ledger synchronizer";
+          options.services.abmx = {
+            enable = lib.mkEnableOption "the abmx mail-to-ledger synchronizer";
 
             package = lib.mkOption {
               type = lib.types.package;
               default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
-              description = "The txsync package to run.";
+              description = "The abmx package to run.";
             };
 
             configFile = lib.mkOption {
               type = lib.types.path;
               description = ''
-                txsync.toml. Reference secrets through systemd credentials:
-                `api_key_file = "/run/credentials/txsync.service/actual-api-key"`.
+                abmx.toml. Reference secrets through systemd credentials:
+                `api_key_file = "/run/credentials/abmx.service/actual-api-key"`.
               '';
             };
 
@@ -125,7 +143,7 @@
 
             user = lib.mkOption {
               type = lib.types.str;
-              default = "txsync";
+              default = "abmx";
               description = "User the service runs as.";
             };
 
@@ -138,14 +156,14 @@
               };
               description = ''
                 Files exposed to the service as systemd credentials under
-                /run/credentials/txsync.service/<name>.
+                /run/credentials/abmx.service/<name>.
               '';
             };
 
             extraArgs = lib.mkOption {
               type = lib.types.listOf lib.types.str;
               default = [ ];
-              description = "Extra arguments appended to `txsync sync`.";
+              description = "Extra arguments appended to `abmx sync`.";
             };
           };
 
@@ -154,11 +172,11 @@
             users.users.${cfg.user} = {
               isSystemUser = true;
               group = cfg.user;
-              home = "/var/lib/txsync";
+              home = "/var/lib/abmx";
             };
 
-            systemd.services.txsync = {
-              description = "txsync — mail to ledger";
+            systemd.services.abmx = {
+              description = "abmx — mail to ledger";
               wants = [ "network-online.target" ];
               after = [ "network-online.target" ];
 
@@ -166,11 +184,11 @@
                 Type = "oneshot";
                 User = cfg.user;
                 Group = cfg.user;
-                StateDirectory = "txsync";
-                WorkingDirectory = "/var/lib/txsync";
+                StateDirectory = "abmx";
+                WorkingDirectory = "/var/lib/abmx";
 
                 # Two runs must never write to the same budget concurrently.
-                ExecStart = pkgs.writeShellScript "txsync-run" ''
+                ExecStart = pkgs.writeShellScript "abmx-run" ''
                   set -euo pipefail
                   exec ${lib.getExe cfg.package} --config ${cfg.configFile} sync ${lib.escapeShellArgs cfg.extraArgs}
                 '';
@@ -190,8 +208,8 @@
               };
             };
 
-            systemd.timers.txsync = {
-              description = "txsync — periodic sync";
+            systemd.timers.abmx = {
+              description = "abmx — periodic sync";
               wantedBy = [ "timers.target" ];
               timerConfig = {
                 OnBootSec = "2min";

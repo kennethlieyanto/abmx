@@ -3,6 +3,137 @@
 version = 4
 
 [[package]]
+name = "abmx"
+version = "0.1.0"
+dependencies = [
+ "abmx-actual",
+ "abmx-core",
+ "abmx-file",
+ "abmx-gmail",
+ "abmx-parse",
+ "abmx-parser",
+ "abmx-testkit",
+ "abmx-tx",
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "libc",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "abmx-actual"
+version = "0.1.0"
+dependencies = [
+ "abmx-core",
+ "abmx-parser",
+ "abmx-testkit",
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "abmx-core"
+version = "0.1.0"
+dependencies = [
+ "abmx-parser",
+ "abmx-tx",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "abmx-file"
+version = "0.1.0"
+dependencies = [
+ "abmx-core",
+ "chrono",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "abmx-gmail"
+version = "0.1.0"
+dependencies = [
+ "abmx-core",
+ "abmx-testkit",
+ "base64 0.22.1",
+ "chrono",
+ "rand 0.8.8",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "url",
+]
+
+[[package]]
+name = "abmx-mail"
+version = "0.1.0"
+dependencies = [
+ "abmx-tx",
+ "chrono",
+ "html5ever",
+ "mail-parser",
+ "markup5ever_rcdom",
+ "thiserror",
+]
+
+[[package]]
+name = "abmx-parse"
+version = "0.1.0"
+dependencies = [
+ "abmx-mail",
+ "abmx-tx",
+ "chrono",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
+name = "abmx-parser"
+version = "0.1.0"
+dependencies = [
+ "abmx-mail",
+ "abmx-parse",
+ "abmx-tx",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "abmx-testkit"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "abmx-tx"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1735,140 +1866,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
-name = "txp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "libc",
- "regex",
- "serde",
- "serde_json",
- "thiserror",
- "txp-core",
- "txp-mail",
- "txp-parse",
-]
-
-[[package]]
-name = "txp-core"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "schemars",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "txp-mail"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "html5ever",
- "mail-parser",
- "markup5ever_rcdom",
- "thiserror",
- "txp-core",
-]
-
-[[package]]
-name = "txp-parse"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "regex",
- "serde",
- "serde_json",
- "thiserror",
- "toml",
- "txp-core",
-]
-
-[[package]]
-name = "txsync"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "chrono",
- "clap",
- "libc",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "toml",
- "txp",
- "txsync-actual",
- "txsync-core",
- "txsync-file",
- "txsync-gmail",
- "txsync-testkit",
-]
-
-[[package]]
-name = "txsync-actual"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "reqwest",
- "serde",
- "serde_json",
- "txp",
- "txsync-core",
- "txsync-testkit",
-]
-
-[[package]]
-name = "txsync-core"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "thiserror",
- "txp",
- "txp-core",
-]
-
-[[package]]
-name = "txsync-file"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde_json",
- "tempfile",
- "txsync-core",
-]
-
-[[package]]
-name = "txsync-gmail"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "chrono",
- "rand 0.8.8",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "txsync-core",
- "txsync-testkit",
- "url",
-]
-
-[[package]]
-name = "txsync-testkit"
-version = "0.1.0"
-dependencies = [
- "serde_json",
-]
-
-[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2201,6 +2198,21 @@ dependencies = [
  "log",
  "mac",
  "markup5ever",
+]
+
+[[package]]
+name = "xtask"
+version = "0.1.0"
+dependencies = [
+ "abmx-mail",
+ "anyhow",
+ "base64 0.22.1",
+ "html5ever",
+ "mail-parser",
+ "markup5ever_rcdom",
+ "regex",
+ "serde",
+ "toml",
 ]
 
 [[package]]

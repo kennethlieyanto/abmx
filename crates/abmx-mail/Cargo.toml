@@ -1,0 +1,16 @@
+[package]
+name = "abmx-mail"
+description = "MIME and HTML normalization for abmx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+abmx-tx.workspace = true
+chrono.workspace = true
+html5ever.workspace = true
+mail-parser.workspace = true
+markup5ever_rcdom.workspace = true
+thiserror.workspace = true

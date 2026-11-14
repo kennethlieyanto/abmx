@@ -1,0 +1,21 @@
+[package]
+name = "abmx-parse"
+description = "Declarative bank email parser engine for abmx"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+abmx-tx.workspace = true
+chrono.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+abmx-mail.workspace = true
+chrono.workspace = true

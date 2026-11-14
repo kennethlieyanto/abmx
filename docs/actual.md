@@ -4,13 +4,13 @@ Actual has **no REST API**. The official client (`@actual-app/api`) is a Node
 library that downloads a copy of the budget database, mutates it, and syncs it
 back. A Rust process cannot speak that protocol without reimplementing it.
 
-`txsync` therefore talks to
+`abmx` therefore talks to
 [`actual-http-api`](https://github.com/jhonderson/actual-http-api), a small
 wrapper that exposes the parts of the official client over HTTP. Everything
 stays in Rust; nothing shells out to Node.
 
 ```
-txsync ──HTTP──► actual-http-api ──► @actual-app/api ──► actual-server
+abmx ──HTTP──► actual-http-api ──► @actual-app/api ──► actual-server
 ```
 
 ## Quick start (docker compose)
@@ -20,7 +20,7 @@ Actual server you already run.
 
 ```bash
 cp .env.example .env
-$EDITOR .env          # ACTUAL_SERVER_PASSWORD, TXSYNC_ACTUAL_API_KEY, ACTUAL_SERVER_URL
+$EDITOR .env          # ACTUAL_SERVER_PASSWORD, ABMX_ACTUAL_API_KEY, ACTUAL_SERVER_URL
 just actual-api       # docker compose up, waits until it serves /api-docs/
 just actual-api-status
 just actual-api-logs
@@ -33,7 +33,7 @@ Three variables matter:
 | --- | --- |
 | `ACTUAL_SERVER_URL` | Actual as seen **from inside the container** |
 | `ACTUAL_SERVER_PASSWORD` | your Actual server password |
-| `TXSYNC_ACTUAL_API_KEY` | the wrapper's own key; `txsync` sends it as `x-api-key` |
+| `ABMX_ACTUAL_API_KEY` | the wrapper's own key; `abmx` sends it as `x-api-key` |
 
 `ACTUAL_SERVER_URL` is the one people get wrong. The container's `localhost` is
 not your host's `localhost`:
@@ -73,14 +73,14 @@ docker run -d --name actualhttpapi \
 `API_KEY` is the wrapper's own credential. It is **not** your Actual password;
 keep them separate so a leaked ledger API key does not expose the server.
 
-## Configure `txsync`
+## Configure `abmx`
 
 ```toml
 [sink.actual]
 url = "http://localhost:5007"
 budget_sync_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-# api_key_file = "/run/credentials/txsync.service/actual-api-key"
-# budget_password_file = "/run/credentials/txsync.service/actual-budget-password"
+# api_key_file = "/run/credentials/abmx.service/actual-api-key"
+# budget_password_file = "/run/credentials/abmx.service/actual-budget-password"
 
 [accounts]
 "example-account" = "00000000-0000-0000-0000-000000000000"
@@ -90,18 +90,18 @@ Find the **Sync ID** in Actual: Settings → Show advanced settings → Sync ID.
 Find account UUIDs with:
 
 ```bash
-txsync accounts
+abmx accounts
 ```
 
 That prints every account with its id and whether `[accounts]` maps onto it. The
-mapping is never inferred: `example-account` is a `txp` key, not an Actual name, and
+mapping is never inferred: `example-account` is a parser-side key, not an Actual name, and
 guessing would be how transactions end up in the wrong account.
 
 If the budget is end-to-end encrypted, set `budget_password` (or
-`TXSYNC_ACTUAL_BUDGET_PASSWORD`). The wrapper needs it on the first request after
+`ABMX_ACTUAL_BUDGET_PASSWORD`). The wrapper needs it on the first request after
 a restart.
 
-## What `txsync` sends
+## What `abmx` sends
 
 `POST /v1/budgets/{syncId}/accounts/{accountId}/transactions/import`
 
@@ -134,7 +134,7 @@ Actual stores money as an integer of "value × 100", whatever the currency. IDR
 has no minor units, so **Rp 27,500 must be sent as `2_750_000`**. Getting this
 wrong silently multiplies every transaction by 100.
 
-`txsync` does the conversion in `txsync-actual/src/convert.rs`:
+`abmx` does the conversion in `abmx-actual/src/convert.rs`:
 
 ```
 amount = amount_minor × 10^(2 − currency_exponent)
@@ -147,20 +147,20 @@ conversion.
 Set Actual's **hide decimal places** preference for IDR, otherwise the UI shows
 `27,500.00`.
 
-### `imported_id` is `txp`'s id
+### `imported_id` is the parser's id
 
 That id is a hash of the email's `Message-ID`, so it is stable across parser
 changes and re-runs. Actual's `importTransactions` will never add the same
 `imported_id` twice.
 
-### Seeing what will happen first: `txsync diff`
+### Seeing what will happen first: `abmx diff`
 
 `importTransactions` reconciles by `imported_id` **and** by a fuzzy
 amount/date/payee match. That second path is where surprises live: a row that
 already exists under a *different* importer's id (a CSV import, a bank sync)
 can end up duplicated instead of reconciled.
 
-`txsync diff` reads the ledger for the plan's date window and classifies every
+`abmx diff` reads the ledger for the plan's date window and classifies every
 row before anything is written:
 
 ```
@@ -180,7 +180,7 @@ similarity is Actual's judgement, not ours.
 
 ### `reimportDeleted: true` — the ledger is a projection
 
-`txsync` treats the mailbox as the source of truth and the ledger as a
+`abmx` treats the mailbox as the source of truth and the ledger as a
 projection of it:
 
 | What you delete | What happens |
@@ -206,14 +206,14 @@ Two consequences:
 - **Duplicates come back too.** If you deleted a row because it was a duplicate,
   a full sync recreates it. Fix the source instead, or merge rather than delete.
 - **Incremental syncs won't notice a deletion.** They only ask Gmail for new
-  messages, so use `txsync reset` to force a full re-scan:
+  messages, so use `abmx reset` to force a full re-scan:
 
   ```bash
-  txsync reset      # forget cursors + delivered messages
-  txsync sync       # rebuild from the mailbox
+  abmx reset      # forget cursors + delivered messages
+  abmx sync       # rebuild from the mailbox
   ```
 
-  `txsync reset` never touches the ledger — it only clears local state.
+  `abmx reset` never touches the ledger — it only clears local state.
 
 ### `payeeNameNormalization: "original"`
 
@@ -225,7 +225,7 @@ The wrapper's default title-cases payee names, turning `ExamplePay` into `Exampl
 Actual's importer resolves it as `cleared: trans.cleared ?? defaultCleared`, so
 the per-row value wins.
 
-`txsync` sends `cleared: false` by default:
+`abmx` sends `cleared: false` by default:
 
 ```toml
 [sink.actual]
@@ -235,10 +235,10 @@ cleared = "never"    # never | settled | always
 | Policy | Behaviour |
 | --- | --- |
 | `never` (default) | import uncleared; clearing stays your reconciliation step |
-| `settled` | clear rows whose `txp` status is `settled` |
+| `settled` | clear rows whose parser status is `settled` |
 | `always` | clear everything |
 
-The distinction matters: `txp`'s `status: settled` means "the bank says the
+The distinction matters: the parser's `status: settled` means "the bank says the
 transaction completed", while Actual's `cleared` means "I reconciled this
 against my bank statement". Making the second claim automatically would be
 guessing, which is why it is opt-in.
@@ -248,7 +248,7 @@ cleared until you un-clear them in Actual.
 
 ## `dryRun`
 
-`txsync sync --dry-run` sets `dryRun: true` in the request body rather than
+`abmx sync --dry-run` sets `dryRun: true` in the request body rather than
 skipping the call. Actual tells you what it *would* have added, so a dry run
 still validates the account ids and the payload.
 
@@ -256,23 +256,23 @@ still validates the account ids and the payload.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `401 invalid api key` | `API_KEY` mismatch | check `TXSYNC_ACTUAL_API_KEY` against the container env |
+| `401 invalid api key` | `API_KEY` mismatch | check `ABMX_ACTUAL_API_KEY` against the container env |
 | `404` on every request | wrong Sync ID | Settings → advanced → Sync ID |
 | `Unknown error while interacting with Actual Api` | wrapper cannot reach Actual | check `ACTUAL_SERVER_URL` from *inside* the container; `just actual-api-logs` |
-| amounts are 100× too big | you are not using `txsync`'s sink | do not hand-write the `amount` field |
-| rows appear twice | a sink other than `importTransactions` was used | `txsync` always uses the reconciling import endpoint |
-| `account not found` | mapping points at a deleted account | `txsync accounts`, then fix `[accounts]` |
+| amounts are 100× too big | you are not using `abmx`'s sink | do not hand-write the `amount` field |
+| rows appear twice | a sink other than `importTransactions` was used | `abmx` always uses the reconciling import endpoint |
+| `account not found` | mapping points at a deleted account | `abmx accounts`, then fix `[accounts]` |
 | container exits immediately | `./var/actual-http-api` not writable | `just actual-api` creates it owned by you; if it is root-owned, remove it and retry |
 
 ## Concurrency
 
 `actual-http-api` holds a local copy of the budget and syncs it back. Two
-concurrent writers can stomp each other. Run one `txsync` at a time — the NixOS
+concurrent writers can stomp each other. Run one `abmx` at a time — the NixOS
 module uses a oneshot service and a timer, which serialises naturally. If you run
 it from cron, wrap it:
 
 ```bash
-flock -n /tmp/txsync.lock txsync sync
+flock -n /tmp/abmx.lock abmx sync
 ```
 
 Avoid running a sync while you are actively editing the same budget in the web
@@ -280,13 +280,13 @@ UI. Actual's own sync will merge, but the window for confusion is not worth it.
 
 ## Alternative: the JSONL sink
 
-If you would rather not run the wrapper, point `txsync` at a file and import it
+If you would rather not run the wrapper, point `abmx` at a file and import it
 yourself:
 
 ```toml
 [sink.file]
-path = "~/.local/share/txsync/ledger.jsonl"
+path = "~/.local/share/abmx/ledger.jsonl"
 ```
 
-Each line is `{ "tx_id", "account", "transaction" }` with `txp`'s contract
+Each line is `{ "tx_id", "account", "transaction" }` with the parser's contract
 verbatim. You lose automatic dedupe and automatic writes, but nothing else.

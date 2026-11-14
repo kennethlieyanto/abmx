@@ -1,19 +1,19 @@
-# txsync
+# abmx
 
-Deliver parsed bank transactions into a budget ledger — automatically.
+Sync bank transaction emails into an Actual Budget ledger — automatically.
 
-`txsync` is the missing half of [`txp`](https://github.com/kennethlieyanto/txp).
-`txp` turns one bank email into one normalized transaction and stops there, on
-purpose. `txsync` does the delivery: it fetches mail, hands the bytes to `txp` as
-a **library**, decides what is safe to import, and writes it to a ledger.
-
-```
-Gmail ──► txsync ──► txp (library) ──► policy ──► plan ──► Actual Budget
-         fetch       .eml → Transaction   decide    diff     apply
-```
+`abmx` fetches bank notification mail, parses it with a parser corpus you can
+teach without rebuilding, decides what is safe to import, and writes it to a
+ledger. It never guesses: an unsure parse, an unmapped account, or a row the
+bank reported as failed lands in a review queue instead.
 
 ```
-$ txsync sync
+Gmail ──► abmx ──► parser corpus ──► policy ──► plan ──► Actual Budget
+         fetch     .eml → Transaction   decide    diff     apply
+```
+
+```
+$ abmx sync
 fetched 15, parsed 12 — import 12, review 0, skip 0, unmatched 3, failed 0
 
 date                 amount account        decision counterparty
@@ -32,55 +32,52 @@ applied: added 12, updated 0, skipped 0, errors 0
 `-q` prints only the two summary lines; `-v` adds the parser id and source
 message key to each row.
 
-Nothing is guessed. A transaction the parser was unsure about, an account that
-has no mapping, or a row the bank reported as failed never reaches the ledger —
-it lands in a review queue instead.
-
 ## Status
 
 Early, and honest about it. One fetcher (Gmail), one real sink (Actual Budget),
 one reference sink (JSONL file). The primitives are stable; the integrations are
-thin.
+thin. The parser corpus lives in this repository under `parsers/`.
 
 ## Install
 
 ```bash
-# from a checkout, with ../txp next to it
-cargo install --path crates/txsync
+# from a checkout
+cargo install --path crates/abmx
 
 # Nix
-nix build .#          # ./result/bin/txsync
+nix build .#          # ./result/bin/abmx, parser corpus bundled
 nix develop           # rust, cargo, clippy, rustfmt, just, sqlite
 
 # or just try it in place: .envrc adds target/debug to PATH
 direnv allow          # first time only
 cargo build
-txsync --version
+abmx --version
 ```
 
-`txp` is not published to crates.io yet, so the workspace consumes it from a
-sibling checkout (`txp = { path = "../txp/crates/txp" }`). `just txp-git v0.1.0`
-switches to the pinned git tag; `just txp-local` switches back.
+The Nix package bundles the corpus and points `ABMX_PARSERS` at it. A source
+checkout discovers `./parsers` automatically.
 
 ## Quickstart
 
 ```bash
-txsync init                       # writes ~/.config/txsync/config.toml
-$EDITOR ~/.config/txsync/config.toml
-txsync auth gmail                 # OAuth2 + PKCE, stores a refresh token (0600)
-txsync doctor --online            # config, parsers, state, accounts, sink, auth
-txsync sync --dry-run             # see the plan, write nothing
-txsync sync                       # for real
+abmx init                       # writes ~/.config/abmx/config.toml
+$EDITOR ~/.config/abmx/config.toml
+abmx auth gmail                 # OAuth2 + PKCE, stores a refresh token (0600)
+abmx doctor --online            # config, parsers, state, accounts, sink, auth
+abmx sync --dry-run             # see the plan, write nothing
+abmx sync                       # for real
 ```
 
-Then put `txsync sync` on a timer (see the NixOS module below).
+Then put `abmx sync` on a timer (see the NixOS module below).
 
 ### You need
 
-1. **A `txp` parser corpus** — `txsync` does not ship bank templates.
+1. **A parser corpus** — this repository ships one under `parsers/`. A source
+   checkout picks it up automatically; elsewhere point at it with `--parsers`,
+   `$ABMX_PARSERS`, or `~/.config/abmx/parsers`.
    ```bash
-   tar xzf txp-parsers-<version>.tar.gz -C ~/.config/txp
-   txp paths     # confirms what txsync will load
+   abmx parser paths     # what will load, and which directory won
+   abmx parser specs     # every parser and the file it came from
    ```
 2. **A Gmail OAuth client** — one Google Cloud project, `gmail.readonly`, desktop
    app client. See [docs/gmail.md](docs/gmail.md).
@@ -89,14 +86,36 @@ Then put `txsync sync` on a timer (see the NixOS module below).
    From a checkout: `cp .env.example .env`, fill in the Actual password and API
    key, then `just actual-api`. See [docs/actual.md](docs/actual.md).
 
+## Why mail, not statements?
+
+The obvious alternative is to parse the monthly statement instead. Statements
+are complete and bank-authoritative, but they are also about a month late, and
+the whole point here is to see a transaction the day it happens.
+
+|                        | Email notification       | Monthly statement        |
+| ---------------------- | ------------------------ | ------------------------ |
+| Latency                | minutes                  | ~30 days                 |
+| Granularity            | one event per message    | whole period             |
+| Completeness           | lossy (thresholds, spam, channels the bank does not email) | bank-authoritative |
+| Metadata               | merchant, channel, reference id | often less        |
+| Balances               | usually not captured     | opening + closing        |
+| Parsing cost           | stable HTML labels       | PDF/CSV/Excel, fragile   |
+
+So email is the live path, and statements are the reconciliation path. Statement
+import is planned, not implemented: when it lands it will backfill missed rows
+and anchor per-account balances. Until then, `abmx` clears nothing
+automatically — Actual's `cleared` flag stays yours to set against a statement.
+
 ## Authoring a parser with an AI
 
-`txsync` does not write bank templates — that is `txp`'s corpus. What it can do
-is package the evidence: normalized block dumps, cross-sample variance, the
-current corpus, and the spec contract into one prompt an agent can act on.
+Parsers are runtime data: a TOML spec per bank template, loaded from a directory.
+Adding one does not require rebuilding or writing code. The spec format is
+documented in [docs/parsing.md](docs/parsing.md). `abmx` packages the evidence for
+an agent: normalized block dumps, cross-sample variance, the current corpus, and
+the spec contract.
 
 ```bash
-txsync generate prompt parser \
+abmx generate prompt parser \
   --input ./eml-dir \
   --out ./parser-prompt.md
 
@@ -107,15 +126,15 @@ The prompt is self-contained, so it works for a one-shot agent. For interactive
 work, install the reusable skills instead:
 
 ```bash
-txsync generate skill parser --global   # ~/.config/opencode/skills
-txsync generate skill parser --out .opencode/skills
+abmx generate skill parser --global   # ~/.config/opencode/skills
+abmx generate skill parser --out .opencode/skills
 ```
 
-The agent can inspect one message with `txsync dump <file.eml>` and validate a
+The agent can inspect one message with `abmx dump <file.eml>` and validate a
 candidate spec against saved samples:
 
 ```bash
-txsync verify parser ./drafts/my.bank.toml --input ./eml-dir
+abmx verify parser ./drafts/my.bank.toml --input ./eml-dir
 ```
 
 `verify` never touches the live corpus. A spec is only done when every sample is
@@ -125,11 +144,11 @@ before copying anything into `[general].parsers` or changing `[accounts]`.
 
 ### Sampling from Gmail labels
 
-If you have labelled a set of emails that share a structure, let txsync fetch the
+If you have labelled a set of emails that share a structure, let abmx fetch the
 samples:
 
 ```bash
-txsync generate prompt parser \
+abmx generate prompt parser \
   --from-gmail-label 'example/QRIS,example/Transfer' \
   --id-from label \
   --out ./parser-prompt.md
@@ -149,24 +168,25 @@ split them if the block shapes disagree. See [docs/authoring.md](docs/authoring.
 | **State**   | cursors, delivered messages, review queue | SQLite                     |
 
 A new mailbox is a new `Fetcher`. A new ledger is a new `Sink`. Neither requires
-touching the runner, the CLI, or the other integrations. See
+touching the runner, the CLI, or the other integrations. Adding a *bank*, by
+contrast, is a TOML file — no rebuild. See
 [docs/architecture.md](docs/architecture.md) for why the seams are where they
 are.
 
 ### Why email-only input is a feature
 
-`txp`'s contract is `.eml` bytes in, one `Transaction` out. Keeping that contract
-narrow is what makes parsers testable against files. Sources that are not email
-(a CSV export, a bank API) don't need to go through `txp` at all — they emit the
-same `Transaction` JSON and enter at the policy stage.
+The parser's contract is `.eml` bytes in, one `Transaction` out. Keeping that
+contract narrow is what makes parsers testable against files. Sources that are
+not email (a CSV export, a bank API) don't need to go through the parser at all —
+they emit the same `Transaction` JSON and enter at the policy stage.
 
 ## How duplication is prevented
 
 Three independent layers, because they fail in different ways:
 
-1. **`imported_id`** — every row carries `txp`'s stable id (a hash of the email's
-   `Message-ID`). Actual's `importTransactions` never adds the same `imported_id`
-   twice, so replaying a plan is safe.
+1. **`imported_id`** — every row carries the parser's stable id (a hash of the
+   email's `Message-ID`). Actual's `importTransactions` never adds the same
+   `imported_id` twice, so replaying a plan is safe.
 2. **State** — a delivered message is recorded so the next run doesn't even
    re-parse it. This is an optimisation for idempotent sinks and a requirement
    for sinks that have no idempotency key.
@@ -178,14 +198,14 @@ Three independent layers, because they fail in different ways:
 
 ```toml
 [general]
-parsers = []                       # empty = txp's implicit discovery
-state = "~/.local/state/txsync/state.db"
+parsers = []                       # empty = implicit discovery
+state = "~/.local/state/abmx/state.db"
 
 [fetch.gmail]
 client_id = "….apps.googleusercontent.com"
 lookback_days = 7                  # floor for full syncs
 max_messages = 200
-# query_extra = "-label:txsync-ignored"
+# query_extra = "-label:abmx-ignored"
 # labels = ["INBOX"]
 
 [sink.actual]
@@ -205,8 +225,8 @@ heuristic = "review"               # review | import | skip
 failed = "skip"                    # skip | review | import
 ```
 
-Resolution order: `--config` → `$TXSYNC_CONFIG` → `$XDG_CONFIG_HOME/txsync/config.toml`
-→ `./txsync.toml`. Relative paths resolve against the config file's directory.
+Resolution order: `--config` → `$ABMX_CONFIG` → `$XDG_CONFIG_HOME/abmx/config.toml`
+→ `./abmx.toml`. Relative paths resolve against the config file's directory.
 
 ### Secrets
 
@@ -220,48 +240,61 @@ cp .env.example .env     # .env is gitignored
 $EDITOR .env
 ```
 
-`.envrc` runs `dotenv_if_exists .env`, so every `txsync` invocation in this
+`.envrc` runs `dotenv_if_exists .env`, so every `abmx` invocation in this
 directory sees the secrets without exporting them by hand.
 
-| Secret                 | Environment                     | Config field                               |
-| ---------------------- | ------------------------------- | ------------------------------------------ |
-| Gmail client secret    | `TXSYNC_GMAIL_CLIENT_SECRET`    | `client_secret` / `client_secret_file`     |
-| Actual API key         | `TXSYNC_ACTUAL_API_KEY`         | `api_key` / `api_key_file`                 |
-| Actual budget password | `TXSYNC_ACTUAL_BUDGET_PASSWORD` | `budget_password` / `budget_password_file` |
+| Secret                 | Environment                   | Config field                               |
+| ---------------------- | ----------------------------- | ------------------------------------------ |
+| Gmail client secret    | `ABMX_GMAIL_CLIENT_SECRET`    | `client_secret` / `client_secret_file`     |
+| Actual API key         | `ABMX_ACTUAL_API_KEY`         | `api_key` / `api_key_file`                 |
+| Actual budget password | `ABMX_ACTUAL_BUDGET_PASSWORD` | `budget_password` / `budget_password_file` |
 
 ## CLI
 
 ```
-txsync init [--path FILE] [--force]   write a starter config
-txsync auth gmail [--manual]          OAuth2 + PKCE; --manual for a headless box
-txsync auth logout [--no-revoke]      revoke the refresh token, then remove it locally
-txsync doctor [--online]              check config, parsers, state, accounts, sink, auth
-txsync plan [--from-dir DIR] [--out FILE]
+abmx init [--path FILE] [--force]   write a starter config
+abmx auth gmail [--manual]          OAuth2 + PKCE; --manual for a headless box
+abmx auth logout [--no-revoke]      revoke the refresh token, then remove it locally
+abmx doctor [--online]              check config, parsers, state, accounts, sink, auth
+abmx plan [--from-dir DIR] [--out FILE]
                                       fetch + parse + decide, print the plan as JSON
-txsync apply [--plan FILE] [--dry-run]
+abmx apply [--plan FILE] [--dry-run]
                                       write a plan (current or saved)
-txsync sync [--dry-run]               plan + apply; the timer entrypoint
-txsync diff [--json] [--since D] [--until D]
+abmx sync [--dry-run]               plan + apply; the timer entrypoint
+abmx diff [--json] [--since D] [--until D]
                                       compare the plan against what the ledger already holds
-txsync reset [--review] [--purge] [--yes]
+abmx reset [--review] [--purge] [--yes]
                                       forget cursors and delivered messages
-txsync review [--json]                rows waiting for a human
-txsync approve <id>… [--dry-run]      import reviewed rows
-txsync accounts [--json]              sink accounts and how [accounts] maps onto them
-txsync parsers                        loaded txp parsers and the senders they claim
-txsync dump <path> [--json]           normalized block dump (authoring aid)
-txsync verify parser <spec> --input DIR [--json]
+abmx review [--json]                rows waiting for a human
+abmx approve <id>… [--dry-run]      import reviewed rows
+abmx accounts [--json]              sink accounts and how [accounts] maps onto them
+abmx parsers                        loaded parsers and the senders they claim
+abmx dump <path> [--json]           normalized block dump (authoring aid)
+abmx verify parser <spec> --input DIR [--json]
                                       check a candidate parser against samples
-txsync generate prompt parser …       prompt an AI to author a parser
-txsync generate skill parser …        write the OpenCode authoring skills
+abmx generate prompt parser …       prompt an AI to author a parser
+abmx generate skill parser …        write the OpenCode authoring skills
+
+abmx parser paths [--json]          parser search order and which directory won
+abmx parser specs [--format F]      loaded parsers and their files
+abmx parser senders [--format F]    sender addresses the corpus covers
+abmx parser schema                  JSON Schema of the transaction contract
+abmx parser parse <path> [--format json|ndjson|table]
+                                      parse a file or directory
+abmx parser route <path>            which parser claims an email, and why
+abmx parser check [-v] [--parser ID]
+                                      verify every parser against its fixtures
+abmx parser corpus [--dir DIR]      summarise how a directory parses
+abmx parser init <id>               scaffold parsers/<id>.toml and fixtures/<id>/
+abmx parser infer <dir> [--id ID]   draft a spec from a directory of emails
 ```
 
-**stdout is data, stderr is diagnostics.** `txsync plan` writes the plan JSON to
+**stdout is data, stderr is diagnostics.** `abmx plan` writes the plan JSON to
 stdout and the human summary to stderr, so it pipes cleanly:
 
 ```bash
-txsync plan --from-dir ./mail > plan.json
-txsync apply --plan plan.json --dry-run
+abmx plan --from-dir ./mail > plan.json
+abmx apply --plan plan.json --dry-run
 ```
 
 `--from-dir` reads saved `.eml` files instead of calling Gmail. It is the fastest
@@ -278,7 +311,10 @@ way to test a config, and the recovery path if a mailbox provider breaks.
 
 `sync` and `apply` return `0` when the only outstanding work is a review row —
 a timer that fails every 15 minutes because one heuristic email is waiting is a
-timer nobody reads. Use `txsync review` (exit `3` when non-empty) to detect them.
+timer nobody reads. Use `abmx review` (exit `3` when non-empty) to detect them.
+
+`abmx parser` follows the parser's own convention: `0` all strict, `2` unmatched
+or failed, `3` heuristic unless `--allow-heuristic`.
 
 ## Policy
 
@@ -293,26 +329,27 @@ timer nobody reads. Use `txsync review` (exit `3` when non-empty) to detect them
 Review rows are **re-checked on every sync**, even though their messages are
 behind the cursor: the queue stores the transaction, so fixing `[accounts]` or
 `[policy]` imports them on the next run — no reset and no per-row approval.
-`txsync approve` is only for forcing a row the policy still rejects.
+`abmx approve` is only for forcing a row the policy still rejects.
 
 `plan` and `--dry-run` do not record the queue (a dry run must not write state),
-so they say "would be held for review" rather than pointing at `txsync review`.
+so they say "would be held for review" rather than pointing at `abmx review`.
 
 ## Actual Budget specifics
 
 Actual has no REST API of its own — the official client is a Node library that
-mutates a local copy of the budget. `txsync` talks to `actual-http-api`, which
+mutates a local copy of the budget. `abmx` talks to `actual-http-api`, which
 wraps that library and exposes the reconciling import endpoint. Two details that
 matter:
 
 - **`amount` is value × 100 for every currency.** Rp 27,500 is sent as
-  `2_750_000`. `txsync` does this conversion in the sink, with tests.
-- **`imported_id` is `txp`'s id**, and `reimportDeleted` is `true`: the ledger is
-  a projection of the mailbox, so a full sync recreates rows you deleted.
-  Delete the email to make a transaction stay gone.
-- **Rows are imported uncleared** (`cleared = "never"`). `txp`'s `settled` means
-  the bank completed the transaction; Actual's `cleared` means you reconciled it
-  against a statement. Set `cleared = "settled"` if you want the old behaviour.
+  `2_750_000`. `abmx` does this conversion in the sink, with tests.
+- **`imported_id` is the parser's id**, and `reimportDeleted` is `true`: the
+  ledger is a projection of the mailbox, so a full sync recreates rows you
+  deleted. Delete the email to make a transaction stay gone.
+- **Rows are imported uncleared** (`cleared = "never"`). The parser's `settled`
+  means the bank completed the transaction; Actual's `cleared` means you
+  reconciled it against a statement. Set `cleared = "settled"` if you want the
+  old behaviour.
 
 ## Security
 
@@ -322,7 +359,7 @@ matter:
   flow (Google retired it).
 - Ledger credentials are separate from mailbox credentials and live in different
   files.
-- `txsync` reads mail and writes to a ledger. It never deletes mail and never
+- `abmx` reads mail and writes to a ledger. It never deletes mail and never
   deletes ledger rows.
 
 ## Testing
@@ -330,22 +367,23 @@ matter:
 ```bash
 just test     # unit + integration + end-to-end, no network, no credentials
 just check    # fmt + clippy -D warnings
-just ci       # both
+just fixtures # every parser against its committed samples
+just ci       # all of the above
 ```
 
-The end-to-end test (`crates/txsync/tests/e2e.rs`) runs a real `txp` parse over a
-real `.eml`, against a fake Gmail API and a fake `actual-http-api`, and asserts
-the exact JSON body that reaches Actual — including the ×100 amount conversion.
+The end-to-end test (`crates/abmx/tests/e2e.rs`) runs a real parse over a real
+`.eml`, against a fake Gmail API and a fake `actual-http-api`, and asserts the
+exact JSON body that reaches Actual — including the ×100 amount conversion.
 
 ## NixOS
 
 ```nix
 {
-  inputs.txsync.url = "git+ssh://git@github.com/kennethlieyanto/txsync";
+  inputs.abmx.url = "git+ssh://git@github.com/kennethlieyanto/actual-gmail-tx-sync";
 
-  services.txsync = {
+  services.abmx = {
     enable = true;
-    configFile = /etc/txsync/config.toml;
+    configFile = /etc/abmx/config.toml;
     interval = "15min";
     secrets = {
       "actual-api-key" = config.age.secrets.actual-api-key.path;
@@ -355,15 +393,17 @@ the exact JSON body that reaches Actual — including the ×100 amount conversio
 }
 ```
 
-Credentials land in `/run/credentials/txsync.service/<name>`, so the config refers
-to them as `api_key_file = "/run/credentials/txsync.service/actual-api-key"`.
+Credentials land in `/run/credentials/abmx.service/<name>`, so the config refers
+to them as `api_key_file = "/run/credentials/abmx.service/actual-api-key"`.
 
 ## Out of scope, by design
 
-- Parsing bank templates. That is `txp`.
+- Parsing bank templates in code. Templates are runtime TOML specs.
+- Statement import and balance reconciliation. Planned; see "Why mail, not
+  statements?" above.
 - Transfers linking (importing both sides of a transfer as one).
-- Pending → settled reconciliation. Today `txp` emits no `pending` rows; when it
-  does, this needs a matching rule, not a heuristic.
+- Pending → settled reconciliation. Today the parser emits no `pending` rows;
+  when it does, this needs a matching rule, not a heuristic.
 - Multi-currency conversion. `amount_minor` and `currency_exponent` are carried
   through unchanged.
 - Webhooks and push sources. The `Sink` trait is push-shaped, but nothing calls
@@ -372,13 +412,20 @@ to them as `api_key_file = "/run/credentials/txsync.service/actual-api-key"`.
 ## Layout
 
 ```
-crates/txsync-core/    traits and types. No I/O, no network.
-crates/txsync-gmail/   Fetcher: Gmail API + OAuth2/PKCE
-crates/txsync-actual/  Sink: actual-http-api
-crates/txsync-file/    Sink: append-only JSONL (reference implementation)
-crates/txsync/         config, SQLite state, runner, CLI
-crates/txsync-testkit/ a blocking HTTP mock server for tests
-docker-compose.yml     actual-http-api wrapper for local testing
+crates/abmx/         config, SQLite state, runner, CLI, AI authoring
+crates/abmx-core/    traits and types. No I/O, no network.
+crates/abmx-gmail/   Fetcher: Gmail API + OAuth2/PKCE
+crates/abmx-actual/  Sink: actual-http-api
+crates/abmx-file/    Sink: append-only JSONL (reference implementation)
+crates/abmx-testkit/ a blocking HTTP mock server for tests
+crates/abmx-tx/      the Transaction contract
+crates/abmx-mail/    MIME and HTML normalization
+crates/abmx-parse/   the declarative parser engine
+crates/abmx-parser/  corpus discovery, routing, schema
+parsers/             the bank template corpus (runtime data)
+fixtures/            redacted .eml samples, one directory per parser
+xtask/               fixture redaction helper
+docker-compose.yml   actual-http-api wrapper for local testing
 ```
 
 MIT.

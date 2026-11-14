@@ -141,12 +141,12 @@ split them if the block shapes disagree. See [docs/authoring.md](docs/authoring.
 
 ## The four primitives
 
-| Primitive | Responsibility | Ships with |
-| --- | --- | --- |
-| **Fetcher** | a source of raw RFC 5322 bytes | Gmail API, local directory |
-| **Policy** | `Transaction` → import / review / skip | one pure function |
-| **Sink** | decided rows → the ledger | Actual Budget, JSONL file |
-| **State** | cursors, delivered messages, review queue | SQLite |
+| Primitive   | Responsibility                            | Ships with                 |
+| ----------- | ----------------------------------------- | -------------------------- |
+| **Fetcher** | a source of raw RFC 5322 bytes            | Gmail API, local directory |
+| **Policy**  | `Transaction` → import / review / skip    | one pure function          |
+| **Sink**    | decided rows → the ledger                 | Actual Budget, JSONL file  |
+| **State**   | cursors, delivered messages, review queue | SQLite                     |
 
 A new mailbox is a new `Fetcher`. A new ledger is a new `Sink`. Neither requires
 touching the runner, the CLI, or the other integrations. See
@@ -170,7 +170,7 @@ Three independent layers, because they fail in different ways:
 2. **State** — a delivered message is recorded so the next run doesn't even
    re-parse it. This is an optimisation for idempotent sinks and a requirement
    for sinks that have no idempotency key.
-3. **Cursor discipline** — Gmail's `historyId` only advances when *every* row in
+3. **Cursor discipline** — Gmail's `historyId` only advances when _every_ row in
    the batch succeeded. A partial failure leaves the cursor in place; the next
    run replays and the state database skips what already landed.
 
@@ -223,10 +223,10 @@ $EDITOR .env
 `.envrc` runs `dotenv_if_exists .env`, so every `txsync` invocation in this
 directory sees the secrets without exporting them by hand.
 
-| Secret | Environment | Config field |
-| --- | --- | --- |
-| Gmail client secret | `TXSYNC_GMAIL_CLIENT_SECRET` | `client_secret` / `client_secret_file` |
-| Actual API key | `TXSYNC_ACTUAL_API_KEY` | `api_key` / `api_key_file` |
+| Secret                 | Environment                     | Config field                               |
+| ---------------------- | ------------------------------- | ------------------------------------------ |
+| Gmail client secret    | `TXSYNC_GMAIL_CLIENT_SECRET`    | `client_secret` / `client_secret_file`     |
+| Actual API key         | `TXSYNC_ACTUAL_API_KEY`         | `api_key` / `api_key_file`                 |
 | Actual budget password | `TXSYNC_ACTUAL_BUDGET_PASSWORD` | `budget_password` / `budget_password_file` |
 
 ## CLI
@@ -269,12 +269,12 @@ way to test a config, and the recovery path if a mailbox provider breaks.
 
 ### Exit codes
 
-| Code | Meaning |
-| --- | --- |
-| `0` | clean |
-| `1` | the tool failed (config, network, state) |
-| `2` | at least one message or row failed |
-| `3` | `plan` / `review` / `diff` only: rows are waiting for review, or `diff` found a row the ledger already holds under a foreign `imported_id` |
+| Code | Meaning                                                                                                                                    |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `0`  | clean                                                                                                                                      |
+| `1`  | the tool failed (config, network, state)                                                                                                   |
+| `2`  | at least one message or row failed                                                                                                         |
+| `3`  | `plan` / `review` / `diff` only: rows are waiting for review, or `diff` found a row the ledger already holds under a foreign `imported_id` |
 
 `sync` and `apply` return `0` when the only outstanding work is a review row —
 a timer that fails every 15 minutes because one heuristic email is waiting is a
@@ -282,13 +282,13 @@ timer nobody reads. Use `txsync review` (exit `3` when non-empty) to detect them
 
 ## Policy
 
-| Situation | Default | Why |
-| --- | --- | --- |
-| `status = failed` | skip | the bank says it did not happen |
-| `extraction = heuristic` | review | the amount is plausible, not verified |
-| zero amount | review | almost always the wrong block matched |
-| account not in `[accounts]` | review | never guess a ledger account |
-| everything else | import | |
+| Situation                   | Default | Why                                   |
+| --------------------------- | ------- | ------------------------------------- |
+| `status = failed`           | skip    | the bank says it did not happen       |
+| `extraction = heuristic`    | review  | the amount is plausible, not verified |
+| zero amount                 | review  | almost always the wrong block matched |
+| account not in `[accounts]` | review  | never guess a ledger account          |
+| everything else             | import  |                                       |
 
 Review rows are **re-checked on every sync**, even though their messages are
 behind the cursor: the queue stores the transaction, so fixing `[accounts]` or

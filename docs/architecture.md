@@ -25,15 +25,15 @@ a new ledger is a new crate, not a change to the runner.
 and bank templates churn weekly. `txsync`'s hard problem is different:
 **transport, identity, and state**. Copying the stages would give symmetry but
 the wrong abstraction — `txsync` never routes, and its "output" is not the
-product; the *write* is.
+product; the _write_ is.
 
-| `txp` | `txsync` | Difference |
-| --- | --- | --- |
-| input | **Fetcher** | same role, transport varies per user |
-| router | — | routing is parsing |
-| parser spec | `txp` itself | not reimplemented |
-| output schema | **Policy → Sink** | the decision and the write are separate |
-| — | **State** | no equivalent in `txp`, and where the correctness lives |
+| `txp`         | `txsync`          | Difference                                              |
+| ------------- | ----------------- | ------------------------------------------------------- |
+| input         | **Fetcher**       | same role, transport varies per user                    |
+| router        | —                 | routing is parsing                                      |
+| parser spec   | `txp` itself      | not reimplemented                                       |
+| output schema | **Policy → Sink** | the decision and the write are separate                 |
+| —             | **State**         | no equivalent in `txp`, and where the correctness lives |
 
 ## The primitives
 

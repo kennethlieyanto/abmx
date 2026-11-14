@@ -582,6 +582,7 @@ impl Status {
 struct Line {
     status: Status,
     message: String,
+    hint: Option<String>,
 }
 
 struct Section {
@@ -601,6 +602,16 @@ impl Section {
         self.lines.push(Line {
             status,
             message: message.into(),
+            hint: None,
+        });
+    }
+
+    /// Like `push`, plus a "what to do about it" line.
+    fn hint(&mut self, status: Status, message: impl Into<String>, hint: impl Into<String>) {
+        self.lines.push(Line {
+            status,
+            message: message.into(),
+            hint: Some(hint.into()),
         });
     }
 }
@@ -617,6 +628,9 @@ fn render_sections(sections: &[Section]) -> (usize, usize, usize) {
         println!("{}", section.name);
         for line in &section.lines {
             println!("  {:<5} {}", line.status.label(), line.message);
+            if let Some(hint) = &line.hint {
+                println!("        {hint}");
+            }
             match line.status {
                 Status::Fail => failures += 1,
                 Status::Warn => warnings += 1,
@@ -659,7 +673,11 @@ fn doctor(settings: &Settings, online: bool) -> Result<i32> {
             Some(parser)
         }
         Err(error) => {
-            parsers_section.push(Status::Fail, error.to_string());
+            parsers_section.hint(
+                Status::Fail,
+                error.to_string(),
+                "run `txp paths` to see where the corpus was looked for, or set [general] parsers",
+            );
             None
         }
     };
@@ -676,9 +694,17 @@ fn doctor(settings: &Settings, online: bool) -> Result<i32> {
                     txsync_core::TXP_SCHEMA_VERSION
                 ),
             ),
-            Err(error) => state_section.push(Status::Fail, error.to_string()),
+            Err(error) => state_section.hint(
+                Status::Fail,
+                error.to_string(),
+                "the state was written against a different txp schema; `txsync reset --purge` starts fresh",
+            ),
         },
-        Err(error) => state_section.push(Status::Fail, error.to_string()),
+        Err(error) => state_section.hint(
+            Status::Fail,
+            error.to_string(),
+            "if the file is corrupt, `txsync reset --purge` removes it",
+        ),
     }
 
     // The sink is resolved first so the account section can show names, not
@@ -717,7 +743,11 @@ fn doctor(settings: &Settings, online: bool) -> Result<i32> {
                         );
                         sink_accounts = Some(accounts);
                     }
-                    Err(error) => sink_section.push(Status::Fail, error.to_string()),
+                    Err(error) => sink_section.hint(
+                        Status::Fail,
+                        error.to_string(),
+                        "is actual-http-api reachable and budget_sync_id correct? `just actual-api` starts it locally",
+                    ),
                 }
             }
         }
@@ -736,7 +766,11 @@ fn doctor(settings: &Settings, online: bool) -> Result<i32> {
 
         for account in &declared {
             let Some(id) = mapped.get(account) else {
-                accounts_section.push(Status::Warn, format!("{account} is not in [accounts]"));
+                accounts_section.hint(
+                    Status::Warn,
+                    format!("{account} is not in [accounts]"),
+                    "add it to [accounts]; until then its rows wait for review",
+                );
                 continue;
             };
 
@@ -749,9 +783,10 @@ fn doctor(settings: &Settings, online: bool) -> Result<i32> {
                     Status::Ok,
                     format!("{:<width$} -> {} ({id})", account, sink_account.name),
                 ),
-                (true, None, true) => accounts_section.push(
+                (true, None, true) => accounts_section.hint(
                     Status::Fail,
                     format!("{:<width$} -> {id} is not an account in the sink", account),
+                    "run `txsync accounts` to list valid ids",
                 ),
                 _ => accounts_section.push(Status::Ok, format!("{:<width$} -> {id}", account)),
             }
@@ -768,7 +803,11 @@ fn doctor(settings: &Settings, online: bool) -> Result<i32> {
                 gmail.max_messages.unwrap_or(txsync_core::DEFAULT_LIMIT)
             ),
         ),
-        None => fetchers_section.push(Status::Warn, "no [fetch.gmail] section"),
+        None => fetchers_section.hint(
+            Status::Warn,
+            "no [fetch.gmail] section",
+            "add [fetch.gmail], or use `--from-dir` to sync saved .eml files",
+        ),
     }
 
     let mut auth_section = Section::new("auth");
@@ -790,14 +829,26 @@ fn doctor(settings: &Settings, online: bool) -> Result<i32> {
                                 profile.email_address, profile.history_id
                             ),
                         ),
-                        Err(error) => auth_section.push(Status::Fail, error.to_string()),
+                        Err(error) => auth_section.hint(
+                            Status::Fail,
+                            error.to_string(),
+                            "the refresh token may be revoked or expired; run `txsync auth gmail`",
+                        ),
                     },
-                    Err(error) => auth_section.push(Status::Fail, error.to_string()),
+                    Err(error) => auth_section.hint(
+                        Status::Fail,
+                        error.to_string(),
+                        "run `txsync auth gmail` to store credentials",
+                    ),
                 },
                 Ok(None) => {
                     auth_section.push(Status::Fail, "gmail: no token; run `txsync auth gmail`")
                 }
-                Err(error) => auth_section.push(Status::Fail, error.to_string()),
+                Err(error) => auth_section.hint(
+                    Status::Fail,
+                    error.to_string(),
+                    "run `txsync auth gmail` to store credentials",
+                ),
             }
         }
     }

@@ -63,8 +63,10 @@ Exit codes: `0` all strict, `3` at least one heuristic, `2` unmatched or failed,
 
 A parser only becomes useful when abmx can load it and route real mail to it:
 
-1. Copy the verified `<id>.toml` into a directory listed by `[general].parsers`,
-   or into the implicit corpus.
+1. Copy the verified parser directory `parsers/<id>/` (both `config.toml` and
+   `fixtures/`) into a directory listed by `[general].parsers`, or into the
+   implicit corpus at `~/.config/abmx/parsers/`. The directory name is the
+   parser id; the spec has no `id` field.
 2. Make sure `[defaults].account` matches a key in `[accounts]`. The value in
    `[accounts]` is the sink's account id, not a guess.
 3. Run `abmx parsers` to confirm the spec loaded and its sender is advertised.

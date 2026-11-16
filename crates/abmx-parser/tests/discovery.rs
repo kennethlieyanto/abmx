@@ -12,10 +12,9 @@ fn temp(name: &str) -> PathBuf {
     dir
 }
 
-fn spec(id: &str, version: u32) -> String {
+fn spec(version: u32) -> String {
     format!(
         r#"spec_version = 1
-id = "{id}"
 version = {version}
 
 [match]
@@ -48,6 +47,13 @@ locale  = "en"
     )
 }
 
+/// Write `root/<id>/config.toml`, the layout the loader expects.
+fn write_parser(root: &std::path::Path, id: &str, version: u32) {
+    let dir = root.join(id);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("config.toml"), spec(version)).unwrap();
+}
+
 #[test]
 fn explicit_dirs_merge_and_first_wins() {
     let root = temp("merge");
@@ -56,9 +62,9 @@ fn explicit_dirs_merge_and_first_wins() {
     fs::create_dir_all(&base).unwrap();
     fs::create_dir_all(&over).unwrap();
 
-    fs::write(base.join("bank.one.toml"), spec("bank.one", 1)).unwrap();
-    fs::write(over.join("bank.one.toml"), spec("bank.one", 9)).unwrap();
-    fs::write(over.join("bank.two.toml"), spec("bank.two", 1)).unwrap();
+    write_parser(&base, "bank.one", 1);
+    write_parser(&over, "bank.one", 9);
+    write_parser(&over, "bank.two", 1);
 
     let options = Options {
         parsers: vec![base.clone(), over.clone()],
@@ -78,34 +84,49 @@ fn explicit_dirs_merge_and_first_wins() {
 }
 
 #[test]
-fn duplicate_id_inside_one_directory_is_an_error() {
-    let root = temp("duplicate");
-    let nested = root.join("nested");
-    fs::create_dir_all(&nested).unwrap();
+fn directory_name_is_the_parser_id() {
+    let root = temp("id-from-dir");
+    write_parser(&root, "bank.one", 1);
 
-    // Both files declare `bank.one`, so the id/file-stem check fires on the
-    // second one before the duplicate check; either way loading must fail.
-    fs::write(root.join("bank.one.toml"), spec("bank.one", 1)).unwrap();
-    fs::write(nested.join("bank.one.toml"), spec("bank.one", 2)).unwrap();
-
-    let result = Parser::load(&Options {
+    let (parser, _) = Parser::load(&Options {
         parsers: vec![root],
         router: None,
-    });
-    assert!(result.is_err());
+    })
+    .expect("load");
+
+    assert_eq!(parser.registry().parsers[0].id, "bank.one");
+    assert!(parser.registry().find("bank.one").is_some());
 }
 
 #[test]
-fn id_must_match_the_file_name() {
+fn directory_name_must_look_like_a_parser_id() {
     let root = temp("mismatch");
-    fs::write(root.join("wrong.name.toml"), spec("bank.one", 1)).unwrap();
+    let dir = root.join("wrongname");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("config.toml"), spec(1)).unwrap();
 
     let result = Parser::load(&Options {
         parsers: vec![root],
         router: None,
     });
     let error = result.err().expect("must fail").to_string();
-    assert!(error.contains("does not match"), "got: {error}");
+    assert!(error.contains("must look like"), "got: {error}");
+}
+
+#[test]
+fn flat_layout_gets_an_actionable_error() {
+    let root = temp("flat");
+    fs::write(root.join("bank.one.toml"), spec(1)).unwrap();
+
+    let error = Parser::load(&Options {
+        parsers: vec![root],
+        router: None,
+    })
+    .err()
+    .expect("must fail")
+    .to_string();
+
+    assert!(error.contains("<id>/config.toml"), "got: {error}");
 }
 
 #[test]
@@ -135,9 +156,9 @@ fn configmap_style_symlinks_are_followed() {
     // A ConfigMap volume looks like: ..data/<key> with sibling symlinks.
     let root = temp("configmap");
     let data = root.join("..data");
-    fs::create_dir_all(&data).unwrap();
-    fs::write(data.join("bank.one.toml"), spec("bank.one", 1)).unwrap();
-    std::os::unix::fs::symlink(data.join("bank.one.toml"), root.join("bank.one.toml")).unwrap();
+    fs::create_dir_all(data.join("bank.one")).unwrap();
+    fs::write(data.join("bank.one/config.toml"), spec(1)).unwrap();
+    std::os::unix::fs::symlink(data.join("bank.one"), root.join("bank.one")).unwrap();
 
     let (parser, _) = Parser::load(&Options {
         parsers: vec![root],

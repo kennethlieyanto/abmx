@@ -72,6 +72,12 @@ pub fn default_state_db() -> PathBuf {
     xdg_state_dir().join("abmx/state.db")
 }
 
+/// The user-level parser corpus. `abmx parser init` writes here when no
+/// `--parsers` directory is given.
+pub fn default_parsers_dir() -> PathBuf {
+    xdg_config_dir().join("abmx/parsers")
+}
+
 pub fn default_token_path() -> PathBuf {
     xdg_state_dir().join("abmx/gmail-credentials.json")
 }

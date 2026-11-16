@@ -235,13 +235,17 @@ enum SkillCommand {
 
 #[derive(Subcommand)]
 enum VerifyCommand {
-    /// Verify one candidate spec against a file or directory of samples.
+    /// Verify one candidate parser against a file or directory of samples.
     Parser {
-        /// The candidate TOML file.
+        /// The candidate parser directory, or its `config.toml`.
         spec: PathBuf,
-        /// Samples to parse: a `.eml` file or a directory.
+        /// Parser id. Defaults to the spec directory name.
+        #[arg(long, value_name = "BANK.TYPE")]
+        id: Option<String>,
+        /// Samples to parse: a `.eml` file or a directory. Defaults to
+        /// `<spec dir>/fixtures`.
         #[arg(long, value_name = "DIR|FILE")]
-        input: PathBuf,
+        input: Option<PathBuf>,
         /// Machine-readable output.
         #[arg(long)]
         json: bool,
@@ -414,7 +418,12 @@ fn run(cli: Cli) -> Result<i32> {
             },
         },
         Command::Verify { command } => match command {
-            VerifyCommand::Parser { spec, input, json } => verify_parser(&spec, &input, json),
+            VerifyCommand::Parser {
+                spec,
+                id,
+                input,
+                json,
+            } => verify_parser(&spec, id.as_deref(), input.as_deref(), json),
         },
         Command::Dump { path, json } => dump(&path, json),
     }
@@ -1659,17 +1668,8 @@ fn generate_skill_parser(args: SkillParserArgs) -> Result<i32> {
     Ok(EXIT_OK)
 }
 
-fn verify_parser(spec: &Path, input: &Path, json: bool) -> Result<i32> {
-    let report = authoring::verify::verify(spec, input)?;
-
-    if let Some(stem) = spec.file_stem().and_then(|stem| stem.to_str()) {
-        if stem != report.spec_id {
-            eprintln!(
-                "note: file stem `{stem}` differs from the spec id `{}`; install it as `{}.toml`",
-                report.spec_id, report.spec_id
-            );
-        }
-    }
+fn verify_parser(spec: &Path, id: Option<&str>, input: Option<&Path>, json: bool) -> Result<i32> {
+    let report = authoring::verify::verify(spec, id, input)?;
 
     if json {
         let samples: Vec<serde_json::Value> = report

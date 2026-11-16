@@ -86,12 +86,16 @@ Read `references/spec-reference.md` before writing a spec. Read
 
 # Verifying a candidate parser
 
-Run a candidate spec against the samples before installing it:
+Run a candidate parser directory (or its `config.toml`) against the samples
+before installing it:
 
 ```sh
-abmx verify parser <draft.toml> --input <samples>
-abmx verify parser <draft.toml> --input <samples> --json
+abmx verify parser <parser-dir> --id <bank.type> --input <samples>
+abmx verify parser <parser-dir> --id <bank.type> --input <samples> --json
 ```
+
+The directory holds `config.toml`. When `--input` is omitted, verify uses
+`<parser-dir>/fixtures/`.
 
 `verify` copies the candidate into a temporary corpus, loads it with the real
 abmx-parser engine, and runs every `.eml` in the input. It never touches the live
@@ -129,9 +133,11 @@ Use this only after `abmx verify parser` reports `strict` for every sample.
 1. **Read the config.** The prompt names the config path. Otherwise use
    `--config`, `$ABMX_CONFIG`, `$XDG_CONFIG_HOME/abmx/config.toml`, or
    `./abmx.toml`.
-2. **Install the file.** Copy `<id>.toml` into one of the directories listed in
-   `[general].parsers`, or into the implicit corpus. The file stem must equal
-   the spec `id`.
+2. **Install the parser directory.** Copy `parsers/<id>/` — both `config.toml`
+   and `fixtures/` — into one of the directories listed in `[general].parsers`,
+   or into `~/.config/abmx/parsers/`. The directory name **is** the parser id;
+   there is no `id` field in the spec. In this repository, `just install-parser
+   <id>` checks and copies it for you.
 3. **Confirm it loaded.** Run `abmx parsers`. The id must appear with the
    correct account key and sender.
 4. **Map the account.**

@@ -1,7 +1,7 @@
 # The parser contract
 
 Two things are versioned here: the **transaction output** (`SCHEMA_VERSION`) and
-the **parser spec format** (`spec_version` in every `parsers/<id>.toml`).
+the **parser spec format** (`spec_version` in every `parsers/<id>/config.toml`).
 
 Run `abmx parser schema` for the machine-readable JSON Schema, generated from the Rust
 types so it cannot drift from the implementation.
@@ -12,18 +12,18 @@ Parser specs are runtime configuration; none are compiled into the binary.
 
 **Explicit sources merge.** Every directory named by `--parsers` or
 `$ABMX_PARSERS` is loaded in order and merged by parser `id`; when two directories
-define the same `id` the earlier one wins and the later file is reported as
-shadowed. A duplicate id _inside one_ directory is an error. This allows a local
-override of a single bank without copying the whole corpus.
+define the same `id` the earlier one wins and the later one is reported as
+shadowed. Two parsers with the same id cannot coexist inside one corpus, because
+the directory name is the id. This allows a local override of a single bank
+without copying the whole corpus.
 
 **Implicit discovery uses one corpus.** When neither flag nor env is set, the
 first directory that **exists** wins:
 
-| Order | Source                         |
-| ----- | ------------------------------ |
-| 1     | `./parsers`                    |
-| 2     | `$XDG_CONFIG_HOME/abmx/parsers` |
-| 3     | `/etc/abmx/parsers`             |
+| Order | Source                          |
+| ----- | ------------------------------- |
+| 1     | `$XDG_CONFIG_HOME/abmx/parsers` |
+| 2     | `/etc/abmx/parsers`             |
 
 If that directory contains no specs, loading fails rather than falling through to
 a lower-precedence corpus: an empty corpus in the place you asked it to look is a
@@ -132,7 +132,7 @@ date and the email `Date:` header carries no meaning and is not checked.
 `id` is derived from email metadata only, never from parsed output. Consequences:
 
 - Re-parsing after a spec change never creates a second row.
-- Two byte-identical emails (a real thing; see `banktwo/qris-payment/fixtures/02` and
+- Two byte-identical emails (a real thing; see `parsers/banktwo.qris_payment/fixtures/02.eml` and
   `03`) collapse to one `id`.
 - The archive filename does not matter.
 
@@ -155,13 +155,12 @@ Do not do arithmetic on `amount`.
 
 ## Parser spec format
 
-One file per router-visible template, at `parsers/<id>.toml`. The file stem
-must equal the spec `id`, and `spec_version` must match the engine's supported
-version.
+One parser per router-visible template, in `parsers/<id>/config.toml`. The
+directory name **is** the parser id; there is no `id` field to disagree with it.
+`spec_version` must match the engine's supported version.
 
 ```toml
 spec_version = 1
-id      = "bank.template"   # stable; stored in every output row
 version = 1                 # bump when the spec changes
 enabled = true
 

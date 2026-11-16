@@ -55,7 +55,9 @@ abmx --version
 ```
 
 The Nix package bundles the corpus and points `ABMX_PARSERS` at it. A source
-checkout discovers `./parsers` automatically.
+checkout does not: run `just install-parsers` to check the repo corpus and copy
+it into `~/.config/abmx/parsers/`, or pass `--parsers <dir>` explicitly. `abmx`
+never reads the working directory.
 
 ## Quickstart
 
@@ -72,13 +74,16 @@ Then put `abmx sync` on a timer (see the NixOS module below).
 
 ### You need
 
-1. **A parser corpus** — this repository ships one under `parsers/`. A source
-   checkout picks it up automatically; elsewhere point at it with `--parsers`,
-   `$ABMX_PARSERS`, or `~/.config/abmx/parsers`.
+1. **A parser corpus** — this repository ships one under `parsers/`. Point at it
+   with `--parsers`, `$ABMX_PARSERS`, or `[general].parsers`, or install it into
+   the user corpus:
    ```bash
-   abmx parser paths     # what will load, and which directory won
-   abmx parser specs     # every parser and the file it came from
+   just install-parsers                 # ~/.config/abmx/parsers (checks first)
+   abmx parser paths                    # what will load, and which directory won
+   abmx parser specs                    # every parser and the file it came from
    ```
+   Each parser is a directory: `parsers/<id>/config.toml` with its samples in
+   `parsers/<id>/fixtures/`. The directory name is the parser id.
 2. **A Gmail OAuth client** — one Google Cloud project, `gmail.readonly`, desktop
    app client. See [docs/gmail.md](docs/gmail.md).
 3. **A ledger endpoint** — for Actual Budget that is
@@ -134,13 +139,13 @@ The agent can inspect one message with `abmx dump <file.eml>` and validate a
 candidate spec against saved samples:
 
 ```bash
-abmx verify parser ./drafts/my.bank.toml --input ./eml-dir
+abmx verify parser ./drafts/my.bank --id my.bank
 ```
 
 `verify` never touches the live corpus. A spec is only done when every sample is
 `strict`; `heuristic` means the amount is zero or a field is missing, and
 `unmatched` means the routing is wrong. The agent writes drafts first and asks
-before copying anything into `[general].parsers` or changing `[accounts]`.
+before installing a parser directory into the corpus or changing `[accounts]`.
 
 ### Sampling from Gmail labels
 
@@ -270,7 +275,7 @@ abmx approve <id>… [--dry-run]      import reviewed rows
 abmx accounts [--json]              sink accounts and how [accounts] maps onto them
 abmx parsers                        loaded parsers and the senders they claim
 abmx dump <path> [--json]           normalized block dump (authoring aid)
-abmx verify parser <spec> --input DIR [--json]
+abmx verify parser <dir|config.toml> [--id ID] [--input DIR] [--json]
                                       check a candidate parser against samples
 abmx generate prompt parser …       prompt an AI to author a parser
 abmx generate skill parser …        write the OpenCode authoring skills
@@ -285,9 +290,14 @@ abmx parser route <path>            which parser claims an email, and why
 abmx parser check [-v] [--parser ID]
                                       verify every parser against its fixtures
 abmx parser corpus [--dir DIR]      summarise how a directory parses
-abmx parser init <id>               scaffold parsers/<id>.toml and fixtures/<id>/
+abmx parser init <id>               scaffold parsers/<id>/{config.toml,fixtures}
 abmx parser infer <dir> [--id ID]   draft a spec from a directory of emails
 ```
+
+Every `abmx parser` command takes `--parsers <dir>` (repeatable) or
+`$ABMX_PARSERS`; implicit discovery is `~/.config/abmx/parsers`, then
+`/etc/abmx/parsers`. The working directory is never read. Fixtures are always
+read from the winning parser's own `fixtures/` directory.
 
 **stdout is data, stderr is diagnostics.** `abmx plan` writes the plan JSON to
 stdout and the human summary to stderr, so it pipes cleanly:
@@ -422,8 +432,7 @@ crates/abmx-tx/      the Transaction contract
 crates/abmx-mail/    MIME and HTML normalization
 crates/abmx-parse/   the declarative parser engine
 crates/abmx-parser/  corpus discovery, routing, schema
-parsers/             the bank template corpus (runtime data)
-fixtures/            redacted .eml samples, one directory per parser
+parsers/             the bank corpus: <id>/config.toml + <id>/fixtures/
 xtask/               fixture redaction helper
 docker-compose.yml   actual-http-api wrapper for local testing
 ```

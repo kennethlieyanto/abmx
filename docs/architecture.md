@@ -185,14 +185,15 @@ trait; one is a guess.
 
 ## Adding a bank
 
-No code. Write `parsers/<id>.toml`, add samples under `fixtures/<id>/`, and run
-`abmx parser check --parser <id>`. `abmx parser init`, `infer`, `generate`, and
-`verify` exist to make that loop fast. See [parsing.md](parsing.md) for the spec
-format and [authoring.md](authoring.md) for the AI-assisted workflow.
+No code. Write `parsers/<id>/config.toml`, add samples under
+`parsers/<id>/fixtures/`, and run `abmx parser check --parser <id> --parsers
+parsers`. `abmx parser init`, `infer`, `generate`, and `verify` exist to make
+that loop fast. See [parsing.md](parsing.md) for the spec format and
+[authoring.md](authoring.md) for the AI-assisted workflow.
 
 The corpus is runtime data: `abmx` searches `--parsers`, `$ABMX_PARSERS`,
-`./parsers`, `~/.config/abmx/parsers`, then `/etc/abmx/parsers`. The Nix package
-bundles it and defaults `ABMX_PARSERS` at it.
+`~/.config/abmx/parsers`, then `/etc/abmx/parsers`. It never reads the working
+directory. The Nix package bundles the corpus and defaults `ABMX_PARSERS` at it.
 
 ## The parser contract
 

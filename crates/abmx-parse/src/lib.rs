@@ -1,9 +1,9 @@
 //! Declarative bank parsers: TOML spec in, transactions out.
 //!
 //! The engine is fixed; a new bank or a new transaction type is one data file,
-//! `parsers/<id>.toml`, where the file stem must equal the spec `id`.  Nothing
-//! here performs I/O beyond reading spec files, so the parsing path is a pure
-//! function and easy to test.
+//! `parsers/<id>/config.toml`, where the directory name is the parser id.
+//! Nothing here performs I/O beyond reading spec files, so the parsing path is a
+//! pure function and easy to test.
 
 mod date;
 mod field;
@@ -42,14 +42,10 @@ pub enum Error {
     },
     #[error("{path}: {message}")]
     Spec { path: PathBuf, message: String },
-    #[error("no parser specs found under {0}")]
-    NoParsers(PathBuf),
-    #[error("{path}: spec id `{id}` does not match the file name `{expected}.toml`")]
-    IdMismatch {
-        path: PathBuf,
-        id: String,
-        expected: String,
-    },
+    #[error("no parser specs found under {path}{hint}")]
+    NoParsers { path: PathBuf, hint: &'static str },
+    #[error("{path}: parser directory `{found}` must look like `bank.type`")]
+    InvalidId { path: PathBuf, found: String },
     #[error("{path}: duplicate parser id `{id}` (also in {first})")]
     DuplicateId {
         path: PathBuf,
@@ -69,8 +65,10 @@ pub struct Shadow {
 /// A spec with every regex compiled once at load time.
 #[derive(Debug)]
 pub struct Parser {
+    /// The parser id: the name of the directory holding `config.toml`.
+    pub id: String,
     pub spec: ParserSpec,
-    /// The `.toml` file this parser was compiled from.
+    /// The `config.toml` file this parser was compiled from.
     pub source_file: PathBuf,
     subject: Regex,
     requires: Vec<String>,
@@ -163,7 +161,7 @@ impl Registry {
 
             for path in paths {
                 let parser = load_one(&path)?;
-                let id = parser.spec.id.clone();
+                let id = parser.id.clone();
 
                 if let Some(first) = in_dir.insert(id.clone(), path.clone()) {
                     return Err(Error::DuplicateId { path, id, first });
@@ -184,7 +182,13 @@ impl Registry {
         }
 
         if parsers.is_empty() {
-            return Err(Error::NoParsers(dirs.first().cloned().unwrap_or_default()));
+            let path = dirs.first().cloned().unwrap_or_default();
+            let hint = if dirs.iter().any(|dir| has_flat_specs(dir)) {
+                " (found flat <id>.toml files; parsers are now directories: <id>/config.toml)"
+            } else {
+                ""
+            };
+            return Err(Error::NoParsers { path, hint });
         }
 
         let router_path = router_path.as_ref();
@@ -219,14 +223,14 @@ impl Registry {
         match parser.parse(email) {
             Ok(transaction) => Outcome::Parsed(Box::new(transaction)),
             Err(error) => Outcome::Failed {
-                parser: parser.spec.id.clone(),
+                parser: parser.id.clone(),
                 error,
             },
         }
     }
 
     pub fn find(&self, id: &str) -> Option<&Parser> {
-        self.parsers.iter().find(|parser| parser.spec.id == id)
+        self.parsers.iter().find(|parser| parser.id == id)
     }
 
     /// A machine-readable description of what the registry covers.
@@ -238,7 +242,7 @@ impl Registry {
 impl Parser {
     pub fn summary(&self) -> SpecSummary {
         SpecSummary {
-            id: self.spec.id.clone(),
+            id: self.id.clone(),
             version: self.spec.version,
             bank: self.spec.defaults.bank.clone(),
             account: self.spec.defaults.account.clone(),
@@ -319,7 +323,7 @@ impl Parser {
         Ok(Transaction {
             id: email.source.stable_id(),
             source: email.source.clone(),
-            parser: self.spec.id.clone(),
+            parser: self.id.clone(),
             parser_version: self.spec.version,
             bank: defaults.bank.clone(),
             account: defaults.account.clone(),
@@ -480,6 +484,34 @@ pub fn norm(text: &str) -> String {
     out.trim_end_matches(':').trim().to_string()
 }
 
+/// A parser id is `<bank>.<type>`: dot-separated, every part non-empty, no path
+/// separators, and never a hidden directory name.
+pub fn is_parser_id(id: &str) -> bool {
+    !id.starts_with('.')
+        && !id.contains('/')
+        && !id.contains('\\')
+        && id.split('.').count() >= 2
+        && id.split('.').all(|part| !part.is_empty())
+}
+
+/// True when a corpus root still holds the old flat layout (`<id>.toml`), which
+/// is only used to make the "no parser specs" error actionable.
+fn has_flat_specs(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        path.is_file()
+            && path.extension().and_then(|value| value.to_str()) == Some("toml")
+            && path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(|stem| stem.contains('.'))
+                .unwrap_or(false)
+    })
+}
+
 fn collect_specs(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Error> {
     let entries = std::fs::read_dir(dir).map_err(|source| Error::Io {
         path: dir.to_path_buf(),
@@ -503,14 +535,12 @@ fn collect_specs(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Error> {
             continue;
         }
         if path.is_dir() {
+            // Fixtures live inside a parser directory; they are not specs.
+            if path.file_name().and_then(|name| name.to_str()) == Some("fixtures") {
+                continue;
+            }
             collect_specs(&path, out)?;
-        } else if path.extension().and_then(|value| value.to_str()) == Some("toml")
-            && path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .map(|stem| stem.contains('.'))
-                .unwrap_or(false)
-        {
+        } else if path.file_name().and_then(|name| name.to_str()) == Some("config.toml") {
             out.push(path);
         }
     }
@@ -529,29 +559,29 @@ fn load_one(path: &Path) -> Result<Parser, Error> {
         message: err.to_string(),
     })?;
 
-    // A flat corpus is the whole point: the file name *is* the parser id, so a
-    // mounted ConfigMap key and the parser identity cannot disagree.
-    let stem = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
+    // The directory name *is* the parser id. There is no second copy to
+    // disagree with, so the id cannot drift when a parser is copied.
+    let id = path
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
         .unwrap_or_default()
         .to_string();
 
-    if stem != spec.id {
-        return Err(Error::IdMismatch {
+    if !is_parser_id(&id) {
+        return Err(Error::InvalidId {
             path: path.to_path_buf(),
-            id: spec.id.clone(),
-            expected: stem,
+            found: id,
         });
     }
 
-    compile(spec, path).map_err(|message| Error::Spec {
+    compile(spec, path, id).map_err(|message| Error::Spec {
         path: path.to_path_buf(),
         message,
     })
 }
 
-fn compile(spec: ParserSpec, path: &Path) -> Result<Parser, String> {
+fn compile(spec: ParserSpec, path: &Path, id: String) -> Result<Parser, String> {
     if spec.spec_version != SPEC_VERSION {
         return Err(format!(
             "spec_version {} is not supported (this build understands {SPEC_VERSION})",
@@ -735,6 +765,7 @@ fn compile(spec: ParserSpec, path: &Path) -> Result<Parser, String> {
         extra,
         status,
         source_file: path.to_path_buf(),
+        id,
         spec,
     })
 }

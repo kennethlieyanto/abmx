@@ -14,7 +14,6 @@ use base64::Engine;
 
 const PARSER: &str = r#"
 spec_version = 1
-id = "test.bank"
 version = 1
 
 [match]
@@ -67,8 +66,9 @@ Content-Type: text/html; charset=utf-8\r\n\
 
 fn corpus(dir: &std::path::Path) -> PathBuf {
     let parsers = dir.join("parsers");
-    std::fs::create_dir_all(&parsers).unwrap();
-    std::fs::write(parsers.join("test.bank.toml"), PARSER).unwrap();
+    let parser = parsers.join("test.bank");
+    std::fs::create_dir_all(&parser).unwrap();
+    std::fs::write(parser.join("config.toml"), PARSER).unwrap();
     parsers
 }
 

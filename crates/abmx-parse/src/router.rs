@@ -1,6 +1,6 @@
 //! Routing: which parser owns this email?
 //!
-//! `parser.toml` owns the sender and subject, so the router is *derived* and a
+//! `config.toml` owns the sender and subject, so the router is *derived* and a
 //! new parser can never be forgotten here.  `router.toml` only holds policy:
 //! ignore rules and overrides. What to do with unmatched mail is the caller's
 //! decision, not the library's.
@@ -119,10 +119,7 @@ pub fn route(parsers: &[Parser], config: &RouterConfig, email: &NormalizedEmail)
 
     for rule in &policy.overrides {
         if override_matches(rule, email) {
-            if let Some(index) = parsers
-                .iter()
-                .position(|parser| parser.spec.id == rule.parser)
-            {
+            if let Some(index) = parsers.iter().position(|parser| parser.id == rule.parser) {
                 return Route {
                     parser: Some(index),
                     reason: RouteReason::Override,
@@ -166,7 +163,7 @@ pub fn route(parsers: &[Parser], config: &RouterConfig, email: &NormalizedEmail)
         let excludes_ok = !parser.excludes.iter().any(text_matches);
 
         candidates.push(Candidate {
-            id: parser.spec.id.clone(),
+            id: parser.id.clone(),
             sender,
             subject,
             requires_matched,

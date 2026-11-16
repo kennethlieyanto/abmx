@@ -1,12 +1,12 @@
 # bank parser spec reference
 
-A parser is one TOML file at `parsers/<id>.toml`. The file stem must equal `id`;
-`spec_version` must be the version below. Changes to behaviour bump `version`;
-they never change a transaction's stable `id`.
+A parser lives at `parsers/<id>/config.toml`. The directory name **is** the
+parser id; there is no `id` field. `spec_version` must be the version below.
+Changes to behaviour bump `version`; they never change a transaction's stable
+`id`.
 
 ```toml
 spec_version = 1
-id      = "bank.template"   # stable; stored in every output row
 version = 1                 # bump when the spec changes
 enabled = true
 

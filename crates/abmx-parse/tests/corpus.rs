@@ -1,8 +1,9 @@
 //! End-to-end tests over the committed fixture corpus.
 //!
-//! Specs live in `parsers/<id>.toml`, fixtures in `fixtures/<id>/*.eml`. The
-//! directory name is the parser id, so this is also a routing test: a fixture
-//! under `fixtures/example.card_debit/` must be claimed by `example.card_debit`.
+//! A parser is a directory: `parsers/<id>/config.toml` with its samples in
+//! `parsers/<id>/fixtures/*.eml`. The directory name is the parser id, so this
+//! is also a routing test: a fixture under `parsers/example.card_debit/fixtures/`
+//! must be claimed by `example.card_debit`.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -26,21 +27,22 @@ fn registry() -> Registry {
 
 /// `(parser id, fixture path)`, sorted.
 fn fixtures() -> Vec<(String, PathBuf)> {
-    let root = repo_root().join("fixtures");
+    let root = repo_root().join("parsers");
     let mut files = Vec::new();
     collect(&root, &mut files);
     files.sort();
 
     files
         .into_iter()
-        .map(|path| {
+        .filter_map(|path| {
+            // parsers/<id>/fixtures/<file>.eml
             let id = path
                 .parent()
-                .and_then(|parent| parent.file_name())
+                .and_then(|fixtures| fixtures.parent())
+                .and_then(|parser| parser.file_name())
                 .and_then(|name| name.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-            (id, path)
+                .map(str::to_string)?;
+            id.contains('.').then_some((id, path))
         })
         .collect()
 }
@@ -132,10 +134,10 @@ fn every_parser_has_fixtures() {
 
     for parser in &registry.parsers {
         assert!(
-            ids.contains(&parser.spec.id),
-            "{} has no fixture directory under fixtures/{}",
-            parser.spec.id,
-            parser.spec.id
+            ids.contains(&parser.id),
+            "{} has no fixtures under parsers/{}/fixtures/",
+            parser.id,
+            parser.id
         );
     }
 }
@@ -256,7 +258,11 @@ fn amounts_dates_and_counterparties_are_correct() {
     );
 
     for (id, file, amount, date, counterparty) in expectations {
-        let path = repo_root().join("fixtures").join(id).join(file);
+        let path = repo_root()
+            .join("parsers")
+            .join(id)
+            .join("fixtures")
+            .join(file);
         let transaction = parse(&registry, &path);
 
         assert_eq!(&transaction.parser, id, "{id}/{file}");
@@ -281,7 +287,7 @@ fn amounts_dates_and_counterparties_are_correct() {
 #[test]
 fn a_transaction_date_far_from_the_email_date_is_still_strict() {
     let registry = registry();
-    let path = repo_root().join("fixtures/example.card_debit/01.eml");
+    let path = repo_root().join("parsers/example.card_debit/fixtures/01.eml");
     let bytes = std::fs::read(&path).expect("read fixture");
     let mut email = abmx_mail::parse_eml(&bytes, Some(path.display().to_string())).expect("parse");
 

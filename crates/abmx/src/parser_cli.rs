@@ -30,10 +30,6 @@ pub struct ParserCli {
     #[arg(long, global = true)]
     router: Option<PathBuf>,
 
-    /// Fixture root used by `check` and `init`. Defaults to ./fixtures.
-    #[arg(long, global = true)]
-    fixtures: Option<PathBuf>,
-
     #[command(subcommand)]
     command: ParserCommand,
 }
@@ -98,9 +94,9 @@ pub enum ParserCommand {
         dir: PathBuf,
     },
 
-    /// Scaffold a new parser file and its fixture directory.
+    /// Scaffold parsers/<id>/config.toml and parsers/<id>/fixtures/.
     Init {
-        /// Parser id, e.g. example.card_debit. The file becomes parsers/<id>.toml.
+        /// Parser id, e.g. example.card_debit. It becomes the directory name.
         id: String,
     },
 
@@ -126,7 +122,6 @@ pub fn run(cli: ParserCli) -> Result<i32> {
     let ParserCli {
         parsers,
         router,
-        fixtures,
         command,
     } = cli;
 
@@ -152,13 +147,7 @@ pub fn run(cli: ParserCli) -> Result<i32> {
             parser,
             verbose,
             json,
-        } => check(
-            &options,
-            fixtures.as_deref(),
-            parser.as_deref(),
-            verbose,
-            json,
-        ),
+        } => check(&options, parser.as_deref(), verbose, json),
         ParserCommand::Corpus { dir } => {
             let (parser, _) = load(&options)?;
             corpus(&parser, &dir)
@@ -176,11 +165,7 @@ pub fn run(cli: ParserCli) -> Result<i32> {
             println!("{}", serde_json::to_string_pretty(&abmx_parser::schema())?);
             Ok(0)
         }
-        ParserCommand::Init { id } => init(
-            &id,
-            options.parsers.first().map(|path| path.as_path()),
-            fixtures.as_deref(),
-        ),
+        ParserCommand::Init { id } => init(&id, options.parsers.first().map(|path| path.as_path())),
         ParserCommand::Infer { dir, id } => infer(&dir, id.as_deref()),
     }
 }
@@ -189,10 +174,7 @@ fn load(options: &abmx_parser::Options) -> Result<(abmx_parser::Parser, abmx_par
     let (parser, discovery) = abmx_parser::Parser::load(options).map_err(|error| match error {
         abmx_parser::Error::NoCorpus { tried } => {
             let tried = if tried.is_empty() {
-                format!(
-                    "{}/parsers, ~/.config/abmx/parsers, /etc/abmx/parsers",
-                    std::env::var("PWD").unwrap_or_else(|_| ".".into())
-                )
+                "~/.config/abmx/parsers, /etc/abmx/parsers".to_string()
             } else {
                 tried
                     .iter()
@@ -248,7 +230,7 @@ fn route(parser: &abmx_parser::Parser, email: &abmx_tx::NormalizedEmail) {
     match result.parser {
         Some(index) => println!(
             "=> {} ({})",
-            parser.registry().parsers[index].spec.id,
+            parser.registry().parsers[index].id,
             result.reason.as_str()
         ),
         None => println!("=> none ({})", result.reason.as_str()),
@@ -361,26 +343,29 @@ fn emit(transactions: &[Transaction], format: Format) -> Result<()> {
 
 fn check(
     options: &abmx_parser::Options,
-    fixtures: Option<&Path>,
     only: Option<&str>,
     verbose: bool,
     json: bool,
 ) -> Result<i32> {
     let (parser, discovery) = load(options)?;
-    let fixtures_root = fixtures.unwrap_or(Path::new("fixtures"));
 
     let mut failures: Vec<String> = Vec::new();
     let mut checked = 0usize;
 
     for (index, entry) in parser.registry().parsers.iter().enumerate() {
-        let id = &entry.spec.id;
+        let id = &entry.id;
         if let Some(only) = only {
             if only != id {
                 continue;
             }
         }
 
-        let fixtures = fixtures_root.join(id);
+        // Fixtures live next to the spec: parsers/<id>/fixtures/*.eml.
+        let fixtures = entry
+            .source_file
+            .parent()
+            .map(|dir| dir.join("fixtures"))
+            .unwrap_or_default();
         let files = files_with_extension(&fixtures, "eml");
 
         if files.is_empty() {
@@ -401,7 +386,7 @@ fn check(
             if result.parser != Some(index) {
                 let actual = result
                     .parser
-                    .map(|found| parser.registry().parsers[found].spec.id.as_str())
+                    .map(|found| parser.registry().parsers[found].id.as_str())
                     .unwrap_or("none");
                 failures.push(format!(
                     "{id}: {} routed to {actual} ({})",
@@ -442,18 +427,22 @@ fn check(
         }
     }
 
-    // A fixture directory with no parser means the spec was removed or renamed.
-    for entry in std::fs::read_dir(fixtures_root)
-        .into_iter()
-        .flatten()
-        .flatten()
-    {
-        if !entry.path().is_dir() {
-            continue;
-        }
-        let id = entry.file_name().to_string_lossy().to_string();
-        if parser.registry().find(&id).is_none() {
-            failures.push(format!("{id}: fixture directory has no parser"));
+    // A parser directory with no spec means the spec was removed or renamed.
+    // Only meaningful for a full run, not `--parser <id>`.
+    if only.is_none() {
+        for root in &discovery.dirs {
+            for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                let id = entry.file_name().to_string_lossy().to_string();
+                if parser.registry().find(&id).is_none() {
+                    failures.push(format!(
+                        "{id}: directory has no config.toml (expected {})",
+                        entry.path().join("config.toml").display()
+                    ));
+                }
+            }
         }
     }
 
@@ -523,7 +512,7 @@ fn corpus(parser: &abmx_parser::Parser, dir: &Path) -> Result<i32> {
                     .registry()
                     .route(&read_email(file)?)
                     .parser
-                    .map(|index| parser.registry().parsers[index].spec.id.clone())
+                    .map(|index| parser.registry().parsers[index].id.clone())
                 {
                     debug_assert_eq!(route, transaction.parser);
                 }
@@ -676,25 +665,27 @@ fn senders(parser: &abmx_parser::Parser, format: Format) -> Result<i32> {
     Ok(0)
 }
 
-fn init(id: &str, parsers_root: Option<&Path>, fixtures_root: Option<&Path>) -> Result<i32> {
-    let (bank, _kind) = id
-        .split_once('.')
-        .with_context(|| format!("parser id must look like `bank.type`, got `{id}`"))?;
+fn init(id: &str, parsers_root: Option<&Path>) -> Result<i32> {
+    if !abmx_parse::is_parser_id(id) {
+        bail!("parser id must look like `bank.type`, got `{id}`");
+    }
+    let bank = id.split('.').next().unwrap_or(id);
 
-    let parsers_dir = parsers_root.unwrap_or(Path::new("parsers"));
-    let fixture_dir = fixtures_root.unwrap_or(Path::new("fixtures")).join(id);
+    let parsers_dir = parsers_root
+        .map(Path::to_path_buf)
+        .unwrap_or_else(abmx::paths::default_parsers_dir);
+    let parser_dir = parsers_dir.join(id);
+    let spec_path = parser_dir.join("config.toml");
+    let fixture_dir = parser_dir.join("fixtures");
 
-    let spec_path = parsers_dir.join(format!("{id}.toml"));
     if spec_path.exists() {
         bail!("{} already exists", spec_path.display());
     }
 
-    std::fs::create_dir_all(parsers_dir)?;
     std::fs::create_dir_all(&fixture_dir)?;
 
     let template = format!(
         r#"spec_version = 1
-id = "{id}"
 version = 1
 
 [match]
@@ -739,7 +730,11 @@ label = "TODO"
 
     println!("created {}", spec_path.display());
     println!("created {}", fixture_dir.display());
-    println!("next: abmx dump <fixture>.eml, then fill in the TODOs");
+    println!(
+        "next: copy redacted .eml files into {}, then run\n  abmx parser check --parser {id} --parsers {}",
+        fixture_dir.display(),
+        parsers_dir.display()
+    );
     Ok(0)
 }
 
@@ -917,7 +912,7 @@ fn infer(dir: &Path, id: Option<&str>) -> Result<i32> {
         }
     }
     println!(
-        "# NOTE: this is a draft. Run `abmx parser check --parser {id}` after adding fixtures."
+        "# NOTE: this is a draft. Add fixtures, then run `abmx parser check --parser {id} --parsers <dir>`."
     );
 
     Ok(0)

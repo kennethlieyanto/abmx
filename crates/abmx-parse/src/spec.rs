@@ -1,4 +1,4 @@
-//! TOML shape of `parser.toml`.
+//! TOML shape of `config.toml`.
 //!
 //! This file is the user-facing contract.  Keep field names stable, and keep
 //! the vocabulary small: `label`, `regex`, `block`, `number`, `formats`.
@@ -16,14 +16,13 @@ pub struct SpecSummary {
     pub account: String,
     pub senders: Vec<String>,
     pub subject: String,
-    /// The `parsers/<id>.toml` file this came from.
+    /// The `parsers/<id>/config.toml` file this came from.
     pub file: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ParserSpec {
     pub spec_version: u32,
-    pub id: String,
     #[serde(default = "one")]
     pub version: u32,
     #[serde(default = "yes")]

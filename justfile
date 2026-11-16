@@ -1,6 +1,10 @@
 default:
     @just --list
 
+# The repository's parser corpus. Recipes pass it with --parsers, so nothing
+# depends on the working directory or an environment variable.
+corpus := justfile_directory() / "parsers"
+
 # ---------------------------------------------------------------------------
 # build / run
 # ---------------------------------------------------------------------------
@@ -27,16 +31,16 @@ run *args:
 
 # Exercise the whole pipeline against saved .eml files and the file sink.
 # `just demo ./sample-mail`
-demo dir parsers="./parsers":
+demo dir parsers="parsers":
     #!/usr/bin/env bash
     set -euo pipefail
     work=$(mktemp -d)
     mkdir -p "$work/mail"
     cp {{dir}}/*.eml "$work/mail/"
-    export ABMX_PARSERS="$(realpath {{parsers}})"
     cat > "$work/abmx.toml" <<EOF
     [general]
     state = "$work/state.db"
+    parsers = ["$(realpath {{parsers}})"]
 
     [sink.file]
     path = "$work/ledger.jsonl"
@@ -55,49 +59,50 @@ demo dir parsers="./parsers":
 
 # Parse a file or directory to JSON on stdout.
 parse path:
-    cargo run -q -p abmx -- parser parse {{path}}
+    cargo run -q -p abmx -- parser parse {{path}} --parsers "{{corpus}}"
 
 # Parse a directory as one JSON object per line.
 ndjson path:
-    cargo run -q -p abmx -- parser parse {{path}} --format ndjson
+    cargo run -q -p abmx -- parser parse {{path}} --format ndjson --parsers "{{corpus}}"
 
 # Explain which parser claims an email, and why.
 route path:
-    cargo run -q -p abmx -- parser route {{path}}
+    cargo run -q -p abmx -- parser route {{path}} --parsers "{{corpus}}"
 
 # List the sender addresses the resolved corpus covers.
 senders:
-    cargo run -q -p abmx -- parser senders
+    cargo run -q -p abmx -- parser senders --parsers "{{corpus}}"
 
 # Show the parser search order and which directory won.
 paths:
-    cargo run -q -p abmx -- parser paths
+    cargo run -q -p abmx -- parser paths --parsers "{{corpus}}"
 
 # List the loaded parsers and the file each came from.
 specs:
-    cargo run -q -p abmx -- parser specs --format table
+    cargo run -q -p abmx -- parser specs --format table --parsers "{{corpus}}"
 
 # Print the JSON Schema of the transaction contract.
 schema:
     cargo run -q -p abmx -- parser schema
 
-# Verify every parser against the committed fixtures.
+# Verify every parser against its colocated fixtures.
 fixtures:
-    cargo run -q -p abmx -- parser check -v
+    cargo run -q -p abmx -- parser check -v --parsers "{{corpus}}"
 
-# Only check one parser, e.g. `just fixtures-one example.card_debit`.
-fixtures-one id:
-    cargo run -q -p abmx -- parser check --parser {{id}} -v
+# Only check one parser, e.g. `just check-parser example.card_debit`.
+check-parser id:
+    cargo run -q -p abmx -- parser check --parser {{id}} -v --parsers "{{corpus}}"
 
-# Summarise how a directory of emails parses (defaults to the fixture corpus).
-corpus dir="fixtures":
-    cargo run -q -p abmx -- parser corpus --dir {{dir}}
+# Summarise how a directory of emails parses.
+corpus dir="sample":
+    cargo run -q -p abmx -- parser corpus --dir {{dir}} --parsers "{{corpus}}"
 
 # ---------------------------------------------------------------------------
 # authoring a parser
 # ---------------------------------------------------------------------------
 
 # Rewrite real emails into publishable fixtures (needs redact.toml, gitignored).
+# Copy the output into parsers/<id>/fixtures/ afterwards.
 redact in="sample" out="build/redacted":
     @test -f redact.toml || { echo "missing redact.toml; copy redact.example.toml and fill it in"; exit 1; }
     cargo run -q -p xtask -- redact --in {{in}} --out {{out}}
@@ -106,9 +111,38 @@ redact in="sample" out="build/redacted":
 infer dir id:
     cargo run -q -p abmx -- parser infer {{dir}} --id {{id}}
 
-# Scaffold parsers/<id>.toml and fixtures/<id>/
+# Scaffold parsers/<id>/config.toml and parsers/<id>/fixtures/
 parser-init id:
-    cargo run -q -p abmx -- parser init {{id}}
+    cargo run -q -p abmx -- parser init {{id}} --parsers "{{corpus}}"
+
+# ---------------------------------------------------------------------------
+# installing a parser
+# ---------------------------------------------------------------------------
+
+# Check one parser, then copy it into $XDG_CONFIG_HOME/abmx/parsers/<id>.
+install-parser id:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run -q -p abmx -- parser check --parser {{id}} -v --parsers "{{corpus}}"
+    dest="${XDG_CONFIG_HOME:-$HOME/.config}/abmx/parsers/{{id}}"
+    mkdir -p "$dest"
+    cp -R "{{corpus}}/{{id}}/." "$dest/"
+    echo "installed {{id}} -> $dest"
+
+# Check all parsers, then install them and router.toml into the XDG corpus.
+install-parsers:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run -q -p abmx -- parser check -v --parsers "{{corpus}}"
+    dest="${XDG_CONFIG_HOME:-$HOME/.config}/abmx/parsers"
+    mkdir -p "$dest"
+    for dir in "{{corpus}}"/*/; do
+      id="$(basename "$dir")"
+      mkdir -p "$dest/$id"
+      cp -R "$dir." "$dest/$id/"
+    done
+    cp "{{corpus}}/router.toml" "$dest/router.toml"
+    echo "installed parsers -> $dest"
 
 # ---------------------------------------------------------------------------
 # actual-http-api

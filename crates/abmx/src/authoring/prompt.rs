@@ -406,7 +406,7 @@ fn sample_dump(out: &mut String, sample: &Sample, context: &PromptContext) {
             .map(|index| {
                 format!(
                     "`{}` ({})",
-                    parser.registry().parsers[index].spec.id,
+                    parser.registry().parsers[index].id,
                     route.reason.as_str()
                 )
             })
@@ -525,7 +525,7 @@ fn deliverables(out: &mut String, context: &PromptContext) {
     let _ = writeln!(out, "```sh");
     let _ = writeln!(
         out,
-        "abmx verify parser <path-to-your-draft.toml> --input {}",
+        "abmx verify parser <dir-with-config.toml> --id <bank.type> --input {}",
         context
             .input
             .as_ref()

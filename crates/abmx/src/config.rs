@@ -28,7 +28,7 @@ pub struct Config {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct General {
     /// Explicit parser directories, in precedence order. Empty means `abmx-parser`'s
-    /// implicit discovery (`./parsers`, XDG, `/etc`).
+    /// implicit discovery (XDG, `/etc`).
     #[serde(default)]
     pub parsers: Vec<PathBuf>,
     #[serde(default)]
@@ -285,7 +285,7 @@ pub const INIT_TEMPLATE: &str = r#"# abmx configuration
 
 [general]
 # Explicit parser directories, highest precedence first.
-# Empty means implicit discovery (./parsers, XDG, /etc).
+# Empty means implicit discovery (~/.config/abmx/parsers, /etc/abmx/parsers).
 parsers = []
 # state = "~/.local/state/abmx/state.db"
 

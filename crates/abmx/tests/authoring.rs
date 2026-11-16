@@ -5,7 +5,6 @@ use abmx::authoring;
 
 const PARSER: &str = r#"
 spec_version = 1
-id = "test.bank"
 version = 1
 
 [match]
@@ -139,13 +138,13 @@ fn verify_reports_strict_heuristic_and_unmatched() {
     let mail = dir.path().join("mail");
     write_sample(&mail, "01.eml", "one", "Rp 27.500", "Successful");
 
-    let report = authoring::verify::verify(&spec, &mail).unwrap();
+    let report = authoring::verify::verify(&spec, Some("test.bank"), Some(&mail)).unwrap();
     assert_eq!(report.strict(), 1);
     assert_eq!(report.exit_code(), 0);
 
     let zero = dir.path().join("zero");
     write_sample(&zero, "01.eml", "two", "Rp 0", "Successful");
-    let report = authoring::verify::verify(&spec, &zero).unwrap();
+    let report = authoring::verify::verify(&spec, Some("test.bank"), Some(&zero)).unwrap();
     assert_eq!(report.heuristic(), 1);
     assert_eq!(report.exit_code(), 3);
 
@@ -158,21 +157,22 @@ fn verify_reports_strict_heuristic_and_unmatched() {
             .replace("Subject: Payment successful", "Subject: Something else"),
     )
     .unwrap();
-    let report = authoring::verify::verify(&spec, &other).unwrap();
+    let report = authoring::verify::verify(&spec, Some("test.bank"), Some(&other)).unwrap();
     assert_eq!(report.failures(), 1);
     assert_eq!(report.exit_code(), 2);
 }
 
 #[test]
-fn verify_rejects_a_spec_without_an_id() {
+fn verify_requires_a_parser_id() {
     let dir = tempfile::tempdir().unwrap();
     let spec = dir.path().join("candidate.toml");
-    std::fs::write(&spec, "spec_version = 1\n").unwrap();
+    std::fs::write(&spec, PARSER).unwrap();
     let mail = dir.path().join("mail");
     write_sample(&mail, "01.eml", "one", "Rp 27.500", "Successful");
 
-    let error = authoring::verify::verify(&spec, &mail).unwrap_err();
-    assert!(error.to_string().contains("has no `id`"));
+    // The temp directory name has no dot, so the id cannot be derived.
+    let error = authoring::verify::verify(&spec, None, Some(&mail)).unwrap_err();
+    assert!(error.to_string().contains("no parser id"), "got: {error}");
 }
 
 #[test]

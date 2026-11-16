@@ -80,32 +80,60 @@ impl VerifyReport {
     }
 }
 
-/// Verify one candidate spec against a file or directory of `.eml` samples.
+fn dir_id(dir: &Path) -> Option<String> {
+    dir.file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_owned)
+        .filter(|name| abmx_parse::is_parser_id(name))
+}
+
+/// Verify one candidate parser against a file or directory of `.eml` samples.
+///
+/// `spec` may be a parser directory (`parsers/<id>/`) or a `config.toml`. The
+/// parser id is the directory name; pass `id` when the candidate lives in a
+/// scratch directory that is not named after the parser.
 ///
 /// The candidate is copied into a temporary corpus, so the live parser corpus is
 /// never modified and the candidate cannot be shadowed by a sibling with the
 /// same id.
-pub fn verify(spec: &Path, input: &Path) -> Result<VerifyReport> {
-    let text =
-        std::fs::read_to_string(spec).with_context(|| format!("reading {}", spec.display()))?;
-    let value: toml::Value =
-        toml::from_str(&text).with_context(|| format!("parsing {} as TOML", spec.display()))?;
-    let id = value
-        .get("id")
-        .and_then(toml::Value::as_str)
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("{} has no `id`", spec.display()))?
-        .to_owned();
+pub fn verify(spec: &Path, id: Option<&str>, input: Option<&Path>) -> Result<VerifyReport> {
+    let (spec_file, spec_dir) = if spec.is_dir() {
+        (spec.join("config.toml"), spec.to_path_buf())
+    } else {
+        (
+            spec.to_path_buf(),
+            spec.parent().unwrap_or(Path::new(".")).to_path_buf(),
+        )
+    };
+
+    let id = match id.map(str::to_owned).or_else(|| dir_id(&spec_dir)) {
+        Some(id) => id,
+        None => bail!("no parser id: pass --id, or put the spec in a directory named <bank.type>"),
+    };
+
+    if !spec_file.is_file() {
+        bail!("{} does not exist", spec_file.display());
+    }
+
+    if !abmx_parse::is_parser_id(&id) {
+        bail!("parser id `{id}` must look like `bank.type`");
+    }
+
+    let input = input
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| spec_dir.join("fixtures"));
 
     if !input.exists() {
         bail!("{} does not exist", input.display());
     }
-    if id.contains('/') || id.contains('\\') || id == "." || id == ".." {
-        bail!("parser id `{id}` is not a safe file stem");
-    }
+
+    let text = std::fs::read_to_string(&spec_file)
+        .with_context(|| format!("reading {}", spec_file.display()))?;
 
     let dir = tempfile::tempdir().context("creating a temporary parser corpus")?;
-    std::fs::write(dir.path().join(format!("{id}.toml")), &text)
+    let candidate = dir.path().join(&id);
+    std::fs::create_dir_all(&candidate).context("creating the candidate parser directory")?;
+    std::fs::write(candidate.join("config.toml"), &text)
         .context("writing the candidate spec into the temporary corpus")?;
 
     let (parser, _) = abmx_parser::Parser::load(&abmx_parser::Options {
@@ -115,7 +143,7 @@ pub fn verify(spec: &Path, input: &Path) -> Result<VerifyReport> {
     .map_err(|error| anyhow::anyhow!("loading candidate spec `{id}`: {error}"))?;
 
     let results = parser
-        .parse_path(input)
+        .parse_path(&input)
         .with_context(|| format!("parsing {}", input.display()))?;
     if results.is_empty() {
         bail!("no .eml files under {}", input.display());

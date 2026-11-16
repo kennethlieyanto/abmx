@@ -12,7 +12,6 @@ use abmx_file::FileSink;
 
 const PARSER: &str = r#"
 spec_version = 1
-id = "test.bank"
 version = 1
 
 [match]
@@ -76,8 +75,9 @@ impl Fixture {
         let dir = tempfile::tempdir().unwrap();
 
         let parsers = dir.path().join("parsers");
-        std::fs::create_dir_all(&parsers).unwrap();
-        std::fs::write(parsers.join("test.bank.toml"), PARSER).unwrap();
+        let parser = parsers.join("test.bank");
+        std::fs::create_dir_all(&parser).unwrap();
+        std::fs::write(parser.join("config.toml"), PARSER).unwrap();
 
         let mail = dir.path().join("mail");
         std::fs::create_dir_all(&mail).unwrap();

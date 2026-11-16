@@ -57,7 +57,7 @@ pub struct Options {
 #[derive(Debug, Clone)]
 pub struct Candidate {
     pub path: PathBuf,
-    /// `flag`, `env`, `cwd`, `xdg` or `system`.
+    /// `flag`, `env`, `xdg` or `system`.
     pub source: &'static str,
     pub exists: bool,
     pub has_specs: bool,
@@ -242,10 +242,7 @@ impl Parser {
                 .iter()
                 .find(|candidate| candidate.path == discovery.dirs[0])
             {
-                if matches!(chosen.source, "cwd" | "xdg" | "system")
-                    && chosen.exists
-                    && !chosen.has_specs
-                {
+                if matches!(chosen.source, "xdg" | "system") && chosen.exists && !chosen.has_specs {
                     return Err(Error::EmptyCorpus {
                         path: chosen.path.clone(),
                         found_via: chosen.source,
@@ -354,7 +351,7 @@ pub fn transaction_of(outcome: &Outcome) -> Option<&Transaction> {
 }
 
 fn implicit_chain() -> Vec<(PathBuf, &'static str)> {
-    let mut chain = vec![(PathBuf::from("parsers"), "cwd")];
+    let mut chain = Vec::new();
 
     if let Some(config) = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -434,12 +431,7 @@ fn is_configmap_bookkeeping(path: &Path) -> bool {
 }
 
 fn is_spec_file(path: &Path) -> bool {
-    path.extension().and_then(|value| value.to_str()) == Some("toml")
-        && path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .map(|stem| stem.contains('.'))
-            .unwrap_or(false)
+    path.file_name().and_then(|name| name.to_str()) == Some("config.toml")
 }
 
 #[cfg(test)]
@@ -468,29 +460,36 @@ mod tests {
     #[test]
     fn implicit_chain_uses_the_first_existing_directory() {
         let d = discovery(vec![
-            candidate("parsers", "cwd", true, true),
             candidate("/xdg/abmx/parsers", "xdg", true, true),
-            candidate("/etc/abmx/parsers", "system", false, false),
+            candidate("/etc/abmx/parsers", "system", true, true),
         ]);
 
-        assert_eq!(d.dirs, vec![PathBuf::from("parsers")]);
+        assert_eq!(d.dirs, vec![PathBuf::from("/xdg/abmx/parsers")]);
         assert_eq!(d.status(&d.candidates[1]), "skipped");
-        assert_eq!(d.status(&d.candidates[2]), "missing");
         assert!(d.note().is_some());
     }
 
     #[test]
     fn implicit_chain_stops_at_an_empty_directory() {
         let d = discovery(vec![
-            candidate("parsers", "cwd", true, false),
-            candidate("/xdg/abmx/parsers", "xdg", true, true),
+            candidate("/xdg/abmx/parsers", "xdg", true, false),
+            candidate("/etc/abmx/parsers", "system", true, true),
         ]);
 
         // The empty directory is still the chosen one; loading then fails loudly
         // instead of silently reading the lower-precedence corpus.
-        assert_eq!(d.dirs, vec![PathBuf::from("parsers")]);
+        assert_eq!(d.dirs, vec![PathBuf::from("/xdg/abmx/parsers")]);
         assert_eq!(d.status(&d.candidates[0]), "used");
         assert_eq!(d.status(&d.candidates[1]), "skipped");
+    }
+
+    #[test]
+    fn implicit_chain_never_reads_the_working_directory() {
+        let chain = implicit_chain();
+        assert!(chain.iter().all(|(path, _)| path.is_absolute()));
+        assert!(chain
+            .iter()
+            .all(|(_, source)| matches!(*source, "xdg" | "system")));
     }
 
     #[test]
@@ -510,7 +509,7 @@ mod tests {
 
     #[test]
     fn nothing_found_yields_no_dirs() {
-        let d = discovery(vec![candidate("parsers", "cwd", false, false)]);
+        let d = discovery(vec![candidate("/xdg/abmx/parsers", "xdg", false, false)]);
 
         assert!(d.dirs.is_empty());
         assert_eq!(d.status(&d.candidates[0]), "missing");

@@ -82,8 +82,8 @@ so local edits survive a regeneration.
 ## Verify a draft
 
 ```bash
-abmx verify parser ./drafts/my.bank.toml --input ./eml-dir
-abmx verify parser ./drafts/my.bank.toml --input ./eml-dir --json
+abmx verify parser ./drafts/my.bank --id my.bank
+abmx verify parser ./drafts/my.bank --id my.bank --json
 ```
 
 The candidate is copied into a temporary corpus; the live corpus is never
@@ -139,7 +139,7 @@ never advances the sync cursor and never reads the state database.
 Two different names for the same account:
 
 ```toml
-# parsers/my.bank.toml
+# parsers/my.bank/config.toml
 [defaults]
 account = "example-account"      # parser-side key
 

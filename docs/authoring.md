@@ -50,10 +50,12 @@ Options:
 | `--input DIR` | offline bootstrap from `.eml` files |
 | `--max-messages N` | cap the metadata pass, default 1000 |
 | `--max-groups N` | cap the prompt, default 20 |
+| `--concurrency N` | parallel header requests, default 8, max 16 |
 | `--out FILE` | write the prompt to a file instead of stdout |
 
 The scan is read-only: it does **not** advance the sync cursor, write the state
-database, or touch a ledger.
+database, or touch a ledger. Progress (`headers 320/1204`) goes to stderr, so
+stdout stays pipeable; `-q` silences it.
 
 A group is a candidate when a representative message contains both an
 amount-like block and a date-like block. OTP, verification, and security subjects

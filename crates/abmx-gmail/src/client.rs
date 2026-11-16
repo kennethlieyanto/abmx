@@ -312,7 +312,11 @@ impl GmailClient {
     }
 
     fn get_json(&self, url: &str) -> Result<Value, GmailError> {
-        for attempt in 0..2 {
+        let mut refreshed = false;
+        let mut attempt = 0u32;
+
+        loop {
+            attempt += 1;
             let token = self.access_token()?;
             let response = self
                 .http
@@ -322,13 +326,30 @@ impl GmailClient {
                 .map_err(|error| GmailError::Http(error.to_string()))?;
 
             let status = response.status();
+            let retry_after = response
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+                .map(Duration::from_secs);
             let body = response
                 .text()
                 .map_err(|error| GmailError::Http(error.to_string()))?;
 
             // A token can be revoked server-side before it expires. Refresh once.
-            if status == 401 && attempt == 0 {
+            if status == 401 && !refreshed {
+                refreshed = true;
                 self.invalidate();
+                continue;
+            }
+
+            // Parallel header fetches can trip the per-user quota. Back off
+            // rather than failing a whole scan because one worker was early.
+            if (status == 429 || status.is_server_error()) && attempt < 4 {
+                let delay = retry_after
+                    .unwrap_or_else(|| Duration::from_secs(1 << (attempt - 1)))
+                    .min(Duration::from_secs(8));
+                std::thread::sleep(delay);
                 continue;
             }
 
@@ -342,10 +363,6 @@ impl GmailClient {
             return serde_json::from_str(&body)
                 .map_err(|error| GmailError::Malformed(format!("{error}: {body}")));
         }
-
-        Err(GmailError::Auth(
-            "unauthorized even after refreshing the access token".to_owned(),
-        ))
     }
 }
 

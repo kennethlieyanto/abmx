@@ -294,7 +294,7 @@ abmx init [--path FILE] [--force]   write a starter config
 abmx auth gmail [--manual]          OAuth2 + PKCE; --manual for a headless box
 abmx auth logout [--no-revoke]      revoke the refresh token, then remove it locally
 abmx doctor [--online]              check config, parsers, state, accounts, sink, auth
-abmx author [--days N] [--label L] [--senders a,b] [--input DIR] [--out FILE]
+abmx author [--days N] [--label L] [--senders a,b] [--input DIR] [--concurrency N] [--out FILE]
                                       scan the mailbox, find unknown templates, emit a prompt
 abmx plan [--from-dir DIR] [--out FILE]
                                       fetch + parse + decide, print the plan as JSON

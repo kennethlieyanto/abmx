@@ -24,6 +24,20 @@ Content-Type: text/html; charset=utf-8\r\n\
 <div>Transaction Date</div><div>30 Oct 2026 17:28:17</div>\
 </body></html>\r\n";
 
+const EMAIL2: &str = "From: banktwo <noreply@banktwo.example>\r\n\
+To: me@example.invalid\r\n\
+Subject: Transaksi QRIS\r\n\
+Date: Thu, 30 Oct 2026 17:28:17 +0700\r\n\
+Message-ID: <scan-2@example.invalid>\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: text/html; charset=utf-8\r\n\
+\r\n\
+<html><body>\
+<div>Merchant</div><div>EXAMPLE MERCHANT</div>\
+<div>Amount</div><div>Rp 19.000</div>\
+<div>Transaction Date</div><div>30 Oct 2026 17:28:17</div>\
+</body></html>\r\n";
+
 fn fetcher(server: &MockServer, dir: &Path) -> GmailFetcher {
     let token_path = dir.join("credentials.json");
     TokenStore::new(&token_path)
@@ -72,10 +86,29 @@ fn scan_groups_by_sender_and_writes_one_sample() {
         "format=raw",
         vec![Response::json(format!(r#"{{"id":"m1","raw":"{raw}"}}"#))],
     );
+    server.route_query(
+        "GET",
+        "/gmail/v1/users/me/messages/m2",
+        "format=metadata",
+        vec![Response::json(
+            r#"{"id":"m2","payload":{"headers":[
+                {"name":"From","value":"banktwo <noreply@banktwo.example>"},
+                {"name":"Subject","value":"Transaksi QRIS"},
+                {"name":"Date","value":"Thu, 30 Oct 2026 17:28:17 +0700"}
+            ]}}"#,
+        )],
+    );
+    let raw2 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(EMAIL2);
+    server.route_query(
+        "GET",
+        "/gmail/v1/users/me/messages/m2",
+        "format=raw",
+        vec![Response::json(format!(r#"{{"id":"m2","raw":"{raw2}"}}"#))],
+    );
     server.route(
         "GET",
         "/gmail/v1/users/me/messages",
-        vec![Response::json(r#"{"messages":[{"id":"m1"}]}"#)],
+        vec![Response::json(r#"{"messages":[{"id":"m1"},{"id":"m2"}]}"#)],
     );
 
     let fetcher = fetcher(&server, dir.path());
@@ -97,14 +130,21 @@ fn scan_groups_by_sender_and_writes_one_sample() {
 
     let scan = author::scan_gmail(&fetcher, None, &options, &context).unwrap();
 
-    assert_eq!(scan.messages, 1);
-    assert_eq!(scan.groups.len(), 1);
+    assert_eq!(scan.messages, 2);
+    assert_eq!(scan.groups.len(), 2);
 
-    let group = &scan.groups[0];
-    assert_eq!(group.sender, "example@example.invalid");
-    assert_eq!(group.count, 1);
-    assert_eq!(group.outcome, GroupOutcome::Candidate);
-    assert!(group.sample.as_ref().expect("sample written").is_file());
+    let senders: Vec<&str> = scan
+        .groups
+        .iter()
+        .map(|group| group.sender.as_str())
+        .collect();
+    assert!(senders.contains(&"example@example.invalid"));
+    assert!(senders.contains(&"noreply@banktwo.example"));
+    for group in &scan.groups {
+        assert_eq!(group.count, 1);
+        assert_eq!(group.outcome, GroupOutcome::Candidate);
+        assert!(group.sample.as_ref().expect("sample written").is_file());
+    }
 
     let prompt = author::render(&context, &scan);
     assert!(prompt.contains("example@example.invalid"));

@@ -102,6 +102,9 @@ enum Command {
         /// Maximum sender groups in the prompt.
         #[arg(long, default_value_t = 20, value_name = "N")]
         max_groups: usize,
+        /// Parallel header requests. Capped at 16 to stay under Gmail's quota.
+        #[arg(long, default_value_t = 8, value_name = "N")]
+        concurrency: usize,
         /// Write the prompt to a file instead of stdout.
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
@@ -417,6 +420,7 @@ fn run(cli: Cli) -> Result<i32> {
             senders,
             max_messages,
             max_groups,
+            concurrency,
             out,
         } => run_author(
             &settings,
@@ -426,8 +430,9 @@ fn run(cli: Cli) -> Result<i32> {
                 senders,
                 max_messages,
                 max_groups,
+                concurrency,
+                quiet: settings.quiet,
                 input,
-                ..author::Options::default()
             },
             out.as_deref(),
         ),

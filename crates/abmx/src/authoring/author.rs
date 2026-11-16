@@ -5,12 +5,14 @@
 //! and one representative `.eml` per group under the state directory.
 
 use std::collections::BTreeMap;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{bail, Context, Result};
 use regex::Regex;
 
-use abmx_gmail::GmailFetcher;
+use abmx_gmail::{GmailError, GmailFetcher, MessageMeta};
 use abmx_tx::NormalizedEmail;
 
 use super::samples;
@@ -46,15 +48,165 @@ pub struct Scan {
     pub groups: Vec<Group>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Options {
     pub days: u32,
     pub label: Option<String>,
     pub senders: Vec<String>,
     pub max_messages: usize,
     pub max_groups: usize,
+    /// Parallel header requests. Capped at 16 to stay under Gmail's quota.
+    pub concurrency: usize,
     pub input: Option<PathBuf>,
-    pub json: bool,
+    pub quiet: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            days: 30,
+            label: None,
+            senders: Vec::new(),
+            max_messages: 1000,
+            max_groups: 20,
+            concurrency: 8,
+            input: None,
+            quiet: false,
+        }
+    }
+}
+
+/// A stderr progress line. stdout is the prompt, so nothing here may touch it.
+struct Progress {
+    label: &'static str,
+    total: usize,
+    done: AtomicUsize,
+    quiet: bool,
+    tty: bool,
+}
+
+impl Progress {
+    fn new(label: &'static str, total: usize, quiet: bool) -> Self {
+        let tty = std::io::stderr().is_terminal();
+        let progress = Self {
+            label,
+            total,
+            done: AtomicUsize::new(0),
+            quiet,
+            tty,
+        };
+        if !quiet && total > 0 {
+            progress.print(0);
+        }
+        progress
+    }
+
+    fn tick(&self) {
+        let done = self.done.fetch_add(1, Ordering::Relaxed) + 1;
+        if self.quiet || self.total == 0 {
+            return;
+        }
+        let step = (self.total / 10).max(1);
+        if done != self.total && done % step != 0 {
+            return;
+        }
+        self.print(done);
+    }
+
+    fn print(&self, done: usize) {
+        let mut err = std::io::stderr().lock();
+        if self.tty {
+            let _ = write!(err, "\r{} {done}/{}", self.label, self.total);
+        } else {
+            let _ = writeln!(err, "{} {done}/{}", self.label, self.total);
+        }
+        let _ = err.flush();
+    }
+
+    fn finish(&self) {
+        if self.quiet || self.total == 0 {
+            return;
+        }
+        let done = self.done.load(Ordering::Relaxed);
+        if self.tty {
+            let mut err = std::io::stderr().lock();
+            let _ = writeln!(err, "\r{} {done}/{}", self.label, self.total);
+            let _ = err.flush();
+        }
+    }
+}
+
+/// Fetch headers for every id, `concurrency` at a time.
+///
+/// `reqwest::blocking` has no async runtime to fight with, so a scoped thread
+/// pool is the simplest correct parallel primitive here. Order does not matter:
+/// the caller groups by sender afterwards.
+fn fetch_headers(
+    fetcher: &GmailFetcher,
+    ids: &[String],
+    concurrency: usize,
+    progress: &Progress,
+) -> Result<Vec<MessageMeta>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let workers = concurrency.clamp(1, 16).min(ids.len());
+    let fetch_one = |id: &str| -> Result<Option<MessageMeta>> {
+        match fetcher.metadata(id) {
+            Ok(meta) => {
+                progress.tick();
+                Ok(Some(meta))
+            }
+            // Listed but gone before we asked: deleted or filtered out.
+            Err(GmailError::Api { status: 404, .. }) => {
+                progress.tick();
+                Ok(None)
+            }
+            Err(error) => Err(error.into()),
+        }
+    };
+
+    if workers == 1 {
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(meta) = fetch_one(id)? {
+                out.push(meta);
+            }
+        }
+        return Ok(out);
+    }
+
+    let chunk_size = ids.len().div_ceil(workers);
+    let chunks: Vec<&[String]> = ids.chunks(chunk_size).collect();
+
+    let results: Vec<Result<Vec<MessageMeta>>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = chunks
+            .iter()
+            .map(|chunk| {
+                scope.spawn(move || {
+                    let mut local = Vec::with_capacity(chunk.len());
+                    for id in *chunk {
+                        if let Some(meta) = fetch_one(id)? {
+                            local.push(meta);
+                        }
+                    }
+                    Ok(local)
+                })
+            })
+            .collect();
+
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("header worker panicked"))
+            .collect()
+    });
+
+    let mut out = Vec::with_capacity(ids.len());
+    for result in results {
+        out.extend(result?);
+    }
+    Ok(out)
 }
 
 /// Everything the prompt needs about the user's installation.
@@ -158,23 +310,29 @@ pub fn scan_gmail(
     options: &Options,
     context: &AuthorContext<'_>,
 ) -> Result<Scan> {
+    if !options.quiet {
+        eprintln!("scanning {}d…", options.days);
+    }
+
     let query = base_query(options);
     let ids = fetcher.list_ids(&query, options.max_messages.max(1))?;
 
+    let headers = Progress::new("headers", ids.len(), options.quiet);
+    let metas = fetch_headers(fetcher, &ids, options.concurrency, &headers)?;
+    headers.finish();
+
     let mut buckets: BTreeMap<String, (usize, Vec<String>, String)> = BTreeMap::new();
-    for id in &ids {
-        let meta = match fetcher.metadata(id) {
-            Ok(meta) => meta,
-            Err(abmx_gmail::GmailError::Api { status: 404, .. }) => continue,
-            Err(error) => return Err(error.into()),
-        };
+    for meta in &metas {
         let sender = sender_address(&meta.from);
         let entry = buckets
             .entry(sender)
-            .or_insert_with(|| (0, Vec::new(), id.clone()));
+            .or_insert_with(|| (0, Vec::new(), String::new()));
         entry.0 += 1;
+        if entry.2.is_empty() {
+            entry.2 = meta.id.clone();
+        }
         if entry.1.len() < 3 && !meta.subject.is_empty() {
-            entry.1.push(meta.subject);
+            entry.1.push(meta.subject.clone());
         }
     }
 
@@ -182,11 +340,17 @@ pub fn scan_gmail(
     let mut ordered: Vec<_> = buckets.into_iter().collect();
     ordered.sort_by(|a, b| b.1 .0.cmp(&a.1 .0).then_with(|| a.0.cmp(&b.0)));
 
+    let bodies = Progress::new(
+        "groups",
+        ordered.len().min(options.max_groups.max(1)),
+        options.quiet,
+    );
     let mut groups = Vec::new();
     for (sender, (count, subjects, representative)) in ordered {
         if groups.len() >= options.max_groups.max(1) {
             break;
         }
+        bodies.tick();
 
         let ignored_subject = subjects.iter().any(|subject| subject_ignored(subject));
         if ignored_subject {
@@ -203,7 +367,7 @@ pub fn scan_gmail(
 
         let bytes = match fetcher.raw(&representative) {
             Ok(bytes) => bytes,
-            Err(abmx_gmail::GmailError::Api { status: 404, .. }) => continue,
+            Err(GmailError::Api { status: 404, .. }) => continue,
             Err(error) => return Err(error.into()),
         };
 
@@ -242,6 +406,8 @@ pub fn scan_gmail(
             email: Some(email),
         });
     }
+
+    bodies.finish();
 
     Ok(Scan {
         days: options.days,

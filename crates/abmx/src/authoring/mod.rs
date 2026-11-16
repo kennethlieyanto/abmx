@@ -5,6 +5,7 @@
 //! skills, and a verification loop. Nothing here calls a model or changes a
 //! ledger; the output is text and files the user chooses to hand to an agent.
 
+pub mod author;
 pub mod dump;
 pub mod prompt;
 pub mod samples;

@@ -32,10 +32,13 @@ template's constant labels are and where each value lives between them.
    - Put secondary fields (location, terminal, acquirer) in `[extract.extra]`.
 8. **Write `[status]`** when the template can report a failure. Map the exact
    words printed by the bank. Omit it for settled-only templates.
-9. **Verify.** Run `abmx verify parser <draft> --input <samples>` and read
-   every row. Repeat until all samples are `strict`.
-10. **Install only after the user agrees.** Draft specs do not belong in the
-    live corpus until they have been reviewed.
+9. **Write into the corpus and verify.** Put the spec at
+   `<corpus>/<id>/config.toml`, copy the representative sample into
+   `<corpus>/<id>/fixtures/01.eml`, then run
+   `abmx parser check --parser <id> --parsers <corpus>` and
+   `abmx verify parser <corpus>/<id>`. Repeat until every sample is `strict`.
+10. **Leave the corpus clean.** If you cannot make it pass, delete the
+    `config.toml` you wrote and report why. Never leave a broken spec behind.
 
 ## Reading verification output
 
@@ -53,23 +56,27 @@ Exit codes: `0` all strict, `3` at least one heuristic, `2` unmatched or failed,
 ## Stop rules
 
 - If the samples contain no monetary amount, do not create a parser. Report why.
+- A parser is for an email that reports a **movement of an account the user
+  tracks**. Merchant order receipts (Shopee, Tokopedia, Gojek, ...) are not
+  movements when the bank already notifies that account; ignore them unless the
+  user says otherwise.
 - If a sample already routes to an existing parser and extracts correctly, do not
   create a duplicate. Report the existing parser id instead.
 - If a value is ambiguous, leave the optional field out rather than guessing.
 - Never invent a ledger account, a UUID, or a parser id the user has not agreed
   to when there is any doubt.
 
-## Installing into abmx
+## Writing into abmx
 
 A parser only becomes useful when abmx can load it and route real mail to it:
 
-1. Copy the verified parser directory `parsers/<id>/` (both `config.toml` and
-   `fixtures/`) into a directory listed by `[general].parsers`, or into the
-   implicit corpus at `~/.config/abmx/parsers/`. The directory name is the
-   parser id; the spec has no `id` field.
+1. Write `<corpus>/<id>/config.toml` (the directory name is the parser id; the
+   spec has no `id` field) and copy the representative sample to
+   `<corpus>/<id>/fixtures/01.eml`. The default corpus is
+   `~/.config/abmx/parsers/`.
 2. Make sure `[defaults].account` matches a key in `[accounts]`. The value in
    `[accounts]` is the sink's account id, not a guess.
 3. Run `abmx parsers` to confirm the spec loaded and its sender is advertised.
 4. Run `abmx doctor` and `abmx sync --dry-run --from-dir <samples>` to prove
    the end-to-end path.
-5. Ask the user before changing `[accounts]`, a live corpus, or a sink.
+5. Ask the user before changing `[accounts]` or a sink.

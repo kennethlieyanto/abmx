@@ -27,7 +27,7 @@ pub use auth::{
     authorize, authorize_manual, revoke_refresh_token, Credentials, OAuthConfig, TokenStore,
     REVOKE_URL,
 };
-pub use client::{GmailClient, GmailError, Profile};
+pub use client::{GmailClient, GmailError, MessageMeta, Profile};
 pub use query::build_query;
 pub use sample::SampleMessage;
 
@@ -109,6 +109,38 @@ impl GmailFetcher {
 
     pub fn client(&self) -> &GmailClient {
         &self.client
+    }
+
+    /// List message ids for an arbitrary query, without touching the cursor or
+    /// the configured sync query. Used by `abmx author` to scan a window.
+    pub fn list_ids(&self, query: &str, max: usize) -> Result<Vec<String>, GmailError> {
+        let max = max.max(1);
+        let mut ids = Vec::new();
+        let mut page_token = None;
+
+        loop {
+            let page = self
+                .client
+                .list_messages(query, &[], page_token.as_deref(), 500)?;
+            ids.extend(page.ids);
+            page_token = page.next_page_token;
+            if page_token.is_none() || ids.len() >= max {
+                break;
+            }
+        }
+
+        ids.truncate(max);
+        Ok(ids)
+    }
+
+    /// Headers only, for the scan's first pass.
+    pub fn metadata(&self, id: &str) -> Result<MessageMeta, GmailError> {
+        self.client.metadata_message(id)
+    }
+
+    /// Full RFC 5322 bytes, for one representative per sender.
+    pub fn raw(&self, id: &str) -> Result<Vec<u8>, GmailError> {
+        self.client.raw_message(id)
     }
 
     fn full_sync(&self, limit: usize) -> Result<(Vec<String>, Option<String>), GmailError> {

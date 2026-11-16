@@ -72,6 +72,9 @@ impl Request {
 struct Route {
     method: String,
     path_prefix: String,
+    /// Optional query prefix, for endpoints that share a path (`format=raw`
+    /// vs `format=metadata`).
+    query_prefix: Option<String>,
     responses: VecDeque<Response>,
 }
 
@@ -133,6 +136,27 @@ impl MockServer {
         state.routes.push(Route {
             method: method.to_ascii_uppercase(),
             path_prefix: path_prefix.to_owned(),
+            query_prefix: None,
+            responses: responses.into(),
+        });
+        drop(state);
+        self
+    }
+
+    /// Register a route that also matches a query prefix. Routes are tried in
+    /// registration order, so register the most specific one first.
+    pub fn route_query(
+        &self,
+        method: &str,
+        path_prefix: &str,
+        query_prefix: &str,
+        responses: Vec<Response>,
+    ) -> &Self {
+        let mut state = self.state.lock().expect("mock server state");
+        state.routes.push(Route {
+            method: method.to_ascii_uppercase(),
+            path_prefix: path_prefix.to_owned(),
+            query_prefix: Some(query_prefix.to_owned()),
             responses: responses.into(),
         });
         drop(state);
@@ -217,7 +241,7 @@ fn handle_connection(mut stream: TcpStream, state: &Arc<Mutex<State>>) -> std::i
     let request = Request {
         method: method.clone(),
         path: path_only.clone(),
-        query,
+        query: query.clone(),
         headers,
         body: String::from_utf8_lossy(&body).to_string(),
     };
@@ -225,10 +249,15 @@ fn handle_connection(mut stream: TcpStream, state: &Arc<Mutex<State>>) -> std::i
     let response = {
         let mut state = state.lock().expect("mock server state");
         state.requests.push(request);
-        let route = state
-            .routes
-            .iter_mut()
-            .find(|route| route.method == method && path_only.starts_with(&route.path_prefix));
+        let route = state.routes.iter_mut().find(|route| {
+            route.method == method
+                && path_only.starts_with(&route.path_prefix)
+                && route
+                    .query_prefix
+                    .as_ref()
+                    .map(|prefix| query.starts_with(prefix))
+                    .unwrap_or(true)
+        });
         match route {
             Some(route) if !route.responses.is_empty() => {
                 if route.responses.len() > 1 {

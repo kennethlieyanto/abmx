@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use abmx::authoring::{self, prompt::IdFrom, PromptContext};
+use abmx::authoring::{self, author, prompt::IdFrom, PromptContext};
 use abmx::config::{Config, INIT_TEMPLATE};
 use abmx::fetchers::DirFetcher;
 use abmx::paths;
@@ -75,6 +75,36 @@ enum Command {
         /// Make network calls (Gmail profile, sink accounts).
         #[arg(long)]
         online: bool,
+    },
+
+    /// Scan the mailbox, find unknown templates, and emit an authoring prompt.
+    Author {
+        /// Offline bootstrap from a file or directory of `.eml` samples.
+        #[arg(long, value_name = "DIR|FILE")]
+        input: Option<PathBuf>,
+        /// How far back to scan, in days.
+        #[arg(long, default_value_t = 30, value_name = "N")]
+        days: u32,
+        /// Restrict the scan to one Gmail label.
+        #[arg(long, value_name = "LABEL")]
+        label: Option<String>,
+        /// Restrict the scan to these senders. Repeat or comma-separate.
+        #[arg(
+            long,
+            value_name = "ADDR",
+            value_delimiter = ',',
+            action = clap::ArgAction::Append
+        )]
+        senders: Vec<String>,
+        /// Maximum messages to inspect.
+        #[arg(long, default_value_t = 1000, value_name = "N")]
+        max_messages: usize,
+        /// Maximum sender groups in the prompt.
+        #[arg(long, default_value_t = 20, value_name = "N")]
+        max_groups: usize,
+        /// Write the prompt to a file instead of stdout.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
     },
 
     /// Fetch, parse, and decide — then print the plan as JSON on stdout.
@@ -380,6 +410,27 @@ fn run(cli: Cli) -> Result<i32> {
             AuthCommand::Logout { no_revoke } => auth_logout(&settings, no_revoke),
         },
         Command::Doctor { online } => doctor(&settings, online),
+        Command::Author {
+            input,
+            days,
+            label,
+            senders,
+            max_messages,
+            max_groups,
+            out,
+        } => run_author(
+            &settings,
+            author::Options {
+                days,
+                label,
+                senders,
+                max_messages,
+                max_groups,
+                input,
+                ..author::Options::default()
+            },
+            out.as_deref(),
+        ),
         Command::Plan {
             from_dir,
             limit,
@@ -440,9 +491,22 @@ fn load_config(settings: &Settings) -> Result<(Config, PathBuf, PathBuf)> {
 
 fn build_runner(config: &Config, base: &Path) -> Result<Runner> {
     let options = config.parser_options(base);
-    let (parser, _discovery) = abmx_parser::Parser::load(&options)
-        .map_err(|error| anyhow::anyhow!("loading the parser corpus: {error}"))
-        .context("hint: run `abmx parser paths` to see where abmx looked for parsers")?;
+    let (parser, _discovery) =
+        abmx_parser::Parser::load(&options).map_err(|error| match &error {
+            abmx_parser::Error::NoCorpus { .. }
+            | abmx_parser::Error::EmptyCorpus { .. }
+            | abmx_parser::Error::Parse(abmx_parse::Error::NoParsers { .. }) => anyhow::anyhow!(
+                "no parsers installed — nothing can be parsed yet.\n\n\
+             bootstrap with one of:\n  \
+             abmx author                  scan Gmail and author parsers\n  \
+             abmx author --input <dir>    from saved .eml files\n  \
+             just install-parsers         copy this checkout's corpus into ~/.config/abmx"
+            ),
+            other => anyhow::anyhow!(
+                "loading the parser corpus: {other}\n  \
+             hint: run `abmx parser paths` to see where abmx looked"
+            ),
+        })?;
 
     let state = State::open(&config.state_path(base))?;
     state.check_schema()?;
@@ -895,6 +959,19 @@ fn doctor(settings: &Settings, online: bool) -> Result<i32> {
     Ok(EXIT_OK)
 }
 
+fn require_parsers(runner: &Runner) -> Result<()> {
+    if runner.parser.registry().parsers.is_empty() {
+        bail!(
+            "no parsers installed — nothing can be parsed yet.\n\n\
+             bootstrap with one of:\n  \
+             abmx author                  scan Gmail and author parsers\n  \
+             abmx author --input <dir>    from saved .eml files\n  \
+             abmx generate skill parser --global"
+        );
+    }
+    Ok(())
+}
+
 fn plan(
     settings: &Settings,
     from_dir: Option<PathBuf>,
@@ -903,6 +980,7 @@ fn plan(
 ) -> Result<i32> {
     let (config, base, _) = load_config(settings)?;
     let runner = build_runner(&config, &base)?;
+    require_parsers(&runner)?;
     let fetcher = build_fetcher(&config, &base, from_dir, &runner.parser)?;
 
     let request = FetchRequest::new(None).with_limit(limit.unwrap_or(abmx_core::DEFAULT_LIMIT));
@@ -931,6 +1009,9 @@ fn apply(
 ) -> Result<i32> {
     let (config, base, _) = load_config(settings)?;
     let runner = build_runner(&config, &base)?;
+    if plan_file.is_none() {
+        require_parsers(&runner)?;
+    }
 
     let plan = match plan_file {
         Some(path) => {
@@ -967,6 +1048,7 @@ fn sync(
 ) -> Result<i32> {
     let (config, base, _) = load_config(settings)?;
     let runner = build_runner(&config, &base)?;
+    require_parsers(&runner)?;
     let fetcher = build_fetcher(&config, &base, from_dir, &runner.parser)?;
 
     let request = FetchRequest::new(None).with_limit(limit.unwrap_or(abmx_core::DEFAULT_LIMIT));
@@ -991,6 +1073,7 @@ fn diff(
 ) -> Result<i32> {
     let (config, base, _) = load_config(settings)?;
     let runner = build_runner(&config, &base)?;
+    require_parsers(&runner)?;
     let fetcher = build_fetcher(&config, &base, from_dir, &runner.parser)?;
 
     let request = FetchRequest::new(None).with_limit(limit.unwrap_or(abmx_core::DEFAULT_LIMIT));
@@ -1380,6 +1463,83 @@ fn load_optional_config(settings: &Settings) -> Result<(Option<Config>, Option<P
             }
         }
     }
+}
+
+fn run_author(settings: &Settings, options: author::Options, out: Option<&Path>) -> Result<i32> {
+    author::check_input(&options)?;
+
+    let (config, config_path, base) = load_optional_config(settings)?;
+
+    let parser_options = config
+        .as_ref()
+        .map(|config| config.parser_options(&base))
+        .unwrap_or_default();
+    let discovery = abmx_parser::discover(&parser_options);
+    let corpus = discovery
+        .dirs
+        .first()
+        .cloned()
+        .unwrap_or_else(paths::default_parsers_dir);
+
+    let parser = match abmx_parser::Parser::load(&parser_options) {
+        Ok((parser, _)) => Some(parser),
+        Err(
+            abmx_parser::Error::NoCorpus { .. }
+            | abmx_parser::Error::EmptyCorpus { .. }
+            | abmx_parser::Error::Parse(abmx_parse::Error::NoParsers { .. }),
+        ) => None,
+        Err(error) => {
+            eprintln!("abmx: warning: {error}");
+            None
+        }
+    };
+    let summaries = parser
+        .as_ref()
+        .map(|parser| parser.registry().summaries())
+        .unwrap_or_default();
+    let accounts = config
+        .as_ref()
+        .map(|config| config.accounts.clone())
+        .unwrap_or_default();
+
+    let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let work_dir = paths::xdg_state_dir().join("abmx/author").join(timestamp);
+    std::fs::create_dir_all(&work_dir)
+        .with_context(|| format!("creating {}", work_dir.display()))?;
+    if let Err(error) = restrict_permissions(&work_dir, 0o700) {
+        eprintln!("warning: {error}");
+    }
+
+    let context = author::AuthorContext {
+        config_path: config_path.as_deref(),
+        corpus: &corpus,
+        work_dir: &work_dir,
+        accounts: &accounts,
+        summaries: &summaries,
+    };
+
+    let scan = if options.input.is_some() {
+        author::scan_input(&options, &context)?
+    } else {
+        let config = config.as_ref().context(
+            "no config found; run `abmx init`, then `abmx auth gmail`, then `abmx author`",
+        )?;
+        let fetcher = config.build_gmail(&base, &[])?;
+        author::scan_gmail(&fetcher, parser.as_ref(), &options, &context)?
+    };
+
+    eprint!("{}", author::summary(&scan));
+
+    let prompt = author::render(&context, &scan);
+    match out {
+        Some(path) => {
+            std::fs::write(path, prompt).with_context(|| format!("writing {}", path.display()))?;
+            eprintln!("prompt: {}", path.display());
+        }
+        None => print!("{prompt}"),
+    }
+
+    Ok(0)
 }
 
 fn generate_prompt_parser(settings: &Settings, args: PromptParserArgs) -> Result<i32> {

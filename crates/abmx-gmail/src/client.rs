@@ -65,6 +65,15 @@ pub struct MessageList {
     pub next_page_token: Option<String>,
 }
 
+/// The headers a scan needs, without downloading the body.
+#[derive(Debug, Clone, Default)]
+pub struct MessageMeta {
+    pub id: String,
+    pub from: String,
+    pub subject: String,
+    pub date: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct HistoryPage {
     pub message_ids: Vec<String>,
@@ -236,6 +245,41 @@ impl GmailClient {
 
         decode_base64url(raw)
             .map_err(|error| GmailError::Malformed(format!("message {id}: {error}")))
+    }
+
+    /// Headers only: `format=metadata` is much cheaper than `format=raw`, so a
+    /// scan can classify a whole mailbox before fetching any bodies.
+    pub fn metadata_message(&self, id: &str) -> Result<MessageMeta, GmailError> {
+        let url = format!(
+            "{}/users/{}/messages/{}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date",
+            self.base_url, self.user, id
+        );
+        let value = self.get_json(&url)?;
+
+        let mut meta = MessageMeta {
+            id: id.to_owned(),
+            ..MessageMeta::default()
+        };
+        if let Some(headers) = value
+            .get("payload")
+            .and_then(|payload| payload.get("headers"))
+            .and_then(Value::as_array)
+        {
+            for header in headers {
+                let Some(name) = header.get("name").and_then(Value::as_str) else {
+                    continue;
+                };
+                let value = header.get("value").and_then(Value::as_str).unwrap_or("");
+                match name.to_ascii_lowercase().as_str() {
+                    "from" => meta.from = value.to_owned(),
+                    "subject" => meta.subject = value.to_owned(),
+                    "date" => meta.date = value.to_owned(),
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(meta)
     }
 
     fn access_token(&self) -> Result<String, GmailError> {

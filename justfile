@@ -101,6 +101,10 @@ corpus dir="sample":
 # authoring a parser
 # ---------------------------------------------------------------------------
 
+# Scan Gmail and emit an authoring prompt on stdout.
+author *args:
+    cargo run -q -p abmx -- author {{args}}
+
 # Rewrite real emails into publishable fixtures (needs redact.toml, gitignored).
 # Copy the output into parsers/<id>/fixtures/ afterwards.
 redact in="sample" out="build/redacted":

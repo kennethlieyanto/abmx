@@ -19,6 +19,7 @@ dependencies = [
  "chrono",
  "clap",
  "libc",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

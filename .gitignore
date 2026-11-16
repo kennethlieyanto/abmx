@@ -12,3 +12,7 @@ result
 
 # actual-http-api compose data
 /var
+
+# Real bank samples and their redaction rules (contributor-only inputs)
+/sample/
+redact.toml

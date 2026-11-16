@@ -63,33 +63,56 @@ never reads the working directory.
 
 ```bash
 abmx init                       # writes ~/.config/abmx/config.toml
-$EDITOR ~/.config/abmx/config.toml
+$EDITOR ~/.config/abmx/config.toml   # Gmail client id + Actual endpoint
 abmx auth gmail                 # OAuth2 + PKCE, stores a refresh token (0600)
-abmx doctor --online            # config, parsers, state, accounts, sink, auth
-abmx sync --dry-run             # see the plan, write nothing
-abmx sync                       # for real
+abmx author                     # scan the mailbox, author parsers, map accounts
+abmx sync                       # import everything found so far
 ```
 
-Then put `abmx sync` on a timer (see the NixOS module below).
+`abmx author` is the one step with a human in the loop. It scans the last 30
+days, groups mail by sender, drops OTP and non-movement mail, and emits a
+self-contained prompt for an agent:
+
+```bash
+opencode run --auto "$(abmx author)"
+```
+
+```
+scanned 30d: 1204 messages, 132 senders
+  candidate  example@example.invalid                312  "Transaksi Online - Debit example"
+  candidate  noreply@banktwo.example         44  "Transaksi QRIS"
+  ignored    security@example.invalid            12  otp or security notice
+  known      receipts@bank.example   19  wallet.qris_payment
+```
+
+The agent asks which senders to track and which ledger account each parser
+belongs to, then writes `~/.config/abmx/parsers/<id>/config.toml` with its
+`fixtures/`, verifies it, and updates `[accounts]`. Nothing to install, nothing
+to rebuild.
+
+Already have `.eml` files? `abmx author --input <dir>` does the same offline.
+To make the next one a one-liner, install the skill once:
+
+```bash
+abmx generate skill parser --global
+```
+
+Then put `abmx sync` on a timer (see the NixOS module below). With no parsers,
+`sync` stops and points back at `abmx author` instead of importing noise.
 
 ### You need
 
-1. **A parser corpus** — this repository ships one under `parsers/`. Point at it
-   with `--parsers`, `$ABMX_PARSERS`, or `[general].parsers`, or install it into
-   the user corpus:
-   ```bash
-   just install-parsers                 # ~/.config/abmx/parsers (checks first)
-   abmx parser paths                    # what will load, and which directory won
-   abmx parser specs                    # every parser and the file it came from
-   ```
-   Each parser is a directory: `parsers/<id>/config.toml` with its samples in
-   `parsers/<id>/fixtures/`. The directory name is the parser id.
-2. **A Gmail OAuth client** — one Google Cloud project, `gmail.readonly`, desktop
+1. **A Gmail OAuth client** — one Google Cloud project, `gmail.readonly`, desktop
    app client. See [docs/gmail.md](docs/gmail.md).
-3. **A ledger endpoint** — for Actual Budget that is
+2. **A ledger endpoint** — for Actual Budget that is
    [`actual-http-api`](https://github.com/jhonderson/actual-http-api) on `:5007`.
    From a checkout: `cp .env.example .env`, fill in the Actual password and API
    key, then `just actual-api`. See [docs/actual.md](docs/actual.md).
+3. **Parsers** — nothing to install. `abmx author` creates them under
+   `~/.config/abmx/parsers/<id>/` (`config.toml` plus `fixtures/`). If you
+   already have a corpus (this repository ships one), point at it with
+   `--parsers`, `$ABMX_PARSERS`, or `[general].parsers`, or run
+   `just install-parsers`.
 
 ## Why mail, not statements?
 
@@ -113,55 +136,65 @@ automatically — Actual's `cleared` flag stays yours to set against a statement
 
 ## Authoring a parser with an AI
 
-Parsers are runtime data: a TOML spec per bank template, loaded from a directory.
-Adding one does not require rebuilding or writing code. The spec format is
-documented in [docs/parsing.md](docs/parsing.md). `abmx` packages the evidence for
-an agent: normalized block dumps, cross-sample variance, the current corpus, and
-the spec contract.
+Parsers are runtime data: a `config.toml` per bank template, loaded from a
+directory. Adding one does not require rebuilding or writing code. The spec
+format is documented in [docs/parsing.md](docs/parsing.md).
+
+`abmx author` does the discovery and packaging:
+
+- **scan** — list a window of mail, group by sender, fetch one full message per
+  sender, and keep the groups that contain an amount and a date.
+- **skip what is known** — messages already routed by an installed parser are
+  reported as `known` and never reach the agent.
+- **package** — write one representative `.eml` per group under
+  `~/.local/state/abmx/author/<timestamp>/` and emit a prompt with block dumps.
+
+The agent confirms senders, parser ids, account keys, and ledger mappings, then
+writes each parser straight into `~/.config/abmx/parsers/<id>/` with its fixture,
+and verifies it there.
 
 ```bash
-abmx generate prompt parser \
-  --input ./eml-dir \
-  --out ./parser-prompt.md
-
-opencode --prompt="$(cat ./parser-prompt.md)"
+opencode run --auto "$(abmx author)"
 ```
 
-The prompt is self-contained, so it works for a one-shot agent. For interactive
-work, install the reusable skills instead:
+Options: `--days 90` widens the scan, `--label receipt` restricts it to one
+Gmail label, `--senders a@b,c@d` skips discovery, `--input <dir>` works offline,
+and `--out prompt.md` writes the prompt to a file instead of stdout.
+
+### The verification loop
+
+The rules are the same whatever produced the draft. `abmx parser check` verifies
+every parser against its colocated fixtures; `abmx verify parser <dir>` checks
+one candidate against a directory of samples. A spec is only done when every
+sample is `strict`; `heuristic` means a zero amount or a missing field, and
+`unmatched` means routing is wrong.
+
+```bash
+abmx parser check --parser example.card_debit
+abmx verify parser ~/.config/abmx/parsers/example.card_debit
+```
+
+### Manual prompt
+
+If you want to drive the authoring yourself, `abmx generate prompt parser` still
+renders a prompt from a directory of `.eml` files:
+
+```bash
+abmx generate prompt parser --input ./eml-dir --id bank.type --out ./prompt.md
+opencode run --auto --file ./prompt.md "Follow the prompt."
+```
+
+### Reusable skills
+
+For recurring authoring, install the skills once:
 
 ```bash
 abmx generate skill parser --global   # ~/.config/opencode/skills
 abmx generate skill parser --out .opencode/skills
 ```
 
-The agent can inspect one message with `abmx dump <file.eml>` and validate a
-candidate spec against saved samples:
-
-```bash
-abmx verify parser ./drafts/my.bank --id my.bank
-```
-
-`verify` never touches the live corpus. A spec is only done when every sample is
-`strict`; `heuristic` means the amount is zero or a field is missing, and
-`unmatched` means the routing is wrong. The agent writes drafts first and asks
-before installing a parser directory into the corpus or changing `[accounts]`.
-
-### Sampling from Gmail labels
-
-If you have labelled a set of emails that share a structure, let abmx fetch the
-samples:
-
-```bash
-abmx generate prompt parser \
-  --from-gmail-label 'example/QRIS,example/Transfer' \
-  --id-from label \
-  --out ./parser-prompt.md
-```
-
-Samples are written under the state directory with `0600` files. The label is a
-hint that the samples share one template; the prompt still asks the agent to
-split them if the block shapes disagree. See [docs/authoring.md](docs/authoring.md).
+Then the prompt is simply "author the parsers for these emails"; the skill knows
+the corpus layout, the verification loop, and the account-mapping rules.
 
 ## The four primitives
 
@@ -261,6 +294,8 @@ abmx init [--path FILE] [--force]   write a starter config
 abmx auth gmail [--manual]          OAuth2 + PKCE; --manual for a headless box
 abmx auth logout [--no-revoke]      revoke the refresh token, then remove it locally
 abmx doctor [--online]              check config, parsers, state, accounts, sink, auth
+abmx author [--days N] [--label L] [--senders a,b] [--input DIR] [--out FILE]
+                                      scan the mailbox, find unknown templates, emit a prompt
 abmx plan [--from-dir DIR] [--out FILE]
                                       fetch + parse + decide, print the plan as JSON
 abmx apply [--plan FILE] [--dry-run]

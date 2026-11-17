@@ -136,6 +136,29 @@ install-parsers:
     done
     echo "installed parsers -> $dest"
 
+# Remove the user config (~/.config/abmx) and every installed parser, so the
+# first-run UX can be tried again. The Gmail token and state DB live in
+# ~/.local/state/abmx and are kept; `abmx reset --purge` replays them.
+# Usage: `just nuke` (asks) or `just nuke yes`.
+nuke yes="no":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="${XDG_CONFIG_HOME:-$HOME/.config}/abmx"
+    if [[ ! -e "$dir" ]]; then
+        echo "nothing to remove: $dir"
+        exit 0
+    fi
+    if [[ "{{yes}}" != "yes" ]]; then
+        printf 'remove %s? [y/N] ' "$dir"
+        read -r answer
+        case "$answer" in
+            y|Y|yes|YES) ;;
+            *) echo "aborted"; exit 1 ;;
+        esac
+    fi
+    rm -rf "$dir"
+    echo "removed $dir"
+
 # ---------------------------------------------------------------------------
 # actual-http-api
 # ---------------------------------------------------------------------------

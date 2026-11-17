@@ -257,8 +257,10 @@ state = "~/.local/state/abmx/state.db"
 client_id = "….apps.googleusercontent.com"
 max_messages = 10000               # hard cap; exceeding it is an error
 
+# Actual has no REST API: `url` is the actual-http-api wrapper, not the
+# Actual server (:5006). See docs/actual.md.
 [sink.actual]
-url = "http://localhost:5007"
+url = "http://localhost:5007"   # actual-http-api, not the Actual server
 budget_sync_id = "…"
 chunk_size = 50
 # never (default) | settled | always — see docs/actual.md

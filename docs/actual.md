@@ -76,8 +76,10 @@ keep them separate so a leaked ledger API key does not expose the server.
 ## Configure `abmx`
 
 ```toml
+# `url` is actual-http-api, the wrapper. It is not your Actual server (:5006):
+# Actual has no REST API of its own.
 [sink.actual]
-url = "http://localhost:5007"
+url = "http://localhost:5007"   # actual-http-api, not the Actual server
 budget_sync_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 # api_key_file = "/run/credentials/abmx.service/actual-api-key"
 # budget_password_file = "/run/credentials/abmx.service/actual-budget-password"

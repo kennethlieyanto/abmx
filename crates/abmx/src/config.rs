@@ -69,14 +69,18 @@ pub struct SinkSection {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ActualSection {
-    /// Base URL of `actual-http-api`.
+    /// Base URL of `actual-http-api` — the wrapper, not the Actual server.
+    /// Actual has no REST API of its own.
     pub url: String,
+    /// The wrapper's own API key (not the Actual server password).
     #[serde(default)]
     pub api_key: Option<String>,
     #[serde(default)]
     pub api_key_file: Option<PathBuf>,
     /// Actual's Sync ID.
     pub budget_sync_id: String,
+    /// The Actual server password, only for end-to-end encrypted budgets.
+    /// This is not the wrapper's API key.
     #[serde(default)]
     pub budget_password: Option<String>,
     #[serde(default)]
@@ -283,8 +287,13 @@ client_id = "REPLACE.apps.googleusercontent.com"
 # Hard cap. Exceeding it is an error, not a silent truncation.
 max_messages = 10000
 
+# Actual Budget has no REST API. `url` is the **actual-http-api** wrapper, NOT
+# your Actual server (:5006). The wrapper drives the official client over HTTP:
+#   abmx  ──►  actual-http-api  ──►  @actual-app/api  ──►  actual-server
+# https://github.com/jhonderson/actual-http-api
+# `api_key` is the wrapper's key; `budget_password` is the Actual server's.
 [sink.actual]
-url = "http://localhost:5007"
+url = "http://localhost:5007"   # actual-http-api, not the Actual server
 budget_sync_id = "REPLACE"
 # api_key_file = "/run/credentials/abmx.service/actual-api-key"
 # budget_password_file = "/run/credentials/abmx.service/actual-budget-password"

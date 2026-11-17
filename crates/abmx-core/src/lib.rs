@@ -27,8 +27,8 @@ pub use fetcher::{FetchBatch, FetchRequest, Fetcher, MessageKey, RawMessage, DEF
 pub use money::cents;
 pub use plan::{Plan, PlannedRow, SourceReport, Stats, UnmatchedMessage, PLAN_VERSION};
 pub use policy::{
-    decide, AccountMap, Decision, FailedPolicy, HeuristicPolicy, PolicyConfig, ReviewReason,
-    SkipReason,
+    decide, AccountMap, Decision, FailedPolicy, HeuristicPolicy, LabelRoute, LabelRoutes,
+    PolicyConfig, ReviewReason, SkipReason,
 };
 pub use sink::{ApplyOptions, ImportRow, Report, RowError, Sink, SinkAccount};
 

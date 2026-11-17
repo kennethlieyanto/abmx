@@ -65,30 +65,39 @@ never reads the working directory.
 abmx init                       # writes ~/.config/abmx/config.toml
 $EDITOR ~/.config/abmx/config.toml   # Gmail client id + Actual endpoint
 abmx auth gmail                 # OAuth2 + PKCE, stores a refresh token (0600)
-abmx author                     # scan the mailbox, author parsers, map accounts
-abmx sync                       # import everything found so far
+abmx labels                     # inspect the abmx:* labels and their parsers
+abmx author                     # build a prompt for labels without a parser
+abmx sync                       # import everything labeled
 ```
 
-`abmx author` is the one step with a human in the loop. It scans the last 30
-days, groups mail by sender, drops OTP and non-movement mail, and emits a
-self-contained prompt for an agent:
+Routing is explicit. The user applies exactly one `abmx:<id>` label to a tracked
+message (a Gmail filter is the usual way), and `[labels]` in the config maps that
+label to a parser and a ledger account:
+
+```toml
+[labels]
+"abmx:example-qris" = { parser = "example-qris", account = "<actual account uuid>" }
+```
+
+`abmx author` is the one step with a human in the loop. It takes the **last
+three** messages under every `abmx:*` label, writes them to
+`~/.local/state/abmx/author/<timestamp>/`, and emits a prompt with their block
+dumps:
 
 ```bash
-opencode run --auto "$(abmx author)"
+opencode --prompt "$(abmx author)"
 ```
 
 ```
-scanned 30d: 1204 messages, 132 senders
-  candidate  example@example.invalid                312  "Transaksi Online - Debit example"
-  candidate  noreply@banktwo.example         44  "Transaksi QRIS"
-  ignored    security@example.invalid            12  otp or security notice
-  known      receipts@bank.example   19  wallet.qris_payment
+5 label(s), 15 sample(s); 1 need work
+  abmx:example-qris            missing_parser        3  -
+  abmx:example-journal         ok                    3  example-journal
 ```
 
-The agent asks which senders to track and which ledger account each parser
-belongs to, then writes `~/.config/abmx/parsers/<id>/config.toml` with its
-`fixtures/`, verifies it, and updates `[accounts]`. Nothing to install, nothing
-to rebuild.
+The agent writes one parser per label, asks which ledger account it belongs to,
+and verifies all three samples. If the three are different templates, the label
+is mislabeled and the agent stops instead of guessing. Nothing to install,
+nothing to rebuild.
 
 Already have `.eml` files? `abmx author --input <dir>` does the same offline.
 To make the next one a one-liner, install the skill once:
@@ -97,8 +106,9 @@ To make the next one a one-liner, install the skill once:
 abmx generate skill parser --global
 ```
 
-Then put `abmx sync` on a timer (see the NixOS module below). With no parsers,
-`sync` stops and points back at `abmx author` instead of importing noise.
+Then put `abmx sync` on a timer (see the NixOS module below). `sync` refuses to
+run when an `abmx:*` label has no parser or mapping, so nothing is silently
+skipped.
 
 ### You need
 
@@ -140,34 +150,37 @@ Parsers are runtime data: a `config.toml` per bank template, loaded from a
 directory. Adding one does not require rebuilding or writing code. The spec
 format is documented in [docs/parsing.md](docs/parsing.md).
 
-`abmx author` does the discovery and packaging:
+`abmx author` does the packaging:
 
-- **scan** — list a window of mail, group by sender, fetch one full message per
-  sender, and keep the groups that contain an amount and a date.
-- **skip what is known** — messages already routed by an installed parser are
-  reported as `known` and never reach the agent.
-- **package** — write one representative `.eml` per group under
-  `~/.local/state/abmx/author/<timestamp>/` and emit a prompt with block dumps.
+- **inventory** — list every `abmx:*` Gmail label and whether it has a parser and
+  an account.
+- **sample** — fetch the last three messages under each label, plus the variance
+  table that tells the agent which blocks are labels and which are values.
+- **refuse to guess** — a label with fewer than three samples is
+  `insufficient_samples`; a label whose samples are different templates is
+  `mixed_shapes` and the agent is told to fix the label, not split the parser.
 
-The agent confirms senders, parser ids, account keys, and ledger mappings, then
-writes each parser straight into `~/.config/abmx/parsers/<id>/` with its fixture,
-and verifies it there.
+The agent writes each parser straight into `~/.config/abmx/parsers/<id>/` with
+its fixtures and verifies it against all three samples.
 
 ```bash
-opencode run --auto "$(abmx author)"
+opencode --prompt "$(abmx author)"
 ```
 
-Options: `--days 90` widens the scan, `--label receipt` restricts it to one
-Gmail label, `--senders a@b,c@d` skips discovery, `--input <dir>` works offline,
-and `--out prompt.md` writes the prompt to a file instead of stdout.
+Options: `--label abmx:example-qris` restricts it to one label, `--samples N`
+changes the evidence depth, `--json` emits the machine-readable bundle, and
+`--input <dir>` works offline.
 
 ### The verification loop
 
 The rules are the same whatever produced the draft. `abmx parser check` verifies
 every parser against its colocated fixtures; `abmx verify parser <dir>` checks
-one candidate against a directory of samples. A spec is only done when every
-sample is `strict`; `heuristic` means a zero amount or a missing field, and
-`unmatched` means routing is wrong.
+one candidate against a directory of samples; `abmx verify parser --label`
+checks the live last-three under a label. A spec is only done when every sample
+is `strict`; `heuristic` means a zero amount or a missing field, and a missing
+parser means the label and the corpus disagree. `abmx parser explain` shows the
+region behind each field, and `abmx parser lint` catches the common spec
+mistakes before a sync.
 
 ```bash
 abmx parser check --parser example.card_debit
@@ -176,11 +189,11 @@ abmx verify parser ~/.config/abmx/parsers/example.card_debit
 
 ### Manual prompt
 
-If you want to drive the authoring yourself, `abmx generate prompt parser` still
-renders a prompt from a directory of `.eml` files:
+If you want to drive the authoring yourself, `abmx author --input` renders a
+prompt from a directory of `.eml` files (one subdirectory per label):
 
 ```bash
-abmx generate prompt parser --input ./eml-dir --id bank.type --out ./prompt.md
+abmx author --input ./eml-dir --out ./prompt.md
 opencode run --auto --file ./prompt.md "Follow the prompt."
 ```
 
@@ -203,7 +216,7 @@ the corpus layout, the verification loop, and the account-mapping rules.
 | **Fetcher** | a source of raw RFC 5322 bytes            | Gmail API, local directory |
 | **Policy**  | `Transaction` → import / review / skip    | one pure function          |
 | **Sink**    | decided rows → the ledger                 | Actual Budget, JSONL file  |
-| **State**   | cursors, delivered messages, review queue | SQLite                     |
+| **State**   | delivered messages, review queue          | SQLite                     |
 
 A new mailbox is a new `Fetcher`. A new ledger is a new `Sink`. Neither requires
 touching the runner, the CLI, or the other integrations. Adding a *bank*, by
@@ -228,9 +241,10 @@ Three independent layers, because they fail in different ways:
 2. **State** — a delivered message is recorded so the next run doesn't even
    re-parse it. This is an optimisation for idempotent sinks and a requirement
    for sinks that have no idempotency key.
-3. **Cursor discipline** — Gmail's `historyId` only advances when _every_ row in
-   the batch succeeded. A partial failure leaves the cursor in place; the next
-   run replays and the state database skips what already landed.
+3. **Label scan + state** — every run scans the configured `abmx:*` labels and
+   lets the state database skip messages already delivered. Mail labeled late is
+   picked up on the next run; a partial failure leaves the failed message unseen
+   so it is retried.
 
 ## Config
 
@@ -241,10 +255,7 @@ state = "~/.local/state/abmx/state.db"
 
 [fetch.gmail]
 client_id = "….apps.googleusercontent.com"
-lookback_days = 7                  # floor for full syncs
-max_messages = 200
-# query_extra = "-label:abmx-ignored"
-# labels = ["INBOX"]
+max_messages = 10000               # hard cap; exceeding it is an error
 
 [sink.actual]
 url = "http://localhost:5007"
@@ -254,9 +265,10 @@ chunk_size = 50
 cleared = "never"
 # notes_fields = ["description", "reference_id", "channel", "parser"]
 
-[accounts]
-"example-account" = "<actual account uuid>"
-"wallet-account" = "<actual account uuid>"
+[labels]
+"abmx:example-journal" = { parser = "example-journal", account = "<actual account uuid>" }
+"abmx:example-qris"    = { parser = "example-qris",    account = "<actual account uuid>" }
+"abmx:grab"        = { parser = "grab",        account = "<actual account uuid>" }
 
 [policy]
 heuristic = "review"               # review | import | skip
@@ -293,9 +305,10 @@ directory sees the secrets without exporting them by hand.
 abmx init [--path FILE] [--force]   write a starter config
 abmx auth gmail [--manual]          OAuth2 + PKCE; --manual for a headless box
 abmx auth logout [--no-revoke]      revoke the refresh token, then remove it locally
-abmx doctor [--online]              check config, parsers, state, accounts, sink, auth
-abmx author [--days N] [--label L] [--senders a,b] [--input DIR] [--concurrency N] [--out FILE]
-                                      scan the mailbox, find unknown templates, emit a prompt
+abmx doctor [--online] [--strict]     check config, parsers, labels, state, sink, auth
+abmx labels [--check] [--json]      every abmx:* label, its parser, and its account
+abmx author [--label L] [--samples N] [--json] [--input DIR] [--out FILE]
+                                      inventory labels and emit a prompt for the ones needing work
 abmx plan [--from-dir DIR] [--out FILE]
                                       fetch + parse + decide, print the plan as JSON
 abmx apply [--plan FILE] [--dry-run]
@@ -304,29 +317,29 @@ abmx sync [--dry-run]               plan + apply; the timer entrypoint
 abmx diff [--json] [--since D] [--until D]
                                       compare the plan against what the ledger already holds
 abmx reset [--review] [--purge] [--yes]
-                                      forget cursors and delivered messages
+                                      forget delivered messages
 abmx review [--json]                rows waiting for a human
 abmx approve <id>… [--dry-run]      import reviewed rows
-abmx accounts [--json]              sink accounts and how [accounts] maps onto them
-abmx parsers                        loaded parsers and the senders they claim
+abmx accounts [--json]              sink accounts and how [labels] maps onto them
+abmx parsers                        loaded parsers and the labels they serve
 abmx dump <path> [--json]           normalized block dump (authoring aid)
 abmx verify parser <dir|config.toml> [--id ID] [--input DIR] [--json]
                                       check a candidate parser against samples
-abmx generate prompt parser …       prompt an AI to author a parser
+abmx verify parser <dir> --label abmx:example-qris [--all] [--limit N]
+                                      check it against the live last-three
 abmx generate skill parser …        write the OpenCode authoring skills
 
 abmx parser paths [--json]          parser search order and which directory won
 abmx parser specs [--format F]      loaded parsers and their files
-abmx parser senders [--format F]    sender addresses the corpus covers
 abmx parser schema                  JSON Schema of the transaction contract
-abmx parser parse <path> [--format json|ndjson|table]
-                                      parse a file or directory
-abmx parser route <path>            which parser claims an email, and why
+abmx parser parse <path> --parser ID [--format json|ndjson|table]
+                                      parse a file or directory with one parser
+abmx parser explain <path> --parser ID
+                                      block regions behind each field
+abmx parser lint [--parser ID]      static spec checks
 abmx parser check [-v] [--parser ID]
                                       verify every parser against its fixtures
-abmx parser corpus [--dir DIR]      summarise how a directory parses
 abmx parser init <id>               scaffold parsers/<id>/{config.toml,fixtures}
-abmx parser infer <dir> [--id ID]   draft a spec from a directory of emails
 ```
 
 Every `abmx parser` command takes `--parsers <dir>` (repeatable) or
@@ -368,11 +381,11 @@ or failed, `3` heuristic unless `--allow-heuristic`.
 | `status = failed`           | skip    | the bank says it did not happen       |
 | `extraction = heuristic`    | review  | the amount is plausible, not verified |
 | zero amount                 | review  | almost always the wrong block matched |
-| account not in `[accounts]` | review  | never guess a ledger account          |
+| label not in `[labels]`     | review  | never guess a ledger account          |
 | everything else             | import  |                                       |
 
 Review rows are **re-checked on every sync**, even though their messages are
-behind the cursor: the queue stores the transaction, so fixing `[accounts]` or
+in the review queue: the queue stores the transaction, so fixing `[labels]` or
 `[policy]` imports them on the next run — no reset and no per-row approval.
 `abmx approve` is only for forcing a row the policy still rejects.
 

@@ -102,49 +102,48 @@ Scope: `https://www.googleapis.com/auth/gmail.readonly`. Nothing else.
 | --- | --- |
 | `users.getProfile` | full sync, to read `historyId` before listing |
 | `users.messages.list?q=…` | full sync |
-| `users.history.list?startHistoryId=…&historyTypes=messageAdded` | incremental |
-| `users.messages.get?id=…&format=raw` | every new message |
+| `users.labels.list` | discover `abmx:*` labels |
+| `users.messages.list?labelIds=…` | every message under a configured label |
+| `users.messages.get?id=…&format=raw` | each new message |
 
 `format=raw` returns the full RFC 5322 message, which is exactly what the parser
 consumes — no re-encoding, no body extraction in `abmx`.
 
 ## The query
 
-The sender list is not maintained by hand: `abmx` reads every `senders` entry
-from the loaded parser corpus.
+There is no sender query and no history cursor. `abmx` lists the account's
+labels, keeps those starting with `abmx:`, and asks for every message under each
+one:
 
 ```
-from:(alerts@example.invalid OR bank.example) -in:spam -in:trash newer_than:7d
+labelIds=<label id>  q=-in:spam -in:trash
 ```
 
-- `*@bank.example` in a parser spec becomes `bank.example`.
-- `lookback_days` is a floor for full syncs, not a filter on incremental runs.
-- `query_extra` is appended verbatim, e.g. `"-label:abmx-ignored"`.
-- `labels = ["INBOX"]` restricts the search further if you have filters.
+- Every `abmx:*` label must have an entry in `[labels]`; an unmapped label is an
+  error, not a silent skip.
+- A message carrying two `abmx:*` labels is an error; the routing is ambiguous.
+- Full pagination is used. If `max_messages` is exceeded, the run fails rather
+  than truncating.
+- The state database skips messages already delivered, so a re-scan is cheap and
+  mail labeled late is picked up on the next run.
 
-The query only applies to full syncs. Incremental runs ask for everything added
-since the cursor and let the parser route it.
+## Labels for parser authoring
 
-## Sampling labelled mail for parser authoring
-
-Labels are also the easiest way to hand a set of same-structure emails to an
-agent that will write a new bank parser:
+Labels are the routing identity, not a hint. The user applies exactly one
+`abmx:<id>` label to tracked mail (a Gmail filter is the usual way), and
+`[labels]` maps it to a parser and a ledger account.
 
 ```bash
-abmx generate prompt parser \
-  --from-gmail-label 'example/QRIS,example/Transfer' \
-  --id-from label \
-  --out ./parser-prompt.md
+abmx author --label abmx:example-qris
 ```
 
-This uses `messages.list` with `q=label:"<name>" -in:spam -in:trash`, fetches
-each message with `format=raw`, and writes the samples under
-`~/.local/state/abmx/samples/<timestamp>/<label-slug>/` with `0600` permissions.
-It does not touch the sync cursor or the state database.
+`abmx author` takes the newest three messages under the label, writes them under
+`~/.local/state/abmx/author/<timestamp>/<label>/` with `0600` permissions, and
+emits block dumps plus a variance table. It never touches the state database.
+If the three samples are different templates the label is reported as
+`mixed_shapes`; fix the label/filter instead of splitting the parser.
 
-A label is a hint that the samples share one template. The generated prompt
-still compares block shapes and asks the agent to split the template if they do
-not match. See [authoring.md](authoring.md) for the full loop.
+See [authoring.md](authoring.md) for the full loop.
 
 ## Revoking access
 

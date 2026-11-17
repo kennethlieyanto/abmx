@@ -6,32 +6,28 @@ use std::path::PathBuf;
 use abmx::state::State;
 use abmx::Runner;
 use abmx_actual::{ActualConfig, ActualSink, NotesConfig};
-use abmx_core::{AccountMap, ApplyOptions, FetchRequest, PolicyConfig};
+use abmx_core::{ApplyOptions, FetchRequest, LabelRoute, LabelRoutes, PolicyConfig};
 use abmx_gmail::auth::{Credentials, TokenStore};
 use abmx_gmail::{GmailConfig, GmailFetcher};
 use abmx_testkit::{MockServer, Response};
 use base64::Engine;
 
-const PARSER: &str = r#"
-spec_version = 1
-version = 1
+const LABEL: &str = "abmx:test";
 
-[match]
-senders = ["alerts@bank.example"]
-subject = '^Payment successful$'
+const PARSER: &str = r#"
+spec_version = 2
+version = 1
 
 [labels]
 list = ["Amount", "Merchant", "Transaction Date", "Status"]
 
 [defaults]
 bank = "test"
-account = "test-account"
 currency = "IDR"
 tz = "Asia/Jakarta"
 kind = "purchase"
 
 [status]
-source = "field"
 label = "Status"
 map = { Successful = "settled", Failed = "failed" }
 
@@ -85,8 +81,19 @@ fn gmail_fetcher(server: &MockServer, dir: &std::path::Path) -> GmailFetcher {
     let mut config = GmailConfig::new("client", &token_path);
     config.base_url = format!("{}/gmail/v1", server.url());
     config.token_url = format!("{}/token", server.url());
-    config.query = "from:alerts@bank.example".into();
     GmailFetcher::new(config).unwrap()
+}
+
+fn routes() -> LabelRoutes {
+    let mut routes = LabelRoutes::default();
+    routes.insert(
+        LABEL,
+        LabelRoute {
+            parser: "test.bank".to_owned(),
+            account: "acc-1".to_owned(),
+        },
+    );
+    routes
 }
 
 #[test]
@@ -102,6 +109,13 @@ fn gmail_to_parser_to_actual() {
             r#"{"access_token":"access","expires_in":3600}"#,
         )],
     );
+    gmail.route(
+        "GET",
+        "/gmail/v1/users/me/labels",
+        vec![Response::json(
+            r#"{"labels":[{"id":"Label_1","name":"abmx:test"}]}"#,
+        )],
+    );
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(EMAIL);
     gmail.route(
         "GET",
@@ -113,11 +127,6 @@ fn gmail_to_parser_to_actual() {
         "/gmail/v1/users/me/messages",
         vec![Response::json(r#"{"messages":[{"id":"m1"}]}"#)],
     );
-    gmail.route(
-        "GET",
-        "/gmail/v1/users/me/profile",
-        vec![Response::json(r#"{"historyId":"1000"}"#)],
-    );
 
     let actual = MockServer::start();
     actual.route(
@@ -128,17 +137,13 @@ fn gmail_to_parser_to_actual() {
 
     let (parser, _) = abmx_parser::Parser::load(&abmx_parser::Options {
         parsers: vec![parsers],
-        router: None,
     })
     .unwrap();
-
-    let mut accounts = AccountMap::new();
-    accounts.insert("test-account", "acc-1");
 
     let runner = Runner::new(
         parser,
         PolicyConfig::default(),
-        accounts,
+        routes(),
         State::open_in_memory().unwrap(),
     );
 
@@ -149,7 +154,8 @@ fn gmail_to_parser_to_actual() {
     )
     .unwrap();
 
-    let plan = runner.plan(&fetcher, FetchRequest::new(None)).unwrap();
+    let labels = vec![LABEL.to_owned()];
+    let plan = runner.plan(&fetcher, FetchRequest::new(&labels)).unwrap();
     assert_eq!(plan.stats.fetched, 1);
     assert_eq!(plan.stats.import, 1);
 
@@ -172,22 +178,10 @@ fn gmail_to_parser_to_actual() {
     assert_eq!(transaction["payee_name"], "ExamplePay");
     assert_eq!(transaction["date"], "2026-10-30");
 
-    // A second run must be a no-op: the Gmail cursor advanced, and the message
-    // is recorded as delivered.
-    gmail.route(
-        "GET",
-        "/gmail/v1/users/me/history",
-        vec![Response::json(r#"{"historyId":"1001","history":[]}"#)],
-    );
-
-    let second = runner.plan(&fetcher, FetchRequest::new(None)).unwrap();
+    // A second run must be a no-op: the message is already recorded as
+    // delivered, even though the label is scanned again.
+    let second = runner.plan(&fetcher, FetchRequest::new(&labels)).unwrap();
+    assert_eq!(second.stats.fetched, 1);
     assert_eq!(second.stats.parsed, 0);
     assert!(second.import_rows().is_empty());
-
-    let history = gmail
-        .requests()
-        .into_iter()
-        .find(|request| request.path_only() == "/gmail/v1/users/me/history")
-        .expect("the second run used history, not a full scan");
-    assert!(history.query.contains("startHistoryId=1000"));
 }

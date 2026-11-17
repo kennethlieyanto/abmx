@@ -1,6 +1,5 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::fetcher::MessageKey;
 use crate::policy::Decision;
@@ -37,9 +36,6 @@ pub struct SourceReport {
     pub fetcher: String,
     pub fetched: usize,
     pub skipped: usize,
-    /// Persist this only after the batch applies cleanly.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_cursor: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,7 +61,7 @@ pub struct PlannedRow {
     pub id: String,
     /// Source message identity, for state bookkeeping.
     pub message: MessageKey,
-    /// Parser-declared account key (`example-account`).
+    /// The label that routed this message (`abmx:example-qris`).
     pub account_key: String,
     /// Resolved sink account, present exactly when the decision is `Import`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -84,8 +80,7 @@ pub struct Stats {
     pub review: usize,
     pub skip: usize,
     /// Rows re-decided from the review queue rather than freshly fetched.
-    /// Their messages are behind the cursor, so this is how a mapping or
-    /// policy fix takes effect without a reset.
+    /// This is how a mapping or policy fix takes effect without a reset.
     #[serde(default)]
     pub recovered: usize,
     /// Parse-level problems that did not stop the run (an email that claimed to

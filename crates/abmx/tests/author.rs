@@ -1,10 +1,9 @@
-//! The Gmail scan behind `abmx author`: metadata pass, one representative
-//! fetch, and the candidate prompt. Read-only; no state, no ledger.
+//! `abmx author`: label inventory and the last-three evidence. Read-only.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
-use abmx::authoring::author::{self, AuthorContext, GroupOutcome};
+use abmx::authoring::author::{self, LabelStatus};
+use abmx_core::{LabelRoute, LabelRoutes};
 use abmx_gmail::auth::{Credentials, TokenStore};
 use abmx_gmail::{GmailConfig, GmailFetcher};
 use abmx_testkit::{MockServer, Response};
@@ -12,30 +11,16 @@ use base64::Engine;
 
 const EMAIL: &str = "From: example <example@example.invalid>\r\n\
 To: me@example.invalid\r\n\
-Subject: Transaksi Online - Debit example\r\n\
+Subject: Internet Transaction Journal\r\n\
 Date: Thu, 30 Oct 2026 17:28:17 +0700\r\n\
 Message-ID: <scan-1@example.invalid>\r\n\
 MIME-Version: 1.0\r\n\
 Content-Type: text/html; charset=utf-8\r\n\
 \r\n\
 <html><body>\
-<div>Merchant</div><div>ExamplePay</div>\
-<div>Amount</div><div>Rp 27.500</div>\
+<div>Total Payment</div><div>Rp 27.500</div>\
 <div>Transaction Date</div><div>30 Oct 2026 17:28:17</div>\
-</body></html>\r\n";
-
-const EMAIL2: &str = "From: banktwo <noreply@banktwo.example>\r\n\
-To: me@example.invalid\r\n\
-Subject: Transaksi QRIS\r\n\
-Date: Thu, 30 Oct 2026 17:28:17 +0700\r\n\
-Message-ID: <scan-2@example.invalid>\r\n\
-MIME-Version: 1.0\r\n\
-Content-Type: text/html; charset=utf-8\r\n\
-\r\n\
-<html><body>\
-<div>Merchant</div><div>EXAMPLE MERCHANT</div>\
-<div>Amount</div><div>Rp 19.000</div>\
-<div>Transaction Date</div><div>30 Oct 2026 17:28:17</div>\
+<div>Payment to</div><div>ExamplePay</div>\
 </body></html>\r\n";
 
 fn fetcher(server: &MockServer, dir: &Path) -> GmailFetcher {
@@ -55,7 +40,7 @@ fn fetcher(server: &MockServer, dir: &Path) -> GmailFetcher {
 }
 
 #[test]
-fn scan_groups_by_sender_and_writes_one_sample() {
+fn scan_takes_the_last_three_and_reports_missing_mapping() {
     let dir = tempfile::tempdir().unwrap();
     let server = MockServer::start();
 
@@ -66,89 +51,144 @@ fn scan_groups_by_sender_and_writes_one_sample() {
             r#"{"access_token":"access","expires_in":3600}"#,
         )],
     );
-    // The most specific route must be registered first: matching is a prefix.
-    server.route_query(
+    server.route(
         "GET",
-        "/gmail/v1/users/me/messages/m1",
-        "format=metadata",
+        "/gmail/v1/users/me/labels",
         vec![Response::json(
-            r#"{"id":"m1","payload":{"headers":[
-                {"name":"From","value":"example <example@example.invalid>"},
-                {"name":"Subject","value":"Transaksi Online - Debit example"},
-                {"name":"Date","value":"Thu, 30 Oct 2026 17:28:17 +0700"}
-            ]}}"#,
+            r#"{"labels":[{"id":"Label_1","name":"abmx:example-qris"}]}"#,
         )],
     );
+
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(EMAIL);
-    server.route_query(
-        "GET",
-        "/gmail/v1/users/me/messages/m1",
-        "format=raw",
-        vec![Response::json(format!(r#"{{"id":"m1","raw":"{raw}"}}"#))],
-    );
-    server.route_query(
-        "GET",
-        "/gmail/v1/users/me/messages/m2",
-        "format=metadata",
-        vec![Response::json(
-            r#"{"id":"m2","payload":{"headers":[
-                {"name":"From","value":"banktwo <noreply@banktwo.example>"},
-                {"name":"Subject","value":"Transaksi QRIS"},
-                {"name":"Date","value":"Thu, 30 Oct 2026 17:28:17 +0700"}
-            ]}}"#,
-        )],
-    );
-    let raw2 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(EMAIL2);
-    server.route_query(
-        "GET",
-        "/gmail/v1/users/me/messages/m2",
-        "format=raw",
-        vec![Response::json(format!(r#"{{"id":"m2","raw":"{raw2}"}}"#))],
-    );
+    for id in ["m1", "m2", "m3"] {
+        server.route(
+            "GET",
+            &format!("/gmail/v1/users/me/messages/{id}"),
+            vec![Response::json(format!(r#"{{"id":"{id}","raw":"{raw}"}}"#))],
+        );
+    }
     server.route(
         "GET",
         "/gmail/v1/users/me/messages",
-        vec![Response::json(r#"{"messages":[{"id":"m1"},{"id":"m2"}]}"#)],
+        vec![Response::json(
+            r#"{"messages":[{"id":"m1"},{"id":"m2"},{"id":"m3"}]}"#,
+        )],
     );
 
     let fetcher = fetcher(&server, dir.path());
     let corpus = dir.path().join("corpus");
-    let options = author::Options {
-        days: 30,
-        max_messages: 10,
-        max_groups: 5,
-        ..author::Options::default()
-    };
-    let accounts = BTreeMap::new();
-    let context = AuthorContext {
+    let options = author::Options::default();
+    let context = author::Context {
         config_path: None,
         corpus: &corpus,
         work_dir: dir.path(),
-        accounts: &accounts,
         summaries: &[],
     };
 
-    let scan = author::scan_gmail(&fetcher, None, &options, &context).unwrap();
+    let routes = LabelRoutes::default();
+    let inventory = author::scan_gmail(&fetcher, None, &routes, &options, dir.path()).unwrap();
 
-    assert_eq!(scan.messages, 2);
-    assert_eq!(scan.groups.len(), 2);
+    assert_eq!(inventory.labels.len(), 1);
+    let report = &inventory.labels[0];
+    assert_eq!(report.label, "abmx:example-qris");
+    assert_eq!(report.status, LabelStatus::MissingMapping);
+    assert_eq!(report.samples.len(), 3);
+    assert_eq!(report.messages, 3);
 
-    let senders: Vec<&str> = scan
-        .groups
-        .iter()
-        .map(|group| group.sender.as_str())
-        .collect();
-    assert!(senders.contains(&"example@example.invalid"));
-    assert!(senders.contains(&"noreply@banktwo.example"));
-    for group in &scan.groups {
-        assert_eq!(group.count, 1);
-        assert_eq!(group.outcome, GroupOutcome::Candidate);
-        assert!(group.sample.as_ref().expect("sample written").is_file());
-    }
-
-    let prompt = author::render(&context, &scan);
-    assert!(prompt.contains("example@example.invalid"));
+    let prompt = author::render(&context, &inventory);
+    assert!(prompt.contains("abmx:example-qris"));
+    assert!(prompt.contains("missing_mapping"));
     assert!(prompt.contains("Rp 27.500"));
-    assert!(prompt.contains("Merchant order receipts"));
-    assert!(prompt.contains(&corpus.display().to_string()));
+    assert!(prompt.contains("One label maps to one parser"));
+}
+
+#[test]
+fn a_configured_label_with_a_parser_is_ok() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start();
+
+    server.route(
+        "POST",
+        "/token",
+        vec![Response::json(
+            r#"{"access_token":"access","expires_in":3600}"#,
+        )],
+    );
+    server.route(
+        "GET",
+        "/gmail/v1/users/me/labels",
+        vec![Response::json(
+            r#"{"labels":[{"id":"Label_1","name":"abmx:example-qris"}]}"#,
+        )],
+    );
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(EMAIL);
+    for id in ["m1", "m2", "m3"] {
+        server.route(
+            "GET",
+            &format!("/gmail/v1/users/me/messages/{id}"),
+            vec![Response::json(format!(r#"{{"id":"{id}","raw":"{raw}"}}"#))],
+        );
+    }
+    server.route(
+        "GET",
+        "/gmail/v1/users/me/messages",
+        vec![Response::json(
+            r#"{"messages":[{"id":"m1"},{"id":"m2"},{"id":"m3"}]}"#,
+        )],
+    );
+
+    let parsers = dir.path().join("parsers/example-qris");
+    std::fs::create_dir_all(&parsers).unwrap();
+    std::fs::write(
+        parsers.join("config.toml"),
+        r#"
+spec_version = 2
+version = 1
+[labels]
+list = ["Total Payment", "Transaction Date", "Payment to"]
+[defaults]
+bank = "example"
+currency = "IDR"
+tz = "Asia/Jakarta"
+kind = "purchase"
+[extract.amount]
+label = "Total Payment"
+regex = '(?P<value>[0-9][0-9.,]*)'
+number = "id"
+[extract.occurred_at]
+label = "Transaction Date"
+regex = '(?P<value>\d{2} \w{3} \d{4} \d{2}:\d{2}:\d{2})'
+formats = ["%d %b %Y %H:%M:%S"]
+[extract.counterparty]
+label = "Payment to"
+"#,
+    )
+    .unwrap();
+
+    let (parser, _) = abmx_parser::Parser::load(&abmx_parser::Options {
+        parsers: vec![dir.path().join("parsers")],
+    })
+    .unwrap();
+
+    let mut routes = LabelRoutes::default();
+    routes.insert(
+        "abmx:example-qris",
+        LabelRoute {
+            parser: "example-qris".to_owned(),
+            account: "uuid".to_owned(),
+        },
+    );
+
+    let fetcher = fetcher(&server, dir.path());
+    let inventory = author::scan_gmail(
+        &fetcher,
+        Some(&parser),
+        &routes,
+        &author::Options::default(),
+        dir.path(),
+    )
+    .unwrap();
+
+    assert_eq!(inventory.labels[0].status, LabelStatus::Ok);
+    assert_eq!(inventory.needs_work(), 0);
 }

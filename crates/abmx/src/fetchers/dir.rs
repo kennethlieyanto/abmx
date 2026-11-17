@@ -4,19 +4,27 @@ use abmx_core::{Error, FetchBatch, FetchRequest, Fetcher, RawMessage, Result};
 
 /// Read `.eml` files from a directory (or a single file).
 ///
-/// This is not a toy: it is how the whole pipeline is exercised before OAuth
-/// exists, and it is the recovery path when a mailbox provider breaks — export
-/// the messages and replay them.
-///
-/// The cursor is `None` by design. Re-scanning a directory is cheap, and the
-/// state database filters what has already been delivered.
+/// This is the offline path: export messages, put them in a directory, and give
+/// them the same `abmx:*` label they would carry in Gmail. Re-scanning is cheap
+/// and the state database filters what has already been delivered.
 pub struct DirFetcher {
     root: PathBuf,
+    label: String,
 }
 
 impl DirFetcher {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            label: "abmx:dir".to_owned(),
+        }
+    }
+
+    pub fn labeled(root: impl Into<PathBuf>, label: impl Into<String>) -> Self {
+        Self {
+            root: root.into(),
+            label: label.into(),
+        }
     }
 
     pub fn root(&self) -> &std::path::Path {
@@ -72,6 +80,7 @@ impl Fetcher for DirFetcher {
 
             messages.push(RawMessage::new(
                 format!("dir:{name}"),
+                self.label.clone(),
                 path.display().to_string(),
                 bytes,
             ));
@@ -80,7 +89,6 @@ impl Fetcher for DirFetcher {
         Ok(FetchBatch {
             skipped: files.len().saturating_sub(messages.len()),
             messages,
-            next_cursor: None,
         })
     }
 }

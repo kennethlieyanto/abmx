@@ -108,7 +108,9 @@ pub fn verify(spec: &Path, id: Option<&str>, input: Option<&Path>) -> Result<Ver
 
     let id = match id.map(str::to_owned).or_else(|| dir_id(&spec_dir)) {
         Some(id) => id,
-        None => bail!("no parser id: pass --id, or put the spec in a directory named <bank.type>"),
+        None => {
+            bail!("no parser id: pass --id, or put the spec in a directory named after the parser")
+        }
     };
 
     if !spec_file.is_file() {
@@ -116,7 +118,7 @@ pub fn verify(spec: &Path, id: Option<&str>, input: Option<&Path>) -> Result<Ver
     }
 
     if !abmx_parse::is_parser_id(&id) {
-        bail!("parser id `{id}` must look like `bank.type`");
+        bail!("parser id `{id}` is not a valid directory name");
     }
 
     let input = input
@@ -138,12 +140,11 @@ pub fn verify(spec: &Path, id: Option<&str>, input: Option<&Path>) -> Result<Ver
 
     let (parser, _) = abmx_parser::Parser::load(&abmx_parser::Options {
         parsers: vec![dir.path().to_path_buf()],
-        router: None,
     })
     .map_err(|error| anyhow::anyhow!("loading candidate spec `{id}`: {error}"))?;
 
     let results = parser
-        .parse_path(&input)
+        .parse_path_with(&id, &input, "verify")
         .with_context(|| format!("parsing {}", input.display()))?;
     if results.is_empty() {
         bail!("no .eml files under {}", input.display());
@@ -161,7 +162,7 @@ pub fn verify(spec: &Path, id: Option<&str>, input: Option<&Path>) -> Result<Ver
                         error: "abmx-parser marked the extraction failed".to_owned(),
                     },
                 },
-                abmx_parser::Outcome::Unmatched(reason) => VerifyOutcome::Unmatched(reason),
+                abmx_parser::Outcome::Missing(reason) => VerifyOutcome::Unmatched(reason),
                 abmx_parser::Outcome::Failed { parser, error } => {
                     VerifyOutcome::Failed { parser, error }
                 }

@@ -10,15 +10,14 @@ state = "var/state.db"
 
 [fetch.gmail]
 client_id = "id.apps.googleusercontent.com"
-lookback_days = 3
 max_messages = 50
 
 [sink.file]
 path = "out/ledger.jsonl"
 
-[accounts]
-"example-account" = "uuid-example"
-"wallet-account" = "uuid-wallet"
+[labels]
+"abmx:example-card" = { parser = "example.card_debit", account = "uuid-example" }
+"abmx:wallet" = { parser = "wallet.qris_payment", account = "uuid-wallet" }
 
 [policy]
 heuristic = "skip"
@@ -57,9 +56,16 @@ fn accounts_and_policy_round_trip() {
     let config = Config::load(&path).unwrap();
 
     let accounts = config.account_map();
-    assert_eq!(accounts.get("example-account"), Some("uuid-example"));
-    assert_eq!(accounts.get("wallet-account"), Some("uuid-wallet"));
+    assert_eq!(accounts.get("abmx:example-card"), Some("uuid-example"));
+    assert_eq!(accounts.get("abmx:wallet"), Some("uuid-wallet"));
     assert_eq!(accounts.len(), 2);
+    assert_eq!(
+        config
+            .labels
+            .get("abmx:example-card")
+            .map(|route| route.parser.as_str()),
+        Some("example.card_debit")
+    );
 
     assert_eq!(config.policy.heuristic, abmx_core::HeuristicPolicy::Skip);
     assert_eq!(config.policy.failed, abmx_core::FailedPolicy::Review);

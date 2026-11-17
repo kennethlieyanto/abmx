@@ -1,9 +1,8 @@
 //! Read-only Gmail API calls.
 //!
-//! Only four endpoints are used, which is the whole point of preferring the API
-//! over IMAP: `profile` for the history checkpoint, `history.list` for the
-//! incremental case, `messages.list` for a full sync, and `messages.get` with
-//! `format=raw` to hand RFC 5322 bytes to `abmx-parser`.
+//! Four endpoints: `users.labels.list` to discover `abmx:*` labels,
+//! `messages.list` filtered by label id, `messages.get?format=raw` to hand RFC
+//! 5322 bytes to `abmx-parser`, and `profile` for diagnostics.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -19,11 +18,6 @@ use crate::auth::{self, Credentials, TokenStore};
 pub enum GmailError {
     #[error("gmail: not authorized; run `abmx auth gmail`")]
     NotAuthorized,
-
-    /// The server no longer holds history back to our cursor. Recoverable by a
-    /// full sync, so it is a distinct signal rather than an error string.
-    #[error("gmail: history cursor expired")]
-    HistoryExpired,
 
     #[error("gmail: {0}")]
     Auth(String),
@@ -65,6 +59,13 @@ pub struct MessageList {
     pub next_page_token: Option<String>,
 }
 
+/// One Gmail label, as returned by `users.labels.list`.
+#[derive(Debug, Clone, Default)]
+pub struct GmailLabel {
+    pub id: String,
+    pub name: String,
+}
+
 /// The headers a scan needs, without downloading the body.
 #[derive(Debug, Clone, Default)]
 pub struct MessageMeta {
@@ -72,13 +73,6 @@ pub struct MessageMeta {
     pub from: String,
     pub subject: String,
     pub date: String,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct HistoryPage {
-    pub message_ids: Vec<String>,
-    pub history_id: String,
-    pub next_page_token: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -173,62 +167,25 @@ impl GmailClient {
         })
     }
 
-    /// `history.list` since `start_history_id`.
-    ///
-    /// Returns [`GmailError::HistoryExpired`] when the server has pruned the
-    /// window, which tells the fetcher to fall back to a full sync.
-    pub fn history(
-        &self,
-        start_history_id: &str,
-        page_token: Option<&str>,
-    ) -> Result<HistoryPage, GmailError> {
-        let mut url = Url::parse(&format!("{}/users/{}/history", self.base_url, self.user))
-            .map_err(|error| GmailError::Malformed(error.to_string()))?;
-        {
-            let mut pairs = url.query_pairs_mut();
-            pairs
-                .append_pair("startHistoryId", start_history_id)
-                .append_pair("historyTypes", "messageAdded")
-                .append_pair("maxResults", "500");
-            if let Some(token) = page_token {
-                pairs.append_pair("pageToken", token);
-            }
-        }
-
-        let value = match self.get_json(url.as_str()) {
-            Err(GmailError::Api { status: 404, .. }) => return Err(GmailError::HistoryExpired),
-            other => other?,
-        };
-
-        let mut message_ids = Vec::new();
-        if let Some(history) = value.get("history").and_then(Value::as_array) {
-            for entry in history {
-                let Some(added) = entry.get("messagesAdded").and_then(Value::as_array) else {
-                    continue;
-                };
-                for added in added {
-                    if let Some(id) = added
-                        .get("message")
-                        .and_then(|m| m.get("id"))
-                        .and_then(id_string)
-                    {
-                        message_ids.push(id);
-                    }
-                }
-            }
-        }
-
-        Ok(HistoryPage {
-            message_ids,
-            history_id: value
-                .get("historyId")
-                .and_then(id_string)
-                .unwrap_or_else(|| start_history_id.to_owned()),
-            next_page_token: value
-                .get("nextPageToken")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-        })
+    /// `users.labels.list`. The caller filters by the `abmx:` prefix.
+    pub fn list_labels(&self) -> Result<Vec<GmailLabel>, GmailError> {
+        let url = format!("{}/users/{}/labels", self.base_url, self.user);
+        let value = self.get_json(&url)?;
+        let labels = value
+            .get("labels")
+            .and_then(Value::as_array)
+            .map(|labels| {
+                labels
+                    .iter()
+                    .filter_map(|label| {
+                        let id = label.get("id").and_then(id_string)?;
+                        let name = label.get("name").and_then(Value::as_str)?.to_owned();
+                        Some(GmailLabel { id, name })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(labels)
     }
 
     /// Raw RFC 5322 bytes, exactly as `abmx-parser` wants them.

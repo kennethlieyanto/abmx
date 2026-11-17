@@ -18,11 +18,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn registry() -> Registry {
-    Registry::load(
-        repo_root().join("parsers"),
-        repo_root().join("parsers/router.toml"),
-    )
-    .expect("load parsers")
+    Registry::load(repo_root().join("parsers")).expect("load parsers")
 }
 
 /// `(parser id, fixture path)`, sorted.
@@ -61,14 +57,14 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn parse(registry: &Registry, path: &Path) -> abmx_tx::Transaction {
+fn parse(registry: &Registry, id: &str, path: &Path) -> abmx_tx::Transaction {
     let bytes = std::fs::read(path).expect("read fixture");
     let email = abmx_mail::parse_eml(&bytes, Some(path.display().to_string()))
         .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
 
-    match registry.run(&email) {
+    match registry.run(id, &email, "test") {
         Outcome::Parsed(transaction) => *transaction,
-        Outcome::Unmatched(reason) => panic!("{} was not routed: {reason}", path.display()),
+        Outcome::Missing(parser) => panic!("{} names missing parser {parser}", path.display()),
         Outcome::Failed { parser, error } => {
             panic!("{} failed in {parser}: {error}", path.display())
         }
@@ -85,7 +81,7 @@ fn every_fixture_is_parsed() {
     let mut ids = std::collections::BTreeMap::new();
 
     for (expected_id, path) in &fixtures {
-        let transaction = parse(&registry, path);
+        let transaction = parse(&registry, expected_id, path);
 
         assert_eq!(&transaction.parser, expected_id, "{}", path.display());
         assert!(
@@ -263,7 +259,7 @@ fn amounts_dates_and_counterparties_are_correct() {
             .join(id)
             .join("fixtures")
             .join(file);
-        let transaction = parse(&registry, &path);
+        let transaction = parse(&registry, id, &path);
 
         assert_eq!(&transaction.parser, id, "{id}/{file}");
         assert_eq!(
@@ -296,7 +292,7 @@ fn a_transaction_date_far_from_the_email_date_is_still_strict() {
     // not mark the row as suspicious.
     email.date -= chrono::Duration::days(30);
 
-    match registry.run(&email) {
+    match registry.run("example.card_debit", &email, "test") {
         Outcome::Parsed(transaction) => {
             assert_eq!(transaction.extraction, abmx_tx::Extraction::Strict);
             assert!(

@@ -31,7 +31,7 @@ run *args:
 
 # Exercise the whole pipeline against saved .eml files and the file sink.
 # `just demo ./sample-mail`
-demo dir parsers="parsers":
+demo dir parser="example.journal_transfer" parsers="parsers":
     #!/usr/bin/env bash
     set -euo pipefail
     work=$(mktemp -d)
@@ -44,9 +44,10 @@ demo dir parsers="parsers":
 
     [sink.file]
     path = "$work/ledger.jsonl"
+
+    [labels]
+    "abmx:dir" = { parser = "{{parser}}", account = "demo" }
     EOF
-    # Exit 3 means "rows are waiting for review", which is expected here: the
-    # demo has no [accounts] mapping.
     cargo run -q -p abmx -- --config "$work/abmx.toml" plan --from-dir "$work/mail" -v > /dev/null || true
     cargo run -q -p abmx -- --config "$work/abmx.toml" sync --from-dir "$work/mail"
     cargo run -q -p abmx -- --config "$work/abmx.toml" review || true
@@ -57,21 +58,17 @@ demo dir parsers="parsers":
 # parser corpus
 # ---------------------------------------------------------------------------
 
-# Parse a file or directory to JSON on stdout.
-parse path:
-    cargo run -q -p abmx -- parser parse {{path}} --parsers "{{corpus}}"
+# Parse a file or directory with one parser, as JSON on stdout.
+parse path parser="example.journal_transfer":
+    cargo run -q -p abmx -- parser parse {{path}} --parser {{parser}} --parsers "{{corpus}}"
 
 # Parse a directory as one JSON object per line.
-ndjson path:
-    cargo run -q -p abmx -- parser parse {{path}} --format ndjson --parsers "{{corpus}}"
+ndjson path parser="example.journal_transfer":
+    cargo run -q -p abmx -- parser parse {{path}} --parser {{parser}} --format ndjson --parsers "{{corpus}}"
 
-# Explain which parser claims an email, and why.
-route path:
-    cargo run -q -p abmx -- parser route {{path}} --parsers "{{corpus}}"
-
-# List the sender addresses the resolved corpus covers.
-senders:
-    cargo run -q -p abmx -- parser senders --parsers "{{corpus}}"
+# Explain the block regions behind each field of one parser.
+explain path parser:
+    cargo run -q -p abmx -- parser explain {{path}} --parser {{parser}} --parsers "{{corpus}}"
 
 # Show the parser search order and which directory won.
 paths:
@@ -93,15 +90,11 @@ fixtures:
 check-parser id:
     cargo run -q -p abmx -- parser check --parser {{id}} -v --parsers "{{corpus}}"
 
-# Summarise how a directory of emails parses.
-corpus dir="sample":
-    cargo run -q -p abmx -- parser corpus --dir {{dir}} --parsers "{{corpus}}"
-
 # ---------------------------------------------------------------------------
 # authoring a parser
 # ---------------------------------------------------------------------------
 
-# Scan Gmail and emit an authoring prompt on stdout.
+# Inventory abmx:* labels and emit an authoring prompt on stdout.
 author *args:
     cargo run -q -p abmx -- author {{args}}
 
@@ -110,10 +103,6 @@ author *args:
 redact in="sample" out="build/redacted":
     @test -f redact.toml || { echo "missing redact.toml; copy redact.example.toml and fill it in"; exit 1; }
     cargo run -q -p xtask -- redact --in {{in}} --out {{out}}
-
-# Draft a parser spec from a directory of emails, e.g. `just infer sample/example example.promo`.
-infer dir id:
-    cargo run -q -p abmx -- parser infer {{dir}} --id {{id}}
 
 # Scaffold parsers/<id>/config.toml and parsers/<id>/fixtures/
 parser-init id:
@@ -133,7 +122,7 @@ install-parser id:
     cp -R "{{corpus}}/{{id}}/." "$dest/"
     echo "installed {{id}} -> $dest"
 
-# Check all parsers, then install them and router.toml into the XDG corpus.
+# Check all parsers, then install them into the XDG corpus.
 install-parsers:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -145,7 +134,6 @@ install-parsers:
       mkdir -p "$dest/$id"
       cp -R "$dir." "$dest/$id/"
     done
-    cp "{{corpus}}/router.toml" "$dest/router.toml"
     echo "installed parsers -> $dest"
 
 # ---------------------------------------------------------------------------

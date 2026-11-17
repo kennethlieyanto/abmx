@@ -8,14 +8,12 @@
 mod date;
 mod field;
 mod number;
-mod router;
 mod spec;
 
-pub use router::{Candidate, Route, RouteReason, RouterConfig};
 pub use spec::SpecSummary;
 pub use spec::{
-    Defaults, ExtractSpec, Field, LabelsSpec, MatchSpec, Normalize, NumberStyle, OccurredSpec,
-    ParserSpec, StatusSource, StatusSpec, SubField,
+    Defaults, ExtractSpec, Field, LabelsSpec, Normalize, NumberStyle, OccurredSpec, ParserSpec,
+    StatusSpec, SubField,
 };
 
 use std::collections::HashMap;
@@ -30,7 +28,7 @@ use field::CompiledField;
 use number::parse_decimal;
 
 /// Version of the `parser.toml` format itself.
-pub const SPEC_VERSION: u32 = 1;
+pub const SPEC_VERSION: u32 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -44,7 +42,7 @@ pub enum Error {
     Spec { path: PathBuf, message: String },
     #[error("no parser specs found under {path}{hint}")]
     NoParsers { path: PathBuf, hint: &'static str },
-    #[error("{path}: parser directory `{found}` must look like `bank.type`")]
+    #[error("{path}: parser directory `{found}` is not a valid id")]
     InvalidId { path: PathBuf, found: String },
     #[error("{path}: duplicate parser id `{id}` (also in {first})")]
     DuplicateId {
@@ -70,11 +68,6 @@ pub struct Parser {
     pub spec: ParserSpec,
     /// The `config.toml` file this parser was compiled from.
     pub source_file: PathBuf,
-    subject: Regex,
-    requires: Vec<String>,
-    rejects: Vec<String>,
-    contains: Vec<Regex>,
-    excludes: Vec<Regex>,
     labels: Vec<String>,
     amount: CompiledField,
     occurred_at: CompiledOccurred,
@@ -112,7 +105,6 @@ struct CompiledSplit {
 
 #[derive(Debug)]
 struct CompiledStatus {
-    source: StatusSource,
     field: Option<CompiledField>,
     map: HashMap<String, Status>,
     default: Option<Status>,
@@ -121,7 +113,6 @@ struct CompiledStatus {
 #[derive(Debug)]
 pub struct Registry {
     pub parsers: Vec<Parser>,
-    pub router: RouterConfig,
     /// Parsers skipped because a higher-precedence directory defines the same id.
     pub shadows: Vec<Shadow>,
 }
@@ -130,16 +121,16 @@ pub struct Registry {
 pub enum Outcome {
     /// A parser claimed the email and produced a transaction.
     Parsed(Box<Transaction>),
-    /// No parser claimed it; the reason explains why.
-    Unmatched(String),
+    /// No parser with this id exists in the corpus.
+    Missing(String),
     /// A parser claimed it but extraction failed.
     Failed { parser: String, error: String },
 }
 
 impl Registry {
-    /// Load every `*.toml` under one directory.
-    pub fn load(dir: impl AsRef<Path>, router_path: impl AsRef<Path>) -> Result<Self, Error> {
-        Self::from_dirs(&[dir.as_ref().to_path_buf()], router_path)
+    /// Load every `config.toml` under one directory.
+    pub fn load(dir: impl AsRef<Path>) -> Result<Self, Error> {
+        Self::from_dirs(&[dir.as_ref().to_path_buf()])
     }
 
     /// Load specs from several directories, highest precedence first.
@@ -147,7 +138,7 @@ impl Registry {
     /// A later directory may not redefine an id already seen: the first one
     /// wins and the shadowed file is reported in [`Registry::shadows`]. Two
     /// files with the same id inside one directory is an error.
-    pub fn from_dirs(dirs: &[PathBuf], router_path: impl AsRef<Path>) -> Result<Self, Error> {
+    pub fn from_dirs(dirs: &[PathBuf]) -> Result<Self, Error> {
         let mut parsers: Vec<Parser> = Vec::new();
         let mut shadows: Vec<Shadow> = Vec::new();
         let mut seen: HashMap<String, PathBuf> = HashMap::new();
@@ -191,36 +182,16 @@ impl Registry {
             return Err(Error::NoParsers { path, hint });
         }
 
-        let router_path = router_path.as_ref();
-        let router_text = std::fs::read_to_string(router_path).ok();
-        let router = match &router_text {
-            Some(text) => toml::from_str(text).map_err(|err| Error::Spec {
-                path: router_path.to_path_buf(),
-                message: err.to_string(),
-            })?,
-            None => RouterConfig::default(),
-        };
-
-        Ok(Self {
-            parsers,
-            router,
-            shadows,
-        })
+        Ok(Self { parsers, shadows })
     }
 
-    pub fn route(&self, email: &NormalizedEmail) -> Route {
-        router::route(&self.parsers, &self.router, email)
-    }
-
-    /// Route and parse in one step.
-    pub fn run(&self, email: &NormalizedEmail) -> Outcome {
-        let route = self.route(email);
-        let Some(index) = route.parser else {
-            return Outcome::Unmatched(route.explain());
+    /// Parse with the parser named by a trusted routing decision (a configured
+    /// Gmail label). There is no guessing: an unknown id is an error.
+    pub fn run(&self, id: &str, email: &NormalizedEmail, account: &str) -> Outcome {
+        let Some(parser) = self.find(id) else {
+            return Outcome::Missing(id.to_owned());
         };
-
-        let parser = &self.parsers[index];
-        match parser.parse(email) {
+        match parser.parse(email, account) {
             Ok(transaction) => Outcome::Parsed(Box::new(transaction)),
             Err(error) => Outcome::Failed {
                 parser: parser.id.clone(),
@@ -245,14 +216,12 @@ impl Parser {
             id: self.id.clone(),
             version: self.spec.version,
             bank: self.spec.defaults.bank.clone(),
-            account: self.spec.defaults.account.clone(),
-            senders: self.spec.matcher.senders.clone(),
-            subject: self.spec.matcher.subject.clone(),
+            kind: self.spec.defaults.kind,
             file: self.source_file.clone(),
         }
     }
 
-    pub fn parse(&self, email: &NormalizedEmail) -> Result<Transaction, String> {
+    pub fn parse(&self, email: &NormalizedEmail, account: &str) -> Result<Transaction, String> {
         let regions = Regions::build(&email.blocks, &self.labels);
 
         let defaults = &self.spec.defaults;
@@ -281,7 +250,7 @@ impl Parser {
             .single()
             .unwrap_or_else(|| offset.from_utc_datetime(&occurred_at_local));
 
-        let status = self.extract_status(email, &regions)?;
+        let status = self.extract_status(&regions)?;
 
         let mut warnings = Vec::new();
         if magnitude == 0 {
@@ -326,7 +295,7 @@ impl Parser {
             parser: self.id.clone(),
             parser_version: self.spec.version,
             bank: defaults.bank.clone(),
-            account: defaults.account.clone(),
+            account: account.to_owned(),
             kind,
             status,
             amount: Money::new(minor, currency.clone()),
@@ -386,31 +355,15 @@ impl Parser {
         Err("occurred_at: spec has neither a label nor date/time fields".to_string())
     }
 
-    fn extract_status(
-        &self,
-        email: &NormalizedEmail,
-        regions: &Regions<'_>,
-    ) -> Result<Status, String> {
+    fn extract_status(&self, regions: &Regions<'_>) -> Result<Status, String> {
         let Some(status) = &self.status else {
             return Ok(Status::Settled);
         };
 
-        let raw = match status.source {
-            StatusSource::Subject => self
-                .subject
-                .captures(&email.subject)
-                .and_then(|captures| captures.name("status").map(|m| m.as_str().to_string()))
-                .or_else(|| {
-                    status
-                        .field
-                        .as_ref()
-                        .and_then(|field| field.get(regions).ok().flatten())
-                }),
-            StatusSource::Field => status
-                .field
-                .as_ref()
-                .and_then(|field| field.get(regions).ok().flatten()),
-        };
+        let raw = status
+            .field
+            .as_ref()
+            .and_then(|field| field.get(regions).ok().flatten());
 
         let Some(raw) = raw else {
             return Ok(status.default.unwrap_or(Status::Unknown));
@@ -484,14 +437,13 @@ pub fn norm(text: &str) -> String {
     out.trim_end_matches(':').trim().to_string()
 }
 
-/// A parser id is `<bank>.<type>`: dot-separated, every part non-empty, no path
-/// separators, and never a hidden directory name.
+/// A parser id is a single directory name: no separators, not hidden.
 pub fn is_parser_id(id: &str) -> bool {
-    !id.starts_with('.')
+    !id.is_empty()
+        && !id.starts_with('.')
         && !id.contains('/')
         && !id.contains('\\')
-        && id.split('.').count() >= 2
-        && id.split('.').all(|part| !part.is_empty())
+        && id != "fixtures"
 }
 
 /// True when a corpus root still holds the old flat layout (`<id>.toml`), which
@@ -588,9 +540,6 @@ fn compile(spec: ParserSpec, path: &Path, id: String) -> Result<Parser, String> 
             spec.spec_version
         ));
     }
-
-    let subject = Regex::new(&spec.matcher.subject)
-        .map_err(|err| format!("match.subject: invalid regex: {err}"))?;
 
     let compile_field = |name: &str, field: &Field| -> Result<CompiledField, String> {
         let regex = match &field.regex {
@@ -728,7 +677,6 @@ fn compile(spec: ParserSpec, path: &Path, id: String) -> Result<Parser, String> 
                 .collect();
 
             Some(CompiledStatus {
-                source: status.source,
                 field,
                 map,
                 default: status.default,
@@ -737,22 +685,7 @@ fn compile(spec: ParserSpec, path: &Path, id: String) -> Result<Parser, String> 
         None => None,
     };
 
-    let compile_all = |name: &str, patterns: &[String]| -> Result<Vec<Regex>, String> {
-        patterns
-            .iter()
-            .map(|pattern| {
-                Regex::new(pattern)
-                    .map_err(|err| format!("match.{name}: invalid regex `{pattern}`: {err}"))
-            })
-            .collect()
-    };
-
     Ok(Parser {
-        subject,
-        requires: spec.matcher.requires.iter().map(|l| norm(l)).collect(),
-        rejects: spec.matcher.rejects.iter().map(|l| norm(l)).collect(),
-        contains: compile_all("contains", &spec.matcher.contains)?,
-        excludes: compile_all("excludes", &spec.matcher.excludes)?,
         labels: spec.labels.list.clone(),
         amount,
         occurred_at,

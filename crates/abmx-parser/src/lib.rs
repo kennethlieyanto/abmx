@@ -11,9 +11,7 @@ use std::path::{Path, PathBuf};
 use abmx_tx::Transaction;
 
 pub use abmx_mail::{blocks_from_html, parse_eml, MailError};
-pub use abmx_parse::{
-    Error as ParseError, Outcome, Registry, Route, RouteReason, Shadow, SpecSummary, SPEC_VERSION,
-};
+pub use abmx_parse::{Error as ParseError, Outcome, Registry, Shadow, SpecSummary, SPEC_VERSION};
 pub use abmx_tx::{
     json_schema, Address, Block, Extraction, Kind, Money, NormalizedEmail, Source, Status,
 };
@@ -23,8 +21,6 @@ pub const SCHEMA_VERSION: u32 = 1;
 
 /// Colon-separated list of parser directories. Checked when `--parsers` is absent.
 pub const ENV_PARSERS: &str = "ABMX_PARSERS";
-/// Router policy file. Checked when `--router` is absent.
-pub const ENV_ROUTER: &str = "ABMX_ROUTER";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -50,8 +46,6 @@ pub enum Error {
 pub struct Options {
     /// `--parsers`, repeated. Takes precedence over [`ENV_PARSERS`].
     pub parsers: Vec<PathBuf>,
-    /// `--router`. Takes precedence over [`ENV_ROUTER`].
-    pub router: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -69,8 +63,6 @@ pub struct Discovery {
     pub candidates: Vec<Candidate>,
     /// The directories that will actually be loaded, highest precedence first.
     pub dirs: Vec<PathBuf>,
-    pub router: Option<PathBuf>,
-    pub router_source: Option<&'static str>,
 }
 
 impl Discovery {
@@ -162,30 +154,7 @@ pub fn discover(options: &Options) -> Discovery {
 
     let dirs = select_dirs(&candidates);
 
-    let (router, router_source) = match &options.router {
-        Some(path) => (Some(path.clone()), Some("flag")),
-        None => match std::env::var(ENV_ROUTER)
-            .ok()
-            .filter(|value| !value.is_empty())
-        {
-            Some(value) => (Some(PathBuf::from(value)), Some("env")),
-            // In merge mode the override directory usually has no router, so
-            // take the first used directory that provides one.
-            None => dirs
-                .iter()
-                .map(|dir| dir.join("router.toml"))
-                .find(|path| path.is_file())
-                .map(|path| (Some(path), Some("corpus")))
-                .unwrap_or((None, None)),
-        },
-    };
-
-    Discovery {
-        candidates,
-        dirs,
-        router,
-        router_source,
-    }
+    Discovery { candidates, dirs }
 }
 
 /// Explicit sources merge; the implicit chain takes the first directory that exists.
@@ -251,20 +220,7 @@ impl Parser {
             }
         }
 
-        if let (Some(router), Some("flag" | "env")) = (&discovery.router, discovery.router_source) {
-            if !router.is_file() {
-                return Err(Error::MissingPath {
-                    path: router.clone(),
-                });
-            }
-        }
-
-        let router = discovery
-            .router
-            .clone()
-            .unwrap_or_else(|| PathBuf::from("<defaults>"));
-
-        let registry = Registry::from_dirs(&discovery.dirs, router)?;
+        let registry = Registry::from_dirs(&discovery.dirs)?;
         Ok((Self { registry }, discovery))
     }
 
@@ -274,9 +230,9 @@ impl Parser {
     }
 
     /// Load exactly one directory, bypassing the search order.
-    pub fn from_dir(parsers: impl AsRef<Path>, router: impl AsRef<Path>) -> Result<Self, Error> {
+    pub fn from_dir(parsers: impl AsRef<Path>) -> Result<Self, Error> {
         Ok(Self {
-            registry: Registry::load(parsers, router)?,
+            registry: Registry::load(parsers)?,
         })
     }
 
@@ -284,15 +240,26 @@ impl Parser {
         &self.registry
     }
 
-    /// Parse one message. The `Outcome` distinguishes "not a transaction we know"
-    /// from "we claimed it but failed".
-    pub fn parse_bytes(&self, bytes: &[u8], file: Option<String>) -> Result<Outcome, Error> {
+    /// Parse one message with a parser chosen by the caller (a configured
+    /// Gmail label). There is no routing and no fallback.
+    pub fn parse_bytes_with(
+        &self,
+        id: &str,
+        bytes: &[u8],
+        file: Option<String>,
+        account: &str,
+    ) -> Result<Outcome, Error> {
         let email = abmx_mail::parse_eml(bytes, file)?;
-        Ok(self.registry.run(&email))
+        Ok(self.registry.run(id, &email, account))
     }
 
     /// Parse a file or every `.eml` under a directory, recursively.
-    pub fn parse_path(&self, path: &Path) -> Result<Vec<(PathBuf, Outcome)>, Error> {
+    pub fn parse_path_with(
+        &self,
+        id: &str,
+        path: &Path,
+        account: &str,
+    ) -> Result<Vec<(PathBuf, Outcome)>, Error> {
         let files = if path.is_dir() {
             let mut files = Vec::new();
             collect_eml_files(path, &mut files);
@@ -314,22 +281,13 @@ impl Parser {
                     message: error.to_string(),
                 })
             })?;
-            let outcome = self.parse_bytes(&bytes, Some(file.display().to_string()))?;
+            let outcome =
+                self.parse_bytes_with(id, &bytes, Some(file.display().to_string()), account)?;
             results.push((file, outcome));
         }
 
         Ok(results)
     }
-}
-
-/// Parse one message with the default corpus.
-pub fn parse_bytes(bytes: &[u8]) -> Result<Outcome, Error> {
-    Parser::discover()?.parse_bytes(bytes, None)
-}
-
-/// Parse a file or directory with the default corpus.
-pub fn parse_path(path: impl AsRef<Path>) -> Result<Vec<(PathBuf, Outcome)>, Error> {
-    Parser::discover()?.parse_path(path.as_ref())
 }
 
 /// Everything the resolved corpus knows how to parse.
@@ -449,12 +407,7 @@ mod tests {
 
     fn discovery(candidates: Vec<Candidate>) -> Discovery {
         let dirs = select_dirs(&candidates);
-        Discovery {
-            candidates,
-            dirs,
-            router: None,
-            router_source: None,
-        }
+        Discovery { candidates, dirs }
     }
 
     #[test]

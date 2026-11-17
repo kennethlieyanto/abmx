@@ -1,28 +1,21 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use abmx::authoring;
 
 const PARSER: &str = r#"
-spec_version = 1
+spec_version = 2
 version = 1
-
-[match]
-senders = ["alerts@bank.example"]
-subject = '^Payment successful$'
 
 [labels]
 list = ["Amount", "Merchant", "Transaction Date", "Status"]
 
 [defaults]
 bank = "test"
-account = "test-account"
 currency = "IDR"
 tz = "Asia/Jakarta"
 kind = "purchase"
 
 [status]
-source = "field"
 label = "Status"
 map = { Successful = "settled", Failed = "failed" }
 
@@ -67,69 +60,6 @@ fn write_sample(dir: &Path, name: &str, message_id: &str, amount: &str, status: 
 }
 
 #[test]
-fn prompt_contains_evidence_reference_and_id() {
-    let dir = tempfile::tempdir().unwrap();
-    let mail = dir.path().join("mail");
-    write_sample(&mail, "01.eml", "one", "Rp 27.500", "Successful");
-    write_sample(&mail, "02.eml", "two", "Rp 15.000", "Successful");
-
-    let set = authoring::samples::load_path(&mail, 8).unwrap();
-    assert_eq!(set.sample_count(), 2);
-    assert_eq!(set.groups.len(), 1);
-
-    let context = authoring::PromptContext {
-        config_path: None,
-        corpus: dir.path().join("parsers"),
-        draft_dir: dir.path().join("drafts"),
-        input: Some(mail.clone()),
-        explicit_id: Some("test.bank".into()),
-        id_from: authoring::IdFrom::Infer,
-        from_gmail: false,
-        summaries: Vec::new(),
-        accounts: BTreeMap::new(),
-        parser: None,
-    };
-
-    let prompt = authoring::render_prompt(&set, &context);
-    assert!(prompt.contains("## Samples"));
-    assert!(prompt.contains("test.bank"));
-    assert!(prompt.contains("blocks (8):"));
-    assert!(prompt.contains("| idx | kind | distinct values |"));
-    assert!(prompt.contains("spec_version = 1"));
-    assert!(prompt.contains("abmx verify parser"));
-    assert!(prompt.contains("Do not write into"));
-}
-
-#[test]
-fn prompt_groups_subdirectories_like_gmail_labels() {
-    let dir = tempfile::tempdir().unwrap();
-    let mail = dir.path().join("mail");
-    write_sample(
-        &mail.join("example"),
-        "01.eml",
-        "one",
-        "Rp 27.500",
-        "Successful",
-    );
-    write_sample(
-        &mail.join("wallet"),
-        "02.eml",
-        "two",
-        "Rp 15.000",
-        "Successful",
-    );
-
-    let set = authoring::samples::load_path(&mail, 8).unwrap();
-    assert_eq!(set.groups.len(), 2);
-    let labels: Vec<&str> = set
-        .groups
-        .iter()
-        .filter_map(|group| group.label.as_deref())
-        .collect();
-    assert_eq!(labels, vec!["example", "wallet"]);
-}
-
-#[test]
 fn verify_reports_strict_heuristic_and_unmatched() {
     let dir = tempfile::tempdir().unwrap();
     let spec = dir.path().join("candidate.toml");
@@ -148,16 +78,9 @@ fn verify_reports_strict_heuristic_and_unmatched() {
     assert_eq!(report.heuristic(), 1);
     assert_eq!(report.exit_code(), 3);
 
-    let other = dir.path().join("other");
-    std::fs::create_dir_all(&other).unwrap();
-    std::fs::write(
-        other.join("01.eml"),
-        email("three", "Rp 1.000", "Successful")
-            .replace("alerts@bank.example", "other@example.invalid")
-            .replace("Subject: Payment successful", "Subject: Something else"),
-    )
-    .unwrap();
-    let report = authoring::verify::verify(&spec, Some("test.bank"), Some(&other)).unwrap();
+    let bad = dir.path().join("bad");
+    write_sample(&bad, "01.eml", "three", "not an amount", "Successful");
+    let report = authoring::verify::verify(&spec, Some("test.bank"), Some(&bad)).unwrap();
     assert_eq!(report.failures(), 1);
     assert_eq!(report.exit_code(), 2);
 }

@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 
 /// What the run remembers between invocations.
 ///
-/// SQLite rather than a JSON blob for three reasons: the cursor must survive a
-/// crash mid-write, the review queue needs to be queryable, and "have I already
-/// delivered this message" is a lookup, not a linear scan.
+/// SQLite rather than a JSON blob because the review queue needs to be
+/// queryable and "have I already delivered this message" is a lookup, not a
+/// linear scan.
 ///
 /// Note what is *not* stored: which transactions the sink accepted. Sinks that
 /// answer `idempotent() == true` are their own source of truth. `messages` only
@@ -57,11 +57,6 @@ impl State {
                  CREATE TABLE IF NOT EXISTS meta (
                      key   TEXT PRIMARY KEY,
                      value TEXT NOT NULL
-                 );
-                 CREATE TABLE IF NOT EXISTS cursors (
-                     name       TEXT PRIMARY KEY,
-                     value      TEXT NOT NULL,
-                     updated_at TEXT NOT NULL
                  );
                  CREATE TABLE IF NOT EXISTS messages (
                      key         TEXT PRIMARY KEY,
@@ -115,42 +110,6 @@ impl State {
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 params![key, value],
             )
-            .map_err(state_error)?;
-        Ok(())
-    }
-
-    pub fn cursor(&self, name: &str) -> Result<Option<serde_json::Value>> {
-        let raw: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT value FROM cursors WHERE name = ?1",
-                params![name],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(state_error)?;
-
-        match raw {
-            Some(raw) => serde_json::from_str(&raw).map(Some).map_err(Into::into),
-            None => Ok(None),
-        }
-    }
-
-    pub fn set_cursor(&self, name: &str, value: &serde_json::Value) -> Result<()> {
-        let encoded = serde_json::to_string(value)?;
-        self.conn
-            .execute(
-                "INSERT INTO cursors (name, value, updated_at) VALUES (?1, ?2, ?3)
-                 ON CONFLICT(name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-                params![name, encoded, now()],
-            )
-            .map_err(state_error)?;
-        Ok(())
-    }
-
-    pub fn clear_cursor(&self, name: &str) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM cursors WHERE name = ?1", params![name])
             .map_err(state_error)?;
         Ok(())
     }
@@ -281,12 +240,8 @@ impl State {
         Ok(())
     }
 
-    /// `(cursors, delivered messages, review rows)`.
-    pub fn counts(&self) -> Result<(usize, usize, usize)> {
-        let cursors: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM cursors", [], |row| row.get(0))
-            .map_err(state_error)?;
+    /// `(delivered messages, review rows)`.
+    pub fn counts(&self) -> Result<(usize, usize)> {
         let messages: i64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
@@ -295,14 +250,15 @@ impl State {
             .conn
             .query_row("SELECT COUNT(*) FROM review", [], |row| row.get(0))
             .map_err(state_error)?;
-        Ok((cursors as usize, messages as usize, reviews as usize))
+        Ok((messages as usize, reviews as usize))
     }
 
-    /// Forget the cursor and what has been delivered. Leaves `meta` alone.
+    /// Forget what has been delivered. Leaves `meta` alone.
     pub fn reset_progress(&self) -> Result<()> {
         self.conn
-            .execute_batch("DELETE FROM cursors; DELETE FROM messages;")
-            .map_err(state_error)
+            .execute("DELETE FROM messages", [])
+            .map_err(state_error)?;
+        Ok(())
     }
 
     pub fn clear_reviews(&self) -> Result<()> {
@@ -338,17 +294,13 @@ mod tests {
         let state = State::open_in_memory().unwrap();
         state.check_schema().unwrap();
         state
-            .set_cursor("gmail", &serde_json::json!({ "history_id": "1" }))
-            .unwrap();
-        state
             .mark_seen("gmail:1", "actual", "mail_1", "imported")
             .unwrap();
 
-        assert_eq!(state.counts().unwrap(), (1, 1, 0));
+        assert_eq!(state.counts().unwrap(), (1, 0));
 
         state.reset_progress().unwrap();
-        assert_eq!(state.counts().unwrap(), (0, 0, 0));
-        assert!(state.cursor("gmail").unwrap().is_none());
+        assert_eq!(state.counts().unwrap(), (0, 0));
         assert!(!state.is_seen("gmail:1").unwrap());
 
         // The schema guard survives a reset; it is not progress.
@@ -366,6 +318,6 @@ mod tests {
             .unwrap();
 
         state.clear_reviews().unwrap();
-        assert_eq!(state.counts().unwrap(), (0, 1, 0));
+        assert_eq!(state.counts().unwrap(), (1, 0));
     }
 }

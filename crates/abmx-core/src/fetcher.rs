@@ -1,15 +1,13 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::error::Result;
 
 /// Default number of messages one `fetch` may return.
 ///
-/// A batch is the unit of work: the cursor is only advanced after the batch has
-/// been applied, so a large default is fine and a small one is a knob for
-/// debugging, not a memory bound.
+/// A batch is the unit of work. A large default is fine and a small one is a
+/// knob for debugging, not a memory bound.
 pub const DEFAULT_LIMIT: usize = 200;
 
 /// Stable identity of a message *at the source*.
@@ -54,15 +52,23 @@ impl From<&str> for MessageKey {
 #[derive(Debug, Clone)]
 pub struct RawMessage {
     pub key: MessageKey,
+    /// The configured routing label this message carried, e.g. `abmx:example-qris`.
+    pub label: String,
     /// Human-readable provenance for diagnostics and `source.file`.
     pub origin: String,
     pub bytes: Vec<u8>,
 }
 
 impl RawMessage {
-    pub fn new(key: impl Into<MessageKey>, origin: impl Into<String>, bytes: Vec<u8>) -> Self {
+    pub fn new(
+        key: impl Into<MessageKey>,
+        label: impl Into<String>,
+        origin: impl Into<String>,
+        bytes: Vec<u8>,
+    ) -> Self {
         Self {
             key: key.into(),
+            label: label.into(),
             origin: origin.into(),
             bytes,
         }
@@ -73,12 +79,6 @@ impl RawMessage {
 #[derive(Debug, Clone, Default)]
 pub struct FetchBatch {
     pub messages: Vec<RawMessage>,
-    /// Opaque checkpoint to persist *after* the batch is applied.
-    ///
-    /// `None` means "no progress to record", which is correct for sources that
-    /// are cheap to re-scan (a directory) and safe for sources that are not
-    /// (the state database filters what has already been seen).
-    pub next_cursor: Option<Value>,
     /// Messages the fetcher filtered out without returning (already labelled,
     /// outside the window, and so on).
     pub skipped: usize,
@@ -93,14 +93,16 @@ impl FetchBatch {
 /// What a fetcher is asked for.
 #[derive(Debug, Clone, Copy)]
 pub struct FetchRequest<'a> {
-    pub cursor: Option<&'a Value>,
+    /// The Gmail labels to scan. Each message is tagged with the label it came
+    /// from, so the caller can choose the parser without guessing.
+    pub labels: &'a [String],
     pub limit: usize,
 }
 
 impl<'a> FetchRequest<'a> {
-    pub fn new(cursor: Option<&'a Value>) -> Self {
+    pub fn new(labels: &'a [String]) -> Self {
         Self {
-            cursor,
+            labels,
             limit: DEFAULT_LIMIT,
         }
     }
@@ -111,12 +113,6 @@ impl<'a> FetchRequest<'a> {
     }
 }
 
-impl Default for FetchRequest<'_> {
-    fn default() -> Self {
-        Self::new(None)
-    }
-}
-
 /// A source of raw mail.
 ///
 /// Synchronous on purpose: `abmx` is a batch process driven by a timer, `abmx-parser`
@@ -124,7 +120,7 @@ impl Default for FetchRequest<'_> {
 /// `spawn_blocking` while the reverse is not. Object-safe so the runner never
 /// grows a match arm per source.
 pub trait Fetcher {
-    /// Stable name, used as the state key for the cursor.
+    /// Stable name, used in diagnostics and state keys.
     fn name(&self) -> &str;
 
     fn fetch(&self, request: FetchRequest<'_>) -> Result<FetchBatch>;

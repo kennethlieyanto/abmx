@@ -82,8 +82,8 @@ budget_sync_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 # api_key_file = "/run/credentials/abmx.service/actual-api-key"
 # budget_password_file = "/run/credentials/abmx.service/actual-budget-password"
 
-[accounts]
-"example-account" = "00000000-0000-0000-0000-000000000000"
+[labels]
+"abmx:example-card" = { parser = "example-card", account = "00000000-0000-0000-0000-000000000000" }
 ```
 
 Find the **Sync ID** in Actual: Settings → Show advanced settings → Sync ID.
@@ -93,9 +93,10 @@ Find account UUIDs with:
 abmx accounts
 ```
 
-That prints every account with its id and whether `[accounts]` maps onto it. The
-mapping is never inferred: `example-account` is a parser-side key, not an Actual name, and
-guessing would be how transactions end up in the wrong account.
+That prints every account with its id and whether `[labels]` maps onto it. The
+mapping is never inferred: the label is the routing identity, the account UUID is
+the ledger destination, and guessing would be how transactions end up in the
+wrong account.
 
 If the budget is end-to-end encrypted, set `budget_password` (or
 `ABMX_ACTUAL_BUDGET_PASSWORD`). The wrapper needs it on the first request after
@@ -261,7 +262,7 @@ still validates the account ids and the payload.
 | `Unknown error while interacting with Actual Api` | wrapper cannot reach Actual | check `ACTUAL_SERVER_URL` from *inside* the container; `just actual-api-logs` |
 | amounts are 100× too big | you are not using `abmx`'s sink | do not hand-write the `amount` field |
 | rows appear twice | a sink other than `importTransactions` was used | `abmx` always uses the reconciling import endpoint |
-| `account not found` | mapping points at a deleted account | `abmx accounts`, then fix `[accounts]` |
+| `account not found` | mapping points at a deleted account | `abmx accounts`, then fix `[labels]` |
 | container exits immediately | `./var/actual-http-api` not writable | `just actual-api` creates it owned by you; if it is root-owned, remove it and retry |
 
 ## Concurrency

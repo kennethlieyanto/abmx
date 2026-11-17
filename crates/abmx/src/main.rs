@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use abmx::authoring::{self, author, prompt::IdFrom, PromptContext};
+use abmx::authoring::{self, author};
 use abmx::config::{Config, INIT_TEMPLATE};
 use abmx::fetchers::DirFetcher;
 use abmx::paths;
@@ -75,39 +75,38 @@ enum Command {
         /// Make network calls (Gmail profile, sink accounts).
         #[arg(long)]
         online: bool,
+        /// Also verify the last three messages under every `abmx:*` label.
+        #[arg(long)]
+        strict: bool,
     },
 
-    /// Scan the mailbox, find unknown templates, and emit an authoring prompt.
+    /// Inventory `abmx:*` labels and author parsers for the ones missing one.
     Author {
         /// Offline bootstrap from a file or directory of `.eml` samples.
         #[arg(long, value_name = "DIR|FILE")]
         input: Option<PathBuf>,
-        /// How far back to scan, in days.
-        #[arg(long, default_value_t = 30, value_name = "N")]
-        days: u32,
-        /// Restrict the scan to one Gmail label.
+        /// Restrict the scan to one `abmx:*` label.
         #[arg(long, value_name = "LABEL")]
         label: Option<String>,
-        /// Restrict the scan to these senders. Repeat or comma-separate.
-        #[arg(
-            long,
-            value_name = "ADDR",
-            value_delimiter = ',',
-            action = clap::ArgAction::Append
-        )]
-        senders: Vec<String>,
-        /// Maximum messages to inspect.
-        #[arg(long, default_value_t = 1000, value_name = "N")]
-        max_messages: usize,
-        /// Maximum sender groups in the prompt.
-        #[arg(long, default_value_t = 20, value_name = "N")]
-        max_groups: usize,
-        /// Parallel header requests. Capped at 16 to stay under Gmail's quota.
-        #[arg(long, default_value_t = 8, value_name = "N")]
-        concurrency: usize,
+        /// How many of the newest samples to inspect per label.
+        #[arg(long, default_value_t = 3, value_name = "N")]
+        samples: usize,
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
         /// Write the prompt to a file instead of stdout.
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
+    },
+
+    /// Show every `abmx:*` label, its parser, and its ledger account.
+    Labels {
+        /// Exit nonzero when any label needs a parser or a mapping.
+        #[arg(long)]
+        check: bool,
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Fetch, parse, and decide — then print the plan as JSON on stdout.
@@ -115,6 +114,9 @@ enum Command {
         /// Read `.eml` files instead of using the configured fetcher.
         #[arg(long, value_name = "DIR")]
         from_dir: Option<PathBuf>,
+        /// With --from-dir, the `abmx:*` label to tag every file with.
+        #[arg(long, value_name = "LABEL")]
+        label: Option<String>,
         /// Maximum messages to fetch in this run.
         #[arg(long, value_name = "N")]
         limit: Option<usize>,
@@ -134,6 +136,9 @@ enum Command {
         /// Read `.eml` files instead of using the configured fetcher.
         #[arg(long, value_name = "DIR")]
         from_dir: Option<PathBuf>,
+        /// With --from-dir, the `abmx:*` label to tag every file with.
+        #[arg(long, value_name = "LABEL")]
+        label: Option<String>,
         /// Maximum messages to fetch in this run.
         #[arg(long, value_name = "N")]
         limit: Option<usize>,
@@ -144,6 +149,9 @@ enum Command {
         /// Read `.eml` files instead of using the configured fetcher.
         #[arg(long, value_name = "DIR")]
         from_dir: Option<PathBuf>,
+        /// With --from-dir, the `abmx:*` label to tag every file with.
+        #[arg(long, value_name = "LABEL")]
+        label: Option<String>,
         /// Ask the sink what it would do; write nothing.
         #[arg(long)]
         dry_run: bool,
@@ -157,6 +165,9 @@ enum Command {
         /// Read `.eml` files instead of using the configured fetcher.
         #[arg(long, value_name = "DIR")]
         from_dir: Option<PathBuf>,
+        /// With --from-dir, the `abmx:*` label to tag every file with.
+        #[arg(long, value_name = "LABEL")]
+        label: Option<String>,
         /// Restrict the ledger lookup to this date (YYYY-MM-DD). The plan is unchanged.
         #[arg(long, value_name = "DATE")]
         since: Option<String>,
@@ -204,20 +215,20 @@ enum Command {
         dry_run: bool,
     },
 
-    /// List the sink's accounts and how `[accounts]` maps onto them.
+    /// List the sink's accounts.
     Accounts {
         /// Machine-readable output.
         #[arg(long)]
         json: bool,
     },
 
-    /// Show the loaded parsers and the senders they claim.
+    /// Show the loaded parsers.
     Parsers,
 
-    /// Parser-corpus commands: parse, route, inspect, verify fixtures.
+    /// Parser-corpus commands: parse, explain, inspect, verify fixtures.
     Parser(parser_cli::ParserCli),
 
-    /// Generate AI authoring artifacts: a parser prompt or reusable skills.
+    /// Generate reusable authoring skills.
     Generate {
         #[command(subcommand)]
         command: GenerateCommand,
@@ -241,23 +252,11 @@ enum Command {
 
 #[derive(Subcommand)]
 enum GenerateCommand {
-    /// Generate a prompt for an AI agent.
-    Prompt {
-        #[command(subcommand)]
-        command: PromptCommand,
-    },
-
     /// Write reusable OpenCode skills.
     Skill {
         #[command(subcommand)]
         command: SkillCommand,
     },
-}
-
-#[derive(Subcommand)]
-enum PromptCommand {
-    /// Generate a prompt that asks an agent to author bank parser specs.
-    Parser(PromptParserArgs),
 }
 
 #[derive(Subcommand)]
@@ -273,56 +272,25 @@ enum VerifyCommand {
         /// The candidate parser directory, or its `config.toml`.
         spec: PathBuf,
         /// Parser id. Defaults to the spec directory name.
-        #[arg(long, value_name = "BANK.TYPE")]
+        #[arg(long, value_name = "PARSER-ID")]
         id: Option<String>,
         /// Samples to parse: a `.eml` file or a directory. Defaults to
         /// `<spec dir>/fixtures`.
-        #[arg(long, value_name = "DIR|FILE")]
+        #[arg(long, value_name = "DIR|FILE", conflicts_with = "label")]
         input: Option<PathBuf>,
+        /// Verify against the newest messages under a live Gmail label.
+        #[arg(long, value_name = "LABEL")]
+        label: Option<String>,
+        /// With --label, verify every message under the label.
+        #[arg(long, requires = "label")]
+        all: bool,
+        /// With --label, how many of the newest messages to verify.
+        #[arg(long, default_value_t = 3, value_name = "N", requires = "label")]
+        limit: usize,
         /// Machine-readable output.
         #[arg(long)]
         json: bool,
     },
-}
-
-#[derive(clap::Args)]
-struct PromptParserArgs {
-    /// Directory or `.eml` file with samples. `-` reads one message from stdin.
-    #[arg(long, visible_alias = "from-dir", value_name = "DIR|FILE")]
-    input: Option<PathBuf>,
-
-    /// Sample from one or more Gmail labels. Repeat or comma-separate.
-    #[arg(
-        long = "from-gmail-label",
-        value_name = "LABEL",
-        value_delimiter = ',',
-        action = clap::ArgAction::Append
-    )]
-    from_gmail_label: Vec<String>,
-
-    /// Where Gmail samples are written. Defaults to the state directory.
-    #[arg(long, value_name = "DIR")]
-    samples_dir: Option<PathBuf>,
-
-    /// Explicit parser id. Only valid for a single template.
-    #[arg(long, value_name = "ID")]
-    id: Option<String>,
-
-    /// How to derive parser ids from Gmail labels.
-    #[arg(long = "id-from", value_enum, default_value_t = IdFrom::Infer)]
-    id_from: IdFrom,
-
-    /// Prompt destination: a file, or a directory for `parser-prompt.md`.
-    #[arg(long, visible_alias = "output", value_name = "FILE|DIR")]
-    out: Option<PathBuf>,
-
-    /// Directory the agent should install verified specs into.
-    #[arg(long, value_name = "DIR")]
-    corpus: Option<PathBuf>,
-
-    /// Maximum samples per label/group.
-    #[arg(long, value_name = "N", default_value_t = 8)]
-    max_samples: usize,
 }
 
 #[derive(clap::Args)]
@@ -412,53 +380,52 @@ fn run(cli: Cli) -> Result<i32> {
             } => auth_gmail(&settings, no_browser, port, manual),
             AuthCommand::Logout { no_revoke } => auth_logout(&settings, no_revoke),
         },
-        Command::Doctor { online } => doctor(&settings, online),
+        Command::Doctor { online, strict } => doctor(&settings, online, strict),
         Command::Author {
             input,
-            days,
             label,
-            senders,
-            max_messages,
-            max_groups,
-            concurrency,
+            samples,
+            json,
             out,
         } => run_author(
             &settings,
             author::Options {
-                days,
+                samples,
                 label,
-                senders,
-                max_messages,
-                max_groups,
-                concurrency,
-                quiet: settings.quiet,
                 input,
+                quiet: settings.quiet,
             },
+            json,
             out.as_deref(),
         ),
+        Command::Labels { check, json } => labels(&settings, check, json),
         Command::Plan {
             from_dir,
+            label,
             limit,
             out,
-        } => plan(&settings, from_dir, limit, out),
+        } => plan(&settings, from_dir, label, limit, out),
         Command::Apply {
             plan,
             dry_run,
             from_dir,
+            label,
             limit,
-        } => apply(&settings, plan, dry_run, from_dir, limit),
+        } => apply(&settings, plan, dry_run, from_dir, label, limit),
         Command::Sync {
             from_dir,
+            label,
             dry_run,
             limit,
-        } => sync(&settings, from_dir, dry_run, limit),
+        } => sync(&settings, from_dir, label, dry_run, limit),
         Command::Diff {
             from_dir,
+            label,
             since,
             until,
             json,
             limit,
-        } => diff(&settings, from_dir, since, until, json, limit),
+        } => diff(&settings, from_dir, label, since, until, json, limit),
         Command::Reset { review, purge, yes } => reset(&settings, review, purge, yes),
         Command::Review { json } => review(&settings, json),
         Command::Approve { ids, dry_run } => approve(&settings, &ids, dry_run),
@@ -466,9 +433,6 @@ fn run(cli: Cli) -> Result<i32> {
         Command::Parsers => parsers(&settings),
         Command::Parser(cli) => parser_cli::run(cli),
         Command::Generate { command } => match command {
-            GenerateCommand::Prompt { command } => match command {
-                PromptCommand::Parser(args) => generate_prompt_parser(&settings, args),
-            },
             GenerateCommand::Skill { command } => match command {
                 SkillCommand::Parser(args) => generate_skill_parser(args),
             },
@@ -478,8 +442,22 @@ fn run(cli: Cli) -> Result<i32> {
                 spec,
                 id,
                 input,
+                label,
+                all,
+                limit,
                 json,
-            } => verify_parser(&spec, id.as_deref(), input.as_deref(), json),
+            } => verify_parser(
+                &settings,
+                VerifyArgs {
+                    spec: &spec,
+                    id: id.as_deref(),
+                    input: input.as_deref(),
+                    label: label.as_deref(),
+                    all,
+                    limit,
+                    json,
+                },
+            ),
         },
         Command::Dump { path, json } => dump(&path, json),
     }
@@ -503,7 +481,7 @@ fn build_runner(config: &Config, base: &Path) -> Result<Runner> {
             | abmx_parser::Error::Parse(abmx_parse::Error::NoParsers { .. }) => anyhow::anyhow!(
                 "no parsers installed — nothing can be parsed yet.\n\n\
              bootstrap with one of:\n  \
-             abmx author                  scan Gmail and author parsers\n  \
+             abmx author                  label mail and author parsers\n  \
              abmx author --input <dir>    from saved .eml files\n  \
              just install-parsers         copy this checkout's corpus into ~/.config/abmx"
             ),
@@ -513,37 +491,101 @@ fn build_runner(config: &Config, base: &Path) -> Result<Runner> {
             ),
         })?;
 
+    validate_configured_labels(config, &parser)?;
+
     let state = State::open(&config.state_path(base))?;
     state.check_schema()?;
 
     Ok(Runner::new(
         parser,
         config.policy.clone(),
-        config.account_map(),
+        config.labels.clone(),
         state,
     ))
 }
 
-fn senders(parser: &abmx_parser::Parser) -> Vec<String> {
-    let mut set = BTreeSet::new();
-    for summary in parser.registry().summaries() {
-        set.extend(summary.senders);
+fn validate_configured_labels(config: &Config, parser: &abmx_parser::Parser) -> Result<()> {
+    let mut problems = Vec::new();
+    for (label, route) in config.labels.iter() {
+        if route.account.trim().is_empty() {
+            problems.push(format!("`{label}` has no account"));
+        }
+        if parser.registry().find(&route.parser).is_none() {
+            problems.push(format!(
+                "`{label}` names parser `{}`, which is not in the corpus",
+                route.parser
+            ));
+        }
     }
-    set.into_iter().collect()
+    if !problems.is_empty() {
+        bail!(
+            "[labels] is incomplete; every labeled message needs a parser and an account:\n  {}",
+            problems.join("\n  ")
+        );
+    }
+    Ok(())
+}
+
+fn validate_gmail_labels(fetcher: &abmx_gmail::GmailFetcher, config: &Config) -> Result<()> {
+    let labels = fetcher.abmx_labels()?;
+    let configured: BTreeSet<&str> = config.labels.keys().map(String::as_str).collect();
+    let found: BTreeSet<&str> = labels.iter().map(|label| label.name.as_str()).collect();
+
+    let mut problems = Vec::new();
+    for label in &labels {
+        if !configured.contains(label.name.as_str()) {
+            problems.push(format!(
+                "`{}` is labeled in Gmail but has no [labels] entry",
+                label.name
+            ));
+        }
+    }
+    for label in &configured {
+        if !found.contains(label) {
+            problems.push(format!("`{label}` is in [labels] but has no Gmail label"));
+        }
+    }
+    if !problems.is_empty() {
+        bail!(
+            "label inventory does not match Gmail:\n  {}\n\
+             fix the Gmail label/filter or the [labels] table before syncing",
+            problems.join("\n  ")
+        );
+    }
+    Ok(())
+}
+
+fn label_names(config: &Config) -> Vec<String> {
+    config.labels.keys().cloned().collect()
 }
 
 fn build_fetcher(
     config: &Config,
     base: &Path,
     from_dir: Option<PathBuf>,
-    parser: &abmx_parser::Parser,
+    label: Option<String>,
 ) -> Result<Box<dyn Fetcher>> {
-    if let Some(dir) = from_dir {
-        return Ok(Box::new(DirFetcher::new(dir)));
+    if let Some(label) = label.as_ref() {
+        if from_dir.is_none() {
+            bail!("--label only applies with --from-dir");
+        }
+        if !config.labels.contains_key(label.as_str()) {
+            bail!("`{label}` is not in [labels]");
+        }
     }
 
-    let senders = senders(parser);
-    Ok(Box::new(config.build_gmail(base, &senders)?))
+    if let Some(dir) = from_dir {
+        let label = label
+            .or_else(|| {
+                (config.labels.len() == 1).then(|| config.labels.keys().next().cloned().unwrap())
+            })
+            .unwrap_or_else(|| "abmx:dir".to_owned());
+        return Ok(Box::new(DirFetcher::labeled(dir, label)));
+    }
+
+    let gmail = config.build_gmail(base)?;
+    validate_gmail_labels(&gmail, config)?;
+    Ok(Box::new(gmail))
 }
 
 fn apply_options(config: &Config, dry_run: bool) -> ApplyOptions {
@@ -727,7 +769,7 @@ fn render_sections(sections: &[Section]) -> (usize, usize, usize) {
     (failures, warnings, skipped)
 }
 
-fn doctor(settings: &Settings, online: bool) -> Result<i32> {
+fn doctor(settings: &Settings, online: bool, strict: bool) -> Result<i32> {
     let (config, base, config_path) = load_config(settings)?;
 
     let mut config_section = Section::new("config");
@@ -737,10 +779,6 @@ fn doctor(settings: &Settings, online: bool) -> Result<i32> {
     let parser = match abmx_parser::Parser::load(&config.parser_options(&base)) {
         Ok((parser, discovery)) => {
             let summaries = parser.registry().summaries();
-            let accounts: BTreeSet<&str> = summaries
-                .iter()
-                .map(|summary| summary.account.as_str())
-                .collect();
             let dir = discovery
                 .dirs
                 .first()
@@ -748,11 +786,7 @@ fn doctor(settings: &Settings, online: bool) -> Result<i32> {
                 .unwrap_or_else(|| "(built-in)".to_owned());
             parsers_section.push(
                 Status::Ok,
-                format!(
-                    "{} parsers, {} account keys, from {dir}",
-                    summaries.len(),
-                    accounts.len()
-                ),
+                format!("{} parsers, from {dir}", summaries.len()),
             );
             Some(parser)
         }
@@ -837,43 +871,50 @@ fn doctor(settings: &Settings, online: bool) -> Result<i32> {
         }
     }
 
-    let mut accounts_section = Section::new("accounts");
-    if let Some(parser) = &parser {
-        let declared: BTreeSet<String> = parser
-            .registry()
-            .summaries()
-            .into_iter()
-            .map(|summary| summary.account)
-            .collect();
-        let mapped = config.account_map();
-        let width = declared.iter().map(String::len).max().unwrap_or(0);
-
-        for account in &declared {
-            let Some(id) = mapped.get(account) else {
-                accounts_section.hint(
-                    Status::Warn,
-                    format!("{account} is not in [accounts]"),
-                    "add it to [accounts]; until then its rows wait for review",
+    let mut labels_section = Section::new("labels");
+    if config.labels.is_empty() {
+        labels_section.hint(
+            Status::Fail,
+            "no [labels] entries",
+            "label tracked mail `abmx:<id>` in Gmail, then add { parser, account } in [labels]",
+        );
+    }
+    for (label, route) in config.labels.iter() {
+        if route.account.trim().is_empty() {
+            labels_section.hint(
+                Status::Fail,
+                format!("{label}: no account"),
+                "run `abmx accounts` and set the UUID in [labels]",
+            );
+            continue;
+        }
+        if let Some(parser) = &parser {
+            if parser.registry().find(&route.parser).is_none() {
+                labels_section.hint(
+                    Status::Fail,
+                    format!("{label} -> parser `{}` is missing", route.parser),
+                    "write the parser or fix the [labels] entry",
                 );
                 continue;
-            };
-
-            let resolved = sink_accounts
-                .as_ref()
-                .and_then(|accounts| accounts.iter().find(|candidate| candidate.id == id));
-
-            match (online, resolved, sink_accounts.is_some()) {
-                (true, Some(sink_account), _) => accounts_section.push(
-                    Status::Ok,
-                    format!("{:<width$} -> {} ({id})", account, sink_account.name),
-                ),
-                (true, None, true) => accounts_section.hint(
-                    Status::Fail,
-                    format!("{:<width$} -> {id} is not an account in the sink", account),
-                    "run `abmx accounts` to list valid ids",
-                ),
-                _ => accounts_section.push(Status::Ok, format!("{:<width$} -> {id}", account)),
             }
+        }
+        let resolved = sink_accounts.as_ref().and_then(|accounts| {
+            accounts
+                .iter()
+                .find(|candidate| candidate.id == route.account)
+        });
+
+        match (online, resolved, sink_accounts.is_some()) {
+            (true, Some(sink_account), _) => labels_section.push(
+                Status::Ok,
+                format!("{label} -> {} ({})", route.parser, sink_account.name),
+            ),
+            (true, None, true) => labels_section.hint(
+                Status::Fail,
+                format!("{label} -> {} is not an account in the sink", route.account),
+                "run `abmx accounts` to list valid ids",
+            ),
+            _ => labels_section.push(Status::Ok, format!("{label} -> {}", route.parser)),
         }
     }
 
@@ -882,9 +923,8 @@ fn doctor(settings: &Settings, online: bool) -> Result<i32> {
         Some(gmail) => fetchers_section.push(
             Status::Ok,
             format!(
-                "gmail (lookback {}d, max {})",
-                gmail.lookback_days.unwrap_or(7),
-                gmail.max_messages.unwrap_or(abmx_core::DEFAULT_LIMIT)
+                "gmail labels (max {})",
+                gmail.max_messages.unwrap_or(10_000)
             ),
         ),
         None => fetchers_section.hint(
@@ -904,7 +944,7 @@ fn doctor(settings: &Settings, online: bool) -> Result<i32> {
                     Status::Ok,
                     format!("gmail token at {}", store.path().display()),
                 ),
-                Ok(Some(_)) => match config.build_gmail(&base, &[]) {
+                Ok(Some(_)) => match config.build_gmail(&base) {
                     Ok(fetcher) => match fetcher.client().profile() {
                         Ok(profile) => auth_section.push(
                             Status::Ok,
@@ -937,11 +977,58 @@ fn doctor(settings: &Settings, online: bool) -> Result<i32> {
         }
     }
 
+    let mut strict_section = Section::new("strict labels");
+    if strict {
+        match (&config.fetch.gmail, &parser) {
+            (Some(_), Some(parser)) => match config.build_gmail(&base) {
+                Ok(fetcher) => {
+                    let work =
+                        tempfile::tempdir().context("creating a temporary sample directory")?;
+                    let inventory = author::scan_gmail(
+                        &fetcher,
+                        Some(parser),
+                        &config.labels,
+                        &author::Options::default(),
+                        work.path(),
+                    )?;
+                    if inventory.labels.is_empty() && inventory.orphans.is_empty() {
+                        strict_section.hint(
+                            Status::Fail,
+                            "no `abmx:*` labels found",
+                            "create a label and apply it, or add a Gmail filter",
+                        );
+                    }
+                    for report in inventory.labels.iter().chain(inventory.orphans.iter()) {
+                        if report.status == author::LabelStatus::Ok {
+                            strict_section.push(Status::Ok, report.label.clone());
+                        } else {
+                            strict_section.hint(
+                                Status::Fail,
+                                format!("{}: {}", report.label, report.status.as_str()),
+                                "run `abmx author` and fix the label or parser",
+                            );
+                        }
+                    }
+                }
+                Err(error) => strict_section.hint(
+                    Status::Fail,
+                    error.to_string(),
+                    "run `abmx auth gmail` and check [fetch.gmail]",
+                ),
+            },
+            (None, _) => strict_section.push(Status::Skip, "no [fetch.gmail]"),
+            (_, None) => strict_section.push(Status::Skip, "no parser corpus"),
+        }
+    } else {
+        strict_section.push(Status::Skip, "pass --strict to verify live labels");
+    }
+
     let sections = [
         config_section,
         parsers_section,
+        labels_section,
+        strict_section,
         state_section,
-        accounts_section,
         sink_section,
         fetchers_section,
         auth_section,
@@ -969,7 +1056,7 @@ fn require_parsers(runner: &Runner) -> Result<()> {
         bail!(
             "no parsers installed — nothing can be parsed yet.\n\n\
              bootstrap with one of:\n  \
-             abmx author                  scan Gmail and author parsers\n  \
+             abmx author                  inventory labels and author parsers\n  \
              abmx author --input <dir>    from saved .eml files\n  \
              abmx generate skill parser --global"
         );
@@ -980,15 +1067,19 @@ fn require_parsers(runner: &Runner) -> Result<()> {
 fn plan(
     settings: &Settings,
     from_dir: Option<PathBuf>,
+    label: Option<String>,
     limit: Option<usize>,
     out: Option<PathBuf>,
 ) -> Result<i32> {
     let (config, base, _) = load_config(settings)?;
     let runner = build_runner(&config, &base)?;
     require_parsers(&runner)?;
-    let fetcher = build_fetcher(&config, &base, from_dir, &runner.parser)?;
+    let fetcher = build_fetcher(&config, &base, from_dir, label.clone())?;
+    let labels = label
+        .map(|label| vec![label])
+        .unwrap_or_else(|| label_names(&config));
 
-    let request = FetchRequest::new(None).with_limit(limit.unwrap_or(abmx_core::DEFAULT_LIMIT));
+    let request = FetchRequest::new(&labels).with_limit(limit.unwrap_or(abmx_core::DEFAULT_LIMIT));
     let plan = runner.plan(fetcher.as_ref(), request)?;
 
     let json = serde_json::to_string_pretty(&plan)?;
@@ -1010,6 +1101,7 @@ fn apply(
     plan_file: Option<PathBuf>,
     dry_run: bool,
     from_dir: Option<PathBuf>,
+    label: Option<String>,
     limit: Option<usize>,
 ) -> Result<i32> {
     let (config, base, _) = load_config(settings)?;
@@ -1028,14 +1120,26 @@ fn apply(
             plan
         }
         None => {
-            let fetcher = build_fetcher(&config, &base, from_dir, &runner.parser)?;
+            let fetcher = build_fetcher(&config, &base, from_dir, label.clone())?;
+            let labels = label
+                .clone()
+                .map(|label| vec![label])
+                .unwrap_or_else(|| label_names(&config));
             let request =
-                FetchRequest::new(None).with_limit(limit.unwrap_or(abmx_core::DEFAULT_LIMIT));
+                FetchRequest::new(&labels).with_limit(limit.unwrap_or(abmx_core::DEFAULT_LIMIT));
             let plan = runner.plan(fetcher.as_ref(), request)?;
             summarize_plan(&plan, settings.quiet, settings.verbose, !dry_run);
             plan
         }
     };
+
+    if plan.stats.failed > 0 {
+        eprintln!(
+            "refusing to apply: {} labeled message(s) failed to parse; fix the parser or the label",
+            plan.stats.failed
+        );
+        return Ok(EXIT_FAILED);
+    }
 
     let sink = config.build_sink(&base)?;
     let options = apply_options(&config, dry_run);
@@ -1048,17 +1152,29 @@ fn apply(
 fn sync(
     settings: &Settings,
     from_dir: Option<PathBuf>,
+    label: Option<String>,
     dry_run: bool,
     limit: Option<usize>,
 ) -> Result<i32> {
     let (config, base, _) = load_config(settings)?;
     let runner = build_runner(&config, &base)?;
     require_parsers(&runner)?;
-    let fetcher = build_fetcher(&config, &base, from_dir, &runner.parser)?;
+    let fetcher = build_fetcher(&config, &base, from_dir, label.clone())?;
+    let labels = label
+        .map(|label| vec![label])
+        .unwrap_or_else(|| label_names(&config));
 
-    let request = FetchRequest::new(None).with_limit(limit.unwrap_or(abmx_core::DEFAULT_LIMIT));
+    let request = FetchRequest::new(&labels).with_limit(limit.unwrap_or(abmx_core::DEFAULT_LIMIT));
     let plan = runner.plan(fetcher.as_ref(), request)?;
     summarize_plan(&plan, settings.quiet, settings.verbose, !dry_run);
+
+    if plan.stats.failed > 0 {
+        eprintln!(
+            "refusing to apply: {} labeled message(s) failed to parse; fix the parser or the label",
+            plan.stats.failed
+        );
+        return Ok(EXIT_FAILED);
+    }
 
     let sink = config.build_sink(&base)?;
     let options = apply_options(&config, dry_run);
@@ -1071,6 +1187,7 @@ fn sync(
 fn diff(
     settings: &Settings,
     from_dir: Option<PathBuf>,
+    label: Option<String>,
     since: Option<String>,
     until: Option<String>,
     json: bool,
@@ -1079,9 +1196,12 @@ fn diff(
     let (config, base, _) = load_config(settings)?;
     let runner = build_runner(&config, &base)?;
     require_parsers(&runner)?;
-    let fetcher = build_fetcher(&config, &base, from_dir, &runner.parser)?;
+    let fetcher = build_fetcher(&config, &base, from_dir, label.clone())?;
+    let labels = label
+        .map(|label| vec![label])
+        .unwrap_or_else(|| label_names(&config));
 
-    let request = FetchRequest::new(None).with_limit(limit.unwrap_or(abmx_core::DEFAULT_LIMIT));
+    let request = FetchRequest::new(&labels).with_limit(limit.unwrap_or(abmx_core::DEFAULT_LIMIT));
     let plan = runner.plan(fetcher.as_ref(), request)?;
     summarize_plan(&plan, true, false, false);
 
@@ -1255,14 +1375,14 @@ fn reset(settings: &Settings, review: bool, purge: bool, yes: bool) -> Result<i3
     }
 
     let state = State::open(&path)?;
-    let (cursors, messages, reviews) = state.counts()?;
+    let (messages, reviews) = state.counts()?;
 
-    if cursors == 0 && messages == 0 && (!review || reviews == 0) {
+    if messages == 0 && (!review || reviews == 0) {
         println!("local state is already empty");
         return Ok(EXIT_OK);
     }
 
-    let mut what = format!("{cursors} cursor(s) and {messages} delivered message(s)");
+    let mut what = format!("{messages} delivered message(s)");
     if review {
         what.push_str(&format!(" and {reviews} review row(s)"));
     }
@@ -1384,7 +1504,11 @@ fn accounts(settings: &Settings, json: bool) -> Result<i32> {
         return Ok(EXIT_OK);
     }
 
-    let mapped: BTreeSet<&str> = config.accounts.values().map(String::as_str).collect();
+    let mapped: BTreeSet<&str> = config
+        .labels
+        .values()
+        .map(|route| route.account.as_str())
+        .collect();
 
     println!("{:<38} {:<24} {:<8} flags", "id", "name", "mapped");
     for account in &accounts {
@@ -1409,12 +1533,16 @@ fn accounts(settings: &Settings, json: bool) -> Result<i32> {
     }
 
     println!();
-    if config.accounts.is_empty() {
-        println!("[accounts] is empty; map abmx-parser account keys to these ids.");
+    if config.labels.is_empty() {
+        println!("[labels] is empty; map `abmx:*` labels to these ids.");
     } else {
-        for (key, id) in &config.accounts {
-            let exists = accounts.iter().any(|account| &account.id == id);
-            println!("{key} -> {id} {}", if exists { "" } else { "(missing!)" });
+        for (label, route) in config.labels.iter() {
+            let exists = accounts.iter().any(|account| account.id == route.account);
+            println!(
+                "{label} -> {} {}",
+                route.account,
+                if exists { "" } else { "(missing!)" }
+            );
         }
     }
 
@@ -1426,18 +1554,21 @@ fn parsers(settings: &Settings) -> Result<i32> {
     let (parser, _) = abmx_parser::Parser::load(&config.parser_options(&base))
         .map_err(|error| anyhow::anyhow!("loading the parser corpus: {error}"))?;
 
-    println!("{:<24} {:<4} {:<14} bank", "parser", "ver", "account");
+    println!("{:<24} {:<4} {:<10} kind", "parser", "ver", "bank");
     for summary in parser.registry().summaries() {
         println!(
-            "{:<24} {:<4} {:<14} {}",
-            summary.id, summary.version, summary.account, summary.bank
+            "{:<24} {:<4} {:<10} {:?}",
+            summary.id, summary.version, summary.bank, summary.kind
         );
     }
 
     println!();
-    println!("senders:");
-    for sender in senders(&parser) {
-        println!("  {sender}");
+    println!("labels:");
+    if config.labels.is_empty() {
+        println!("  (none)");
+    }
+    for (label, route) in config.labels.iter() {
+        println!("  {label:<24} -> {}", route.parser);
     }
 
     Ok(EXIT_OK)
@@ -1470,15 +1601,16 @@ fn load_optional_config(settings: &Settings) -> Result<(Option<Config>, Option<P
     }
 }
 
-fn run_author(settings: &Settings, options: author::Options, out: Option<&Path>) -> Result<i32> {
-    author::check_input(&options)?;
-
+fn run_author(
+    settings: &Settings,
+    options: author::Options,
+    json: bool,
+    out: Option<&Path>,
+) -> Result<i32> {
     let (config, config_path, base) = load_optional_config(settings)?;
+    let config = config.unwrap_or_default();
 
-    let parser_options = config
-        .as_ref()
-        .map(|config| config.parser_options(&base))
-        .unwrap_or_default();
+    let parser_options = config.parser_options(&base);
     let discovery = abmx_parser::discover(&parser_options);
     let corpus = discovery
         .dirs
@@ -1502,10 +1634,6 @@ fn run_author(settings: &Settings, options: author::Options, out: Option<&Path>)
         .as_ref()
         .map(|parser| parser.registry().summaries())
         .unwrap_or_default();
-    let accounts = config
-        .as_ref()
-        .map(|config| config.accounts.clone())
-        .unwrap_or_default();
 
     let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
     let work_dir = paths::xdg_state_dir().join("abmx/author").join(timestamp);
@@ -1515,258 +1643,105 @@ fn run_author(settings: &Settings, options: author::Options, out: Option<&Path>)
         eprintln!("warning: {error}");
     }
 
-    let context = author::AuthorContext {
+    let context = author::Context {
         config_path: config_path.as_deref(),
         corpus: &corpus,
         work_dir: &work_dir,
-        accounts: &accounts,
         summaries: &summaries,
     };
 
-    let scan = if options.input.is_some() {
-        author::scan_input(&options, &context)?
+    let inventory = if let Some(input) = &options.input {
+        author::scan_input(input, parser.as_ref(), &config.labels, &options, &work_dir)?
     } else {
-        let config = config.as_ref().context(
-            "no config found; run `abmx init`, then `abmx auth gmail`, then `abmx author`",
-        )?;
-        let fetcher = config.build_gmail(&base, &[])?;
-        author::scan_gmail(&fetcher, parser.as_ref(), &options, &context)?
+        let fetcher = config
+            .build_gmail(&base)
+            .context("Gmail authoring needs [fetch.gmail]; use --input for saved .eml files")?;
+        author::scan_gmail(
+            &fetcher,
+            parser.as_ref(),
+            &config.labels,
+            &options,
+            &work_dir,
+        )?
     };
 
-    eprint!("{}", author::summary(&scan));
-
-    let prompt = author::render(&context, &scan);
-    match out {
-        Some(path) => {
-            std::fs::write(path, prompt).with_context(|| format!("writing {}", path.display()))?;
-            eprintln!("prompt: {}", path.display());
-        }
-        None => print!("{prompt}"),
+    if !settings.quiet {
+        eprint!("{}", author::summary(&inventory));
     }
 
-    Ok(0)
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&author::render_json(&inventory))?
+        );
+    } else {
+        let prompt = author::render(&context, &inventory);
+        match out {
+            Some(path) => {
+                std::fs::write(path, prompt)
+                    .with_context(|| format!("writing {}", path.display()))?;
+                eprintln!("prompt: {}", path.display());
+            }
+            None => print!("{prompt}"),
+        }
+    }
+
+    Ok(if inventory.needs_work() > 0 {
+        EXIT_FAILED
+    } else {
+        EXIT_OK
+    })
 }
 
-fn generate_prompt_parser(settings: &Settings, args: PromptParserArgs) -> Result<i32> {
-    let has_input = args.input.is_some();
-    let has_labels = !args.from_gmail_label.is_empty();
-    if has_input == has_labels {
-        bail!("pass exactly one of --input or --from-gmail-label");
-    }
-    if has_labels && args.from_gmail_label.len() > 1 && args.id.is_some() {
-        bail!("--id names one parser; omit it when sampling several labels");
-    }
-    if has_input && args.id_from == IdFrom::Label {
-        eprintln!("warning: --id-from only applies to --from-gmail-label; ignoring");
-    }
-    if has_input && args.samples_dir.is_some() {
-        eprintln!("warning: --samples-dir only applies to --from-gmail-label; ignoring");
+fn labels(settings: &Settings, check: bool, json: bool) -> Result<i32> {
+    let (config, base, _) = load_config(settings)?;
+    let (parser, _) = abmx_parser::Parser::load(&config.parser_options(&base))
+        .map_err(|error| anyhow::anyhow!("loading the parser corpus: {error}"))?;
+
+    let mut rows = Vec::new();
+    let mut problems = 0usize;
+    for (label, route) in config.labels.iter() {
+        let parser_ok = parser.registry().find(&route.parser).is_some();
+        let account_ok = !route.account.trim().is_empty();
+        let status = match (parser_ok, account_ok) {
+            (true, true) => "ok",
+            (false, true) => "missing_parser",
+            (true, false) => "missing_mapping",
+            (false, false) => "missing_parser,mapping",
+        };
+        if status != "ok" {
+            problems += 1;
+        }
+        rows.push(serde_json::json!({
+            "label": label,
+            "parser": route.parser,
+            "account": route.account,
+            "status": status,
+        }));
     }
 
-    let (config, config_path, base) = load_optional_config(settings)?;
-    let cwd = std::env::current_dir().context("resolving the working directory")?;
-
-    let (set, input_hint) = if let Some(input) = &args.input {
-        let input = paths::resolve_path(&cwd, input);
-        (
-            authoring::samples::load_path(&input, args.max_samples)?,
-            Some(input),
-        )
+    if json {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+    } else if rows.is_empty() {
+        println!("no [labels] entries");
     } else {
-        let (set, dir) = sample_gmail_labels(
-            &config,
-            &base,
-            &args.from_gmail_label,
-            args.samples_dir.as_deref(),
-            args.max_samples,
-            &cwd,
-        )?;
-        (set, Some(dir))
-    };
-
-    if has_labels {
-        if let Some(path) = &input_hint {
-            eprintln!(
-                "warning: wrote raw Gmail samples to {}; the prompt contains real transaction data",
-                path.display()
+        println!("{:<24} {:<20} {:<38} status", "label", "parser", "account");
+        for row in &rows {
+            println!(
+                "{:<24} {:<20} {:<38} {}",
+                row["label"].as_str().unwrap_or(""),
+                row["parser"].as_str().unwrap_or(""),
+                row["account"].as_str().unwrap_or(""),
+                row["status"].as_str().unwrap_or("")
             );
         }
     }
 
-    if set.is_empty() {
-        bail!("no samples found; check --input or --from-gmail-label");
+    if check && problems > 0 {
+        eprintln!("{problems} label(s) need a parser or a mapping");
+        return Ok(EXIT_FAILED);
     }
-
-    let options = config
-        .as_ref()
-        .map(|config| config.parser_options(&base))
-        .unwrap_or_default();
-    let discovery = abmx_parser::discover(&options);
-    let corpus_explicit = args.corpus.is_some();
-    let corpus = match args.corpus {
-        Some(path) => paths::resolve_path(&cwd, &path),
-        None => discovery
-            .dirs
-            .first()
-            .cloned()
-            .unwrap_or_else(|| paths::xdg_config_dir().join("abmx/parsers")),
-    };
-
-    let parser = match abmx_parser::Parser::load(&options) {
-        Ok((parser, _)) => Some(parser),
-        Err(error) => {
-            if config.is_some() || corpus_explicit {
-                eprintln!("warning: could not load the configured parser corpus: {error}");
-            }
-            None
-        }
-    };
-    let summaries = parser
-        .as_ref()
-        .map(|parser| parser.registry().summaries())
-        .unwrap_or_default();
-    let accounts = config
-        .as_ref()
-        .map(|config| config.accounts.clone())
-        .unwrap_or_default();
-
-    let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-    let draft_dir = paths::xdg_state_dir().join("abmx/drafts").join(timestamp);
-    if let Err(error) = std::fs::create_dir_all(&draft_dir) {
-        eprintln!(
-            "warning: could not create the draft directory {}: {error}",
-            draft_dir.display()
-        );
-    } else if let Err(error) = restrict_permissions(&draft_dir, 0o700) {
-        eprintln!("warning: {error}");
-    }
-
-    let context = PromptContext {
-        config_path,
-        corpus,
-        draft_dir,
-        input: input_hint,
-        explicit_id: args.id,
-        id_from: args.id_from,
-        from_gmail: has_labels,
-        summaries,
-        accounts,
-        parser,
-    };
-
-    let prompt = authoring::render_prompt(&set, &context);
-
-    match args.out {
-        Some(path) => {
-            let path = paths::resolve_path(&cwd, &path);
-            let file = write_prompt(&path, &prompt)?;
-            eprintln!("wrote {}", file.display());
-        }
-        None => print!("{prompt}"),
-    }
-
-    for failure in &set.failures {
-        eprintln!("sample failed: {}", failure.error);
-    }
-    if set.truncated > 0 {
-        eprintln!("{} sample(s) omitted by --max-samples", set.truncated);
-    }
-    eprintln!(
-        "{} sample(s) in {} group(s)",
-        set.sample_count(),
-        set.groups.len()
-    );
-
-    Ok(if set.failures.is_empty() {
-        EXIT_OK
-    } else {
-        EXIT_FAILED
-    })
-}
-
-fn sample_gmail_labels(
-    config: &Option<Config>,
-    base: &Path,
-    labels: &[String],
-    dir: Option<&Path>,
-    max_samples: usize,
-    cwd: &Path,
-) -> Result<(authoring::SampleSet, PathBuf)> {
-    let config = config.as_ref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "Gmail sampling needs a config with [fetch.gmail]; run `abmx init` or pass --config"
-        )
-    })?;
-    let fetcher = config.build_gmail(base, &[])?;
-
-    let dir = dir
-        .map(|path| paths::resolve_path(cwd, path))
-        .unwrap_or_else(|| {
-            paths::xdg_state_dir()
-                .join("abmx/samples")
-                .join(chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string())
-        });
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    restrict_permissions(&dir, 0o700)?;
-
-    let mut set = authoring::SampleSet::default();
-    let mut seen = BTreeSet::new();
-
-    for label in labels {
-        let slug = {
-            let slug = authoring::samples::slug(label);
-            if slug.is_empty() {
-                "samples".to_owned()
-            } else {
-                slug
-            }
-        };
-        let label_dir = dir.join(slug);
-        std::fs::create_dir_all(&label_dir)
-            .with_context(|| format!("creating {}", label_dir.display()))?;
-        restrict_permissions(&label_dir, 0o700)?;
-
-        let messages = fetcher
-            .client()
-            .sample_label(label, max_samples)
-            .map_err(|error| anyhow::anyhow!("sampling Gmail label `{label}`: {error}"))?;
-
-        if messages.is_empty() {
-            eprintln!("warning: no messages found for Gmail label `{label}`");
-            continue;
-        }
-
-        let mut group = authoring::SampleGroup {
-            label: Some(label.clone()),
-            samples: Vec::new(),
-        };
-
-        for message in messages {
-            if !seen.insert(message.id.clone()) {
-                continue;
-            }
-
-            let path = label_dir.join(format!("{}.eml", message.id));
-            std::fs::write(&path, &message.bytes)
-                .with_context(|| format!("writing {}", path.display()))?;
-            restrict_permissions(&path, 0o600)?;
-
-            match authoring::samples::sample_from_bytes(path.display().to_string(), &message.bytes)
-            {
-                Ok(sample) => group.samples.push(sample),
-                Err(error) => set.failures.push(authoring::SampleFailure {
-                    origin: path.display().to_string(),
-                    error,
-                }),
-            }
-        }
-
-        if !group.samples.is_empty() {
-            set.groups.push(group);
-        }
-    }
-
-    Ok((set, dir))
+    Ok(EXIT_OK)
 }
 
 #[cfg(unix)]
@@ -1780,27 +1755,6 @@ fn restrict_permissions(path: &Path, mode: u32) -> Result<()> {
 #[cfg(not(unix))]
 fn restrict_permissions(_path: &Path, _mode: u32) -> Result<()> {
     Ok(())
-}
-
-fn write_prompt(path: &Path, content: &str) -> Result<PathBuf> {
-    // A path with no extension is treated as a directory, which also supports
-    // the `--out ./bundle` form without requiring a second flag.
-    let is_dir = path.is_dir() || path.extension().is_none();
-    let file = if is_dir {
-        std::fs::create_dir_all(path).with_context(|| format!("creating {}", path.display()))?;
-        path.join("parser-prompt.md")
-    } else {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("creating {}", parent.display()))?;
-            }
-        }
-        path.to_path_buf()
-    };
-
-    std::fs::write(&file, content).with_context(|| format!("writing {}", file.display()))?;
-    Ok(file)
 }
 
 fn generate_skill_parser(args: SkillParserArgs) -> Result<i32> {
@@ -1833,7 +1787,52 @@ fn generate_skill_parser(args: SkillParserArgs) -> Result<i32> {
     Ok(EXIT_OK)
 }
 
-fn verify_parser(spec: &Path, id: Option<&str>, input: Option<&Path>, json: bool) -> Result<i32> {
+struct VerifyArgs<'a> {
+    spec: &'a Path,
+    id: Option<&'a str>,
+    input: Option<&'a Path>,
+    label: Option<&'a str>,
+    all: bool,
+    limit: usize,
+    json: bool,
+}
+
+fn verify_parser(settings: &Settings, args: VerifyArgs<'_>) -> Result<i32> {
+    let VerifyArgs {
+        spec,
+        id,
+        input,
+        label,
+        all,
+        limit,
+        json,
+    } = args;
+    let live_dir;
+    let input = if let Some(label) = label {
+        let (config, base, _) = load_config(settings)?;
+        let fetcher = config.build_gmail(&base)?;
+        let count = if all {
+            fetcher.label_message_ids(label)?.len()
+        } else {
+            limit.max(1)
+        };
+        let samples = fetcher
+            .sample_label(label, count)
+            .with_context(|| format!("sampling `{label}`"))?;
+        if samples.is_empty() {
+            bail!("no messages under `{label}`");
+        }
+        live_dir = tempfile::tempdir().context("creating a temporary sample directory")?;
+        for (index, sample) in samples.iter().enumerate() {
+            let path = live_dir.path().join(format!("{:02}.eml", index + 1));
+            std::fs::write(&path, &sample.bytes)
+                .with_context(|| format!("writing {}", path.display()))?;
+        }
+        Some(live_dir.path())
+    } else {
+        input
+    };
+
     let report = authoring::verify::verify(spec, id, input)?;
 
     if json {
@@ -1980,13 +1979,13 @@ fn summarize_plan(plan: &Plan, quiet: bool, verbose: bool, persisted: bool) {
     if !quiet && !plan.rows.is_empty() {
         eprintln!();
         eprintln!(
-            "{:<10} {:>16} {:<14} {:<8} counterparty",
-            "date", "amount", "account", "decision"
+            "{:<10} {:>16} {:<24} {:<8} counterparty",
+            "date", "amount", "label", "decision"
         );
         for row in &plan.rows {
             let transaction = &row.transaction;
             let mut line = format!(
-                "{:<10} {:>16} {:<14} {:<8} {}",
+                "{:<10} {:>16} {:<24} {:<8} {}",
                 transaction.occurred_on,
                 format_amount(transaction),
                 row.account_key,
@@ -2003,7 +2002,7 @@ fn summarize_plan(plan: &Plan, quiet: bool, verbose: bool, persisted: bool) {
     if !quiet && !plan.unmatched.is_empty() {
         eprintln!();
         eprintln!(
-            "unmatched ({}), no parser claimed them:",
+            "unmatched ({}), no parser or [labels] entry claimed them:",
             plan.unmatched.len()
         );
         for (index, entry) in plan.unmatched.iter().enumerate() {

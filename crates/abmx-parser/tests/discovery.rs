@@ -14,21 +14,14 @@ fn temp(name: &str) -> PathBuf {
 
 fn spec(version: u32) -> String {
     format!(
-        r#"spec_version = 1
+        r#"spec_version = 2
 version = {version}
-
-[match]
-senders  = ["alerts@example.com"]
-subject  = '^Alert$'
-requires = []
-rejects  = []
 
 [labels]
 list = ["Amount", "Date"]
 
 [defaults]
 bank     = "test"
-account  = "test-account"
 currency = "IDR"
 tz       = "Asia/Jakarta"
 kind     = "purchase"
@@ -68,7 +61,6 @@ fn explicit_dirs_merge_and_first_wins() {
 
     let options = Options {
         parsers: vec![base.clone(), over.clone()],
-        router: None,
     };
     let (parser, discovery) = Parser::load(&options).expect("load");
 
@@ -90,7 +82,6 @@ fn directory_name_is_the_parser_id() {
 
     let (parser, _) = Parser::load(&Options {
         parsers: vec![root],
-        router: None,
     })
     .expect("load");
 
@@ -101,16 +92,15 @@ fn directory_name_is_the_parser_id() {
 #[test]
 fn directory_name_must_look_like_a_parser_id() {
     let root = temp("mismatch");
-    let dir = root.join("wrongname");
+    let dir = root.join(".wrongname");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("config.toml"), spec(1)).unwrap();
 
     let result = Parser::load(&Options {
         parsers: vec![root],
-        router: None,
     });
     let error = result.err().expect("must fail").to_string();
-    assert!(error.contains("must look like"), "got: {error}");
+    assert!(error.contains("not a valid id"), "got: {error}");
 }
 
 #[test]
@@ -120,7 +110,6 @@ fn flat_layout_gets_an_actionable_error() {
 
     let error = Parser::load(&Options {
         parsers: vec![root],
-        router: None,
     })
     .err()
     .expect("must fail")
@@ -134,7 +123,6 @@ fn missing_explicit_directory_is_an_error() {
     let root = temp("missing");
     let result = Parser::load(&Options {
         parsers: vec![root.join("nope")],
-        router: None,
     });
     assert!(result.is_err());
 }
@@ -144,7 +132,6 @@ fn no_corpus_is_reported_as_such() {
     let root = temp("empty");
     let result = Parser::load(&Options {
         parsers: vec![root],
-        router: None,
     });
     let error = result.err().expect("must fail").to_string();
     assert!(error.contains("no parser specs found"), "got: {error}");
@@ -162,7 +149,6 @@ fn configmap_style_symlinks_are_followed() {
 
     let (parser, _) = Parser::load(&Options {
         parsers: vec![root],
-        router: None,
     })
     .expect("load through symlinks");
 

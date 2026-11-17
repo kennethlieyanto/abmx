@@ -29,9 +29,9 @@ If that directory contains no specs, loading fails rather than falling through t
 a lower-precedence corpus: an empty corpus in the place you asked it to look is a
 broken install, and silently reading a different one is worse.
 
-Router policy resolves as `--router` → `$ABMX_ROUTER` → the first used directory
-that contains a `router.toml` → built-in defaults. `abmx parser paths` prints the chain
-and marks skipped candidates.
+`abmx parser paths` prints the chain and marks skipped candidates. There is no
+router file: a parser is selected by the `abmx:*` label mapped to it in
+`abmx.toml`.
 
 ## Input
 
@@ -41,7 +41,7 @@ decoded from base64url, or a saved test fixture.
 
 The parser needs:
 
-- the `From` address and `Subject` (routing),
+- the block list from the body,
 - the `Date` header (used only to give `occurred_at` its timezone offset),
 - the `Message-ID` (identity),
 - a `text/html` or `text/plain` body (extraction).
@@ -155,36 +155,27 @@ Do not do arithmetic on `amount`.
 
 ## Parser spec format
 
-One parser per router-visible template, in `parsers/<id>/config.toml`. The
+One parser per label-visible template, in `parsers/<id>/config.toml`. The
 directory name **is** the parser id; there is no `id` field to disagree with it.
-`spec_version` must match the engine's supported version.
+`spec_version` must match the engine's supported version. There is no `[match]`
+section and no account field.
 
 ```toml
-spec_version = 1
+spec_version = 2
 version = 1                 # bump when the spec changes
 enabled = true
-
-[match]
-senders  = ["alerts@bank.example"]  # exact, case-insensitive, or "*@bank.example"
-subject  = '^Payment successful$'    # regex against the decoded subject
-requires = ["Amount", "Merchant"]    # every one of these blocks must be present
-rejects  = ["Transfer Amount"]       # none of these may be present
-contains = ['^Order\s+ID']           # regex must match some block
-excludes = ['^OTP']                  # regex must match no block
 
 [labels]
 list = ["Amount", "Merchant", "Date"]  # ALL constant label blocks in the template
 
 [defaults]
 bank     = "example"
-account  = "example-account"
 currency = "IDR"
 tz       = "Asia/Jakarta"
 kind     = "purchase"
 
 [status]                    # optional; omit for settled
-source = "subject"          # subject | field
-label  = "Status"           # required when source = "field"
+label  = "Status"           # required when the template prints one
 map    = { BERHASIL = "settled", GAGAL = "failed" }
 default = "unknown"
 

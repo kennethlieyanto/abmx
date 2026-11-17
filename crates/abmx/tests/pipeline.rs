@@ -5,31 +5,27 @@ use abmx::fetchers::DirFetcher;
 use abmx::state::State;
 use abmx::Runner;
 use abmx_core::{
-    AccountMap, ApplyOptions, Error, FetchBatch, FetchRequest, Fetcher, ImportRow, PolicyConfig,
-    RawMessage, Report, Result, Sink, SinkAccount,
+    ApplyOptions, Error, FetchBatch, FetchRequest, Fetcher, ImportRow, LabelRoute, LabelRoutes,
+    PolicyConfig, RawMessage, Report, Result, Sink, SinkAccount,
 };
 use abmx_file::FileSink;
 
-const PARSER: &str = r#"
-spec_version = 1
-version = 1
+const LABEL: &str = "abmx:test";
 
-[match]
-senders = ["alerts@bank.example"]
-subject = '^Payment successful$'
+const PARSER: &str = r#"
+spec_version = 2
+version = 1
 
 [labels]
 list = ["Amount", "Merchant", "Transaction Date", "Status"]
 
 [defaults]
 bank = "test"
-account = "test-account"
 currency = "IDR"
 tz = "Asia/Jakarta"
 kind = "purchase"
 
 [status]
-source = "field"
 label = "Status"
 map = { Successful = "settled", Failed = "failed" }
 
@@ -66,6 +62,22 @@ fn email(message_id: &str, amount: &str, status: &str) -> String {
     )
 }
 
+fn routes(account: &str) -> LabelRoutes {
+    let mut routes = LabelRoutes::default();
+    routes.insert(
+        LABEL,
+        LabelRoute {
+            parser: "test.bank".to_owned(),
+            account: account.to_owned(),
+        },
+    );
+    routes
+}
+
+fn labels() -> Vec<String> {
+    vec![LABEL.to_owned()]
+}
+
 struct Fixture {
     dir: tempfile::TempDir,
 }
@@ -100,20 +112,23 @@ impl Fixture {
         self.dir.path().join("out.jsonl")
     }
 
-    fn runner(&self) -> Runner {
+    fn fetcher(&self) -> DirFetcher {
+        DirFetcher::labeled(self.mail_dir(), LABEL)
+    }
+
+    fn parser(&self) -> abmx_parser::Parser {
         let (parser, _) = abmx_parser::Parser::load(&abmx_parser::Options {
             parsers: vec![self.dir.path().join("parsers")],
-            router: None,
         })
         .unwrap();
+        parser
+    }
 
-        let mut accounts = AccountMap::new();
-        accounts.insert("test-account", "uuid-test");
-
+    fn runner(&self) -> Runner {
         Runner::new(
-            parser,
+            self.parser(),
             PolicyConfig::default(),
-            accounts,
+            routes("uuid-test"),
             State::open_in_memory().unwrap(),
         )
     }
@@ -123,10 +138,10 @@ impl Fixture {
 fn imports_a_row_once_and_then_skips_the_message() {
     let fixture = Fixture::new(&[("one", "Rp 27.500", "Successful")]);
     let runner = fixture.runner();
-    let fetcher = DirFetcher::new(fixture.mail_dir());
+    let fetcher = fixture.fetcher();
     let sink = FileSink::new(fixture.out_path());
 
-    let plan = runner.plan(&fetcher, FetchRequest::new(None)).unwrap();
+    let plan = runner.plan(&fetcher, FetchRequest::new(&labels())).unwrap();
     assert_eq!(plan.stats.import, 1);
     assert_eq!(plan.stats.parsed, 1);
     assert_eq!(plan.import_rows()[0].account, "uuid-test");
@@ -137,7 +152,7 @@ fn imports_a_row_once_and_then_skips_the_message() {
     assert_eq!(report.added, 1);
     assert!(report.is_clean());
 
-    let second = runner.plan(&fetcher, FetchRequest::new(None)).unwrap();
+    let second = runner.plan(&fetcher, FetchRequest::new(&labels())).unwrap();
     assert_eq!(second.stats.parsed, 0);
     assert_eq!(second.stats.import, 0);
     assert_eq!(second.sources[0].skipped, 1);
@@ -151,9 +166,9 @@ fn imports_a_row_once_and_then_skips_the_message() {
 fn a_failed_transaction_is_skipped_not_imported() {
     let fixture = Fixture::new(&[("one", "Rp 15.000", "Failed")]);
     let runner = fixture.runner();
-    let fetcher = DirFetcher::new(fixture.mail_dir());
+    let fetcher = fixture.fetcher();
 
-    let plan = runner.plan(&fetcher, FetchRequest::new(None)).unwrap();
+    let plan = runner.plan(&fetcher, FetchRequest::new(&labels())).unwrap();
     assert_eq!(plan.stats.skip, 1);
     assert!(plan.import_rows().is_empty());
     assert!(matches!(
@@ -166,10 +181,10 @@ fn a_failed_transaction_is_skipped_not_imported() {
 fn a_zero_amount_lands_in_review_and_can_be_approved() {
     let fixture = Fixture::new(&[("one", "Rp 0", "Successful")]);
     let runner = fixture.runner();
-    let fetcher = DirFetcher::new(fixture.mail_dir());
+    let fetcher = fixture.fetcher();
     let sink = FileSink::new(fixture.out_path());
 
-    let plan = runner.plan(&fetcher, FetchRequest::new(None)).unwrap();
+    let plan = runner.plan(&fetcher, FetchRequest::new(&labels())).unwrap();
     assert_eq!(plan.stats.review, 1);
     assert!(plan.import_rows().is_empty());
 
@@ -193,27 +208,17 @@ fn a_zero_amount_lands_in_review_and_can_be_approved() {
 }
 
 #[test]
-fn an_unmapped_account_is_reviewed_rather_than_guessed() {
+fn an_unmapped_label_is_reviewed_rather_than_guessed() {
     let fixture = Fixture::new(&[("one", "Rp 27.500", "Successful")]);
-    let (parser, _) = abmx_parser::Parser::load(&abmx_parser::Options {
-        parsers: vec![fixture.dir.path().join("parsers")],
-        router: None,
-    })
-    .unwrap();
-
-    // Deliberately empty mapping.
     let runner = Runner::new(
-        parser,
+        fixture.parser(),
         PolicyConfig::default(),
-        AccountMap::new(),
+        routes(""),
         State::open_in_memory().unwrap(),
     );
 
     let plan = runner
-        .plan(
-            &DirFetcher::new(fixture.mail_dir()),
-            FetchRequest::new(None),
-        )
+        .plan(&fixture.fetcher(), FetchRequest::new(&labels()))
         .unwrap();
 
     assert_eq!(plan.stats.review, 1);
@@ -231,10 +236,7 @@ fn a_plan_survives_a_json_round_trip() {
     let sink = FileSink::new(fixture.out_path());
 
     let plan = runner
-        .plan(
-            &DirFetcher::new(fixture.mail_dir()),
-            FetchRequest::new(None),
-        )
+        .plan(&fixture.fetcher(), FetchRequest::new(&labels()))
         .unwrap();
 
     let json = serde_json::to_string(&plan).unwrap();
@@ -251,7 +253,6 @@ fn a_plan_survives_a_json_round_trip() {
 
 struct OnceFetcher {
     message: RawMessage,
-    cursor: serde_json::Value,
     calls: Cell<usize>,
 }
 
@@ -260,10 +261,10 @@ impl OnceFetcher {
         Self {
             message: RawMessage::new(
                 "fake:1",
+                LABEL,
                 "fake:1",
                 email("one", "Rp 27.500", "Successful").into_bytes(),
             ),
-            cursor: serde_json::json!({ "history_id": "42" }),
             calls: Cell::new(0),
         }
     }
@@ -278,17 +279,15 @@ impl Fetcher for OnceFetcher {
         self.calls.set(self.calls.get() + 1);
         Ok(FetchBatch {
             messages: vec![self.message.clone()],
-            next_cursor: Some(self.cursor.clone()),
             skipped: 0,
         })
     }
 }
 
-/// Returns its message once, then nothing — the shape of a fetcher whose cursor
-/// has moved past the message.
+/// Returns its message once, then nothing — the shape of a fetcher that has no
+/// more mail to deliver.
 struct OnceOnlyFetcher {
     message: RawMessage,
-    cursor: serde_json::Value,
     used: Cell<bool>,
 }
 
@@ -297,10 +296,10 @@ impl OnceOnlyFetcher {
         Self {
             message: RawMessage::new(
                 "once:1",
+                LABEL,
                 "once:1",
                 email("one", "Rp 27.500", "Successful").into_bytes(),
             ),
-            cursor: serde_json::json!({ "history_id": "7" }),
             used: Cell::new(false),
         }
     }
@@ -319,7 +318,6 @@ impl Fetcher for OnceOnlyFetcher {
             } else {
                 vec![self.message.clone()]
             },
-            next_cursor: Some(self.cursor.clone()),
             skipped: 0,
         })
     }
@@ -358,35 +356,17 @@ impl Sink for FailingSink {
 }
 
 #[test]
-fn unmatched_messages_carry_subject_sender_and_reason() {
+fn a_message_under_an_unconfigured_label_is_reported() {
     let fixture = Fixture::new(&[("one", "Rp 27.500", "Successful")]);
-    std::fs::write(
-        fixture.mail_dir().join("promo.eml"),
-        "From: alerts@bank.example\r\n\
-         To: me@example.invalid\r\n\
-         Subject: Promo 20% cashback\r\n\
-         Date: Thu, 30 Oct 2026 10:00:00 +0700\r\n\
-         Message-ID: <promo@example.invalid>\r\n\
-         Content-Type: text/plain; charset=utf-8\r\n\
-         \r\n\
-         Not a transaction.\r\n",
-    )
-    .unwrap();
-
     let runner = fixture.runner();
-    let plan = runner
-        .plan(
-            &DirFetcher::new(fixture.mail_dir()),
-            FetchRequest::new(None),
-        )
-        .unwrap();
+    let fetcher = DirFetcher::labeled(fixture.mail_dir(), "abmx:missing");
+
+    let plan = runner.plan(&fetcher, FetchRequest::new(&labels())).unwrap();
 
     assert_eq!(plan.stats.unmatched, 1);
     let entry = &plan.unmatched[0];
-    assert_eq!(entry.subject.as_deref(), Some("Promo 20% cashback"));
-    assert_eq!(entry.from.as_deref(), Some("alerts@bank.example"));
-    assert_eq!(entry.reason, "no parser matched the sender or subject");
-    assert_eq!(entry.code.as_deref(), Some("no_match"));
+    assert_eq!(entry.code.as_deref(), Some("unmapped_label"));
+    assert!(entry.reason.contains("no [labels] entry"));
     assert_eq!(
         entry.date,
         Some(chrono::NaiveDate::from_ymd_opt(2026, 10, 30).unwrap())
@@ -399,21 +379,15 @@ fn fixing_the_mapping_reimports_queued_rows_without_a_reset() {
     let fetcher = OnceOnlyFetcher::new();
     let sink = FileSink::new(fixture.out_path());
 
-    let (parser, _) = abmx_parser::Parser::load(&abmx_parser::Options {
-        parsers: vec![fixture.dir.path().join("parsers")],
-        router: None,
-    })
-    .unwrap();
-
     let mut runner = Runner::new(
-        parser,
+        fixture.parser(),
         PolicyConfig::default(),
-        AccountMap::new(),
+        routes(""),
         State::open_in_memory().unwrap(),
     );
 
-    // First run: no mapping, so the row is queued and the cursor advances.
-    let plan = runner.plan(&fetcher, FetchRequest::new(None)).unwrap();
+    // First run: no mapping, so the row is queued.
+    let plan = runner.plan(&fetcher, FetchRequest::new(&labels())).unwrap();
     assert_eq!(plan.stats.review, 1);
     assert_eq!(plan.stats.import, 0);
     runner
@@ -421,11 +395,11 @@ fn fixing_the_mapping_reimports_queued_rows_without_a_reset() {
         .unwrap();
     assert_eq!(runner.state.review().unwrap().len(), 1);
 
-    // Fix the mapping. The fetcher now returns nothing: the message is behind
-    // the cursor, so only the stored review row can be re-decided.
-    runner.accounts.insert("test-account", "uuid-test");
+    // Fix the mapping. The fetcher now returns nothing, so only the stored
+    // review row can be re-decided.
+    runner.labels = routes("uuid-test");
 
-    let plan = runner.plan(&fetcher, FetchRequest::new(None)).unwrap();
+    let plan = runner.plan(&fetcher, FetchRequest::new(&labels())).unwrap();
     assert_eq!(plan.stats.fetched, 0);
     assert_eq!(plan.stats.recovered, 1);
     assert_eq!(plan.stats.import, 1);
@@ -448,10 +422,10 @@ fn fixing_the_mapping_reimports_queued_rows_without_a_reset() {
 fn diff_sees_rows_the_file_sink_already_has() {
     let fixture = Fixture::new(&[("one", "Rp 27.500", "Successful")]);
     let runner = fixture.runner();
-    let fetcher = DirFetcher::new(fixture.mail_dir());
+    let fetcher = fixture.fetcher();
     let sink = FileSink::new(fixture.out_path());
 
-    let plan = runner.plan(&fetcher, FetchRequest::new(None)).unwrap();
+    let plan = runner.plan(&fetcher, FetchRequest::new(&labels())).unwrap();
     runner
         .apply(&sink, &plan, &ApplyOptions::default())
         .unwrap();
@@ -469,35 +443,27 @@ fn diff_sees_rows_the_file_sink_already_has() {
 }
 
 #[test]
-fn a_failed_apply_does_not_advance_the_cursor() {
+fn a_failed_apply_does_not_mark_the_message_seen() {
     let fixture = Fixture::new(&[("one", "Rp 27.500", "Successful")]);
     let runner = fixture.runner();
     let fetcher = OnceFetcher::new();
 
-    let plan = runner.plan(&fetcher, FetchRequest::new(None)).unwrap();
+    let plan = runner.plan(&fetcher, FetchRequest::new(&labels())).unwrap();
 
     let error = runner
         .apply(&FailingSink::new(true), &plan, &ApplyOptions::default())
         .unwrap_err();
     assert!(error.to_string().contains("boom"));
-
-    // Nothing was delivered, so the checkpoint must not move.
-    assert!(runner.state.cursor("fake").unwrap().is_none());
     assert!(!runner.state.is_seen("fake:1").unwrap());
 
     let report = runner
         .apply(&FailingSink::new(false), &plan, &ApplyOptions::default())
         .unwrap();
     assert_eq!(report.added, 1);
-
-    assert_eq!(
-        runner.state.cursor("fake").unwrap().unwrap(),
-        serde_json::json!({ "history_id": "42" })
-    );
 }
 
 #[test]
-fn a_partial_failure_keeps_the_cursor_so_rows_can_be_retried() {
+fn a_partial_failure_only_records_the_rows_that_succeeded() {
     struct PartialSink;
 
     impl Sink for PartialSink {
@@ -529,13 +495,12 @@ fn a_partial_failure_keeps_the_cursor_so_rows_can_be_retried() {
     let runner = fixture.runner();
     let fetcher = OnceFetcher::new();
 
-    let plan = runner.plan(&fetcher, FetchRequest::new(None)).unwrap();
+    let plan = runner.plan(&fetcher, FetchRequest::new(&labels())).unwrap();
     let report = runner
         .apply(&PartialSink, &plan, &ApplyOptions::default())
         .unwrap();
 
     assert_eq!(report.errors.len(), 1);
-    assert!(runner.state.cursor("fake").unwrap().is_none());
-    // The one that succeeded is recorded; the failure is not.
+    // The one that failed is not recorded; a later run retries it.
     assert!(!runner.state.is_seen("fake:1").unwrap());
 }

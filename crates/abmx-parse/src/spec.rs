@@ -7,15 +7,13 @@ use abmx_tx::{Kind, Status};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-/// What a parser covers, for `abmx parser senders` and registry discovery.
+/// What a parser covers, for `abmx labels` and registry discovery.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SpecSummary {
     pub id: String,
     pub version: u32,
     pub bank: String,
-    pub account: String,
-    pub senders: Vec<String>,
-    pub subject: String,
+    pub kind: Kind,
     /// The `parsers/<id>/config.toml` file this came from.
     pub file: std::path::PathBuf,
 }
@@ -27,8 +25,6 @@ pub struct ParserSpec {
     pub version: u32,
     #[serde(default = "yes")]
     pub enabled: bool,
-    #[serde(rename = "match")]
-    pub matcher: MatchSpec,
     pub labels: LabelsSpec,
     pub defaults: Defaults,
     #[serde(default)]
@@ -44,27 +40,6 @@ fn yes() -> bool {
     true
 }
 
-/// How the router decides that this parser owns an email.
-///
-/// `requires` and `rejects` are the tie-breakers that let three different example
-/// journal layouts share a sender *and* a subject.
-#[derive(Debug, Clone, Deserialize)]
-pub struct MatchSpec {
-    pub senders: Vec<String>,
-    pub subject: String,
-    #[serde(default)]
-    pub requires: Vec<String>,
-    #[serde(default)]
-    pub rejects: Vec<String>,
-    /// Regexes that must match at least one block (for discriminators that are
-    /// not standalone label blocks, e.g. "Order ID 12345").
-    #[serde(default)]
-    pub contains: Vec<String>,
-    /// Regexes that must not match any block.
-    #[serde(default)]
-    pub excludes: Vec<String>,
-}
-
 /// Every constant label block in this template.
 ///
 /// The engine partitions the email's blocks on these, so this list must contain
@@ -77,7 +52,6 @@ pub struct LabelsSpec {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Defaults {
     pub bank: String,
-    pub account: String,
     pub currency: String,
     pub tz: String,
     pub kind: Kind,
@@ -152,16 +126,8 @@ pub struct SubField {
     pub locale: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StatusSource {
-    Subject,
-    Field,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct StatusSpec {
-    pub source: StatusSource,
     #[serde(default)]
     pub label: Option<String>,
     #[serde(default)]

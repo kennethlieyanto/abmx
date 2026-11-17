@@ -57,7 +57,7 @@ fn files() -> Vec<SkillFile> {
             content: format!(
                 r#"---
 name: abmx parser authoring
-description: Author or repair abmx-parser bank-email parser specs from .eml samples. Use when a bank email is unmatched, a new email format appears, or an existing template changes.
+description: Author or repair abmx-parser specs for `abmx:*` Gmail labels. Use when a label has no parser, or when the last three messages under a label fail verification.
 ---
 
 {marker}
@@ -66,6 +66,9 @@ description: Author or repair abmx-parser bank-email parser specs from .eml samp
 
 Read `references/spec-reference.md` before writing a spec. Read
 `references/verification.md` before interpreting `abmx verify` output.
+
+Routing is label-driven: a Gmail label `abmx:<id>` is mapped in `abmx.toml` to a
+parser and a ledger account. The parser never inspects sender or subject.
 
 {workflow}
 
@@ -90,29 +93,36 @@ Run a candidate parser directory (or its `config.toml`) against the samples
 before installing it:
 
 ```sh
-abmx verify parser <parser-dir> --id <bank.type> --input <samples>
-abmx verify parser <parser-dir> --id <bank.type> --input <samples> --json
+abmx verify parser <parser-dir> --id <parser-id> --input <samples>
+abmx verify parser <parser-dir> --id <parser-id> --input <samples> --json
 ```
 
 The directory holds `config.toml`. When `--input` is omitted, verify uses
 `<parser-dir>/fixtures/`.
 
-`verify` copies the candidate into a temporary corpus, loads it with the real
-abmx-parser engine, and runs every `.eml` in the input. It never touches the live
-corpus.
+`abmx author` takes the **last three** messages under a label. A parser is not
+done until all three are `strict`:
+
+```sh
+abmx verify parser <parser-dir> --id <parser-id>
+abmx verify parser --id <parser-id> --label abmx:<id>
+abmx parser check --parser <parser-id>
+abmx parser explain <one.eml> --parser <parser-id>
+abmx parser lint --parser <parser-id>
+```
 
 | Result | Meaning | Action |
 | --- | --- | --- |
 | `strict` | every declared field matched and the amount is non-zero | accept |
 | `heuristic` | parsed with warnings (usually a zero amount) | almost always the wrong region; fix the label or regex |
-| `unmatched` | the candidate did not claim the email | fix `[match]` sender/subject/requires |
-| `failed` | the candidate claimed the email but extraction errored | the error names the field |
+| `unmatched` / `missing` | the parser id is not in the corpus | fix the id or install the parser |
+| `failed` | extraction errored | `parser explain` names the region and field |
 
-Exit codes: `0` all strict, `3` at least one heuristic, `2` unmatched or failed,
-`1` the tool failed.
+Exit codes: `0` all strict, `3` at least one heuristic, `2` failed, `1` the tool
+failed.
 
-Use `abmx dump <file.eml>` to re-inspect blocks, and `abmx verify` after
-every edit. Do not install a draft that is not all `strict`.
+If the three samples are different templates, the label is mislabeled. Fix the
+Gmail label/filter; do not teach one parser to guess.
 "
             ),
         },
@@ -121,7 +131,7 @@ every edit. Do not install a draft that is not all `strict`.
             content: format!(
                 r#"---
 name: abmx parser install
-description: Install a verified parser into abmx and map its account key to a ledger account. Use after a parser draft verifies, or when a parser loads but rows stay in review.
+description: Install a verified parser and map an `abmx:*` Gmail label to a ledger account. Use after a parser verifies, or when a label reports missing_mapping.
 ---
 
 {marker}
@@ -135,29 +145,27 @@ Use this only after `abmx verify parser` reports `strict` for every sample.
    `./abmx.toml`.
 2. **Install the parser directory.** Copy `parsers/<id>/` — both `config.toml`
    and `fixtures/` — into one of the directories listed in `[general].parsers`,
-   or into `~/.config/abmx/parsers/`. The directory name **is** the parser id;
-   there is no `id` field in the spec. In this repository, `just install-parser
-   <id>` checks and copies it for you.
-3. **Confirm it loaded.** Run `abmx parsers`. The id must appear with the
-   correct account key and sender.
-4. **Map the account.**
-   - `[defaults].account` in the parser is a **key**, for example `example-account`.
-   - `[accounts]` in `abmx.toml` maps that key to the sink's account UUID.
-   - Run `abmx accounts --json` to list the sink's accounts.
-   - Ask the user which account this key belongs to. Never invent a UUID and
-     never put one in the parser file.
+   or into `~/.config/abmx/parsers/`. The directory name **is** the parser id.
+3. **Map the label.** Add one entry to `[labels]`:
+   ```toml
+   "abmx:<id>" = {{ parser = "<parser-id>", account = "<actual-account-uuid>" }}
+   ```
+   Run `abmx accounts --json` and ask the user which account to use. Never
+   invent a UUID.
+4. **Confirm the label exists in Gmail.** abmx is read-only and cannot create
+   labels. The user creates `abmx:<id>` and applies it, usually with a Gmail
+   filter. `abmx author` reports a missing Gmail label as `orphan_config`.
 5. **Validate end to end.**
    ```sh
+   abmx labels --check
+   abmx author --label abmx:<id>
    abmx doctor
-   abmx plan --from-dir <samples>
-   abmx sync --dry-run --from-dir <samples>
+   abmx sync --dry-run
    ```
-   Rows should be `import`, not `review`. A `review` row means the account key is
-   missing from `[accounts]`, the extraction is heuristic, or the policy rejected
-   the row.
-6. **Report** the installed path, the account key and its mapping, and the
-   verification result. Do not delete or rewrite an existing parser without
-   asking.
+   `abmx sync` refuses to run when a Gmail `abmx:*` label has no parser or
+   mapping, or when a labeled message does not parse `strict`.
+6. **Report** the installed path, the label mapping, and the verification
+   result. Do not delete or rewrite an existing parser without asking.
 
 See `references/config-and-accounts.md` for the mapping rules.
 "#
@@ -168,25 +176,32 @@ See `references/config-and-accounts.md` for the mapping rules.
             content: format!(
                 "{marker}
 
-# Account keys and mappings
+# Labels, parsers, and ledger accounts
 
-There are two names for the same account, deliberately:
+One label is the whole contract:
+
+```toml
+[labels]
+\"abmx:example-qris\" = {{ parser = \"example-qris\", account = \"<actual-account-uuid>\" }}
+```
 
 | Layer | Field | Example | Meaning |
 | --- | --- | --- | --- |
-| bank parser | `[defaults].account` | `example-account` | a stable, parser-side key |
-| abmx config | `[accounts]` | `\"example-account\" = \"<uuid>\"` | the sink's account id |
+| Gmail | label | `abmx:example-qris` | the user's explicit routing decision |
+| abmx config | `[labels].parser` | `example-qris` | the parser directory |
+| abmx config | `[labels].account` | `<uuid>` | the sink's account id |
 
 Rules:
 
-- The key is not a ledger identifier. It should be stable across parser
-  rewrites and readable by a human.
-- Reuse an existing key when the new parser covers the same real account.
-- A new bank account needs a new key and a new `[accounts]` entry.
+- Apply exactly one `abmx:*` label per tracked message.
+- A message with two `abmx:*` labels aborts the run: the routing is ambiguous.
+- A labeled message with no `[labels]` entry aborts the run.
+- A `[labels]` entry with no Gmail label is `orphan_config`; fix the label or the
+  entry.
 - The sink UUID comes from `abmx accounts`; never guess it.
-- An unmapped key is not an error: the policy sends those rows to review.
-  Mapping it imports them on the next sync, with no reset and no per-row
-  approval.
+- There is no `[accounts]` table and no `[defaults].account` in the parser.
+- A label whose last three samples are different templates is mislabeled. Fix
+  the Gmail label/filter; do not split it in the parser.
 "
             ),
         },

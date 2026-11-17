@@ -103,11 +103,11 @@ impl SkipReason {
     }
 }
 
-/// Mapping from `abmx-parser`'s parser-declared account key (`example-account`) to a sink's
-/// own account identity (an Actual account UUID).
+/// Mapping from a configured Gmail label (`abmx:example-qris`) to a sink's own
+/// account identity (an Actual account UUID).
 ///
-/// Kept as its own type so it is impossible to pass an unmapped key by accident
-/// and so `doctor` can enumerate what is missing.
+/// Kept as its own type so it is impossible to pass an unmapped label by
+/// accident and so `doctor` can enumerate what is missing.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AccountMap(BTreeMap<String, String>);
@@ -155,6 +155,44 @@ impl From<BTreeMap<String, String>> for AccountMap {
 impl FromIterator<(String, String)> for AccountMap {
     fn from_iter<T: IntoIterator<Item = (String, String)>>(iter: T) -> Self {
         Self(iter.into_iter().collect())
+    }
+}
+
+/// One `[labels]` entry: the parser that owns the label and the ledger account
+/// its rows belong to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LabelRoute {
+    pub parser: String,
+    pub account: String,
+}
+
+/// Label → route. The label is the only routing identity; there is no
+/// sender/subject inference.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct LabelRoutes(BTreeMap<String, LabelRoute>);
+
+impl std::ops::Deref for LabelRoutes {
+    type Target = BTreeMap<String, LabelRoute>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl LabelRoutes {
+    pub fn insert(&mut self, label: impl Into<String>, route: LabelRoute) -> Option<LabelRoute> {
+        self.0.insert(label.into(), route)
+    }
+
+    /// The account map the policy layer consumes. The key is the label, which
+    /// the runner writes into `Transaction.account`.
+    pub fn accounts(&self) -> AccountMap {
+        self.0
+            .iter()
+            .filter(|(_, route)| !route.account.trim().is_empty())
+            .map(|(label, route)| (label.clone(), route.account.clone()))
+            .collect()
     }
 }
 

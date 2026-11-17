@@ -38,7 +38,7 @@ a second process.
 
 ## Why not mirror the parser's stages?
 
-The parser has input → router → template → output because parsing is its hard
+The parser has input → label → template → output because parsing is its hard
 problem. The synchronizer's hard problem is different: **transport, identity, and
 state**. Copying the stages would give symmetry but the wrong abstraction —
 `abmx` never routes, and its "output" is not the product; the _write_ is.
@@ -46,7 +46,7 @@ state**. Copying the stages would give symmetry but the wrong abstraction —
 | Parser            | Sync                | Difference                                              |
 | ----------------- | ------------------- | ------------------------------------------------------- |
 | input             | **Fetcher**         | same role, transport varies per user                    |
-| router            | —                   | routing is parsing                                      |
+| label routing     | `[labels]`          | the user's label names the parser; no inference         |
 | parser spec       | `abmx-parser`       | not reimplemented                                       |
 | extraction result | `abmx-tx` contract  | the shared vocabulary between the halves                |
 | output schema     | **Policy → Sink**   | the decision and the write are separate                 |
@@ -70,8 +70,8 @@ pub trait Fetcher {
   per source.
 - **Bytes, not transactions.** A fetcher produces RFC 5322 bytes. Parsing is
   always the parser's job.
-- **Opaque cursor.** Gmail's is a `historyId`; a directory's is `None`. Typing it
-  as `serde_json::Value` keeps the trait object-safe and the state schema-free.
+- **Label-tagged messages.** Each `RawMessage` carries the `abmx:*` label that
+  selected it, so the caller chooses the parser from `[labels]` without guessing.
 
 ### Policy
 
@@ -114,7 +114,6 @@ SQLite, not a JSON blob:
 
 ```sql
 meta      (key, value)                       -- parser schema version, tool version
-cursors   (name, value, updated_at)          -- gmail historyId, per fetcher
 messages  (key, sink, tx_id, disposition, seen_at)
 review    (tx_id, message, reason, payload, created_at)
 ```
@@ -130,8 +129,8 @@ gone, remove the source (`abmx reset` forces the rebuild).
 
 ## Plan / apply
 
-`plan` reads the cursor and the delivered set; it never records progress. `apply`
-is the only writer. That split gives you, for free:
+`plan` reads the delivered set; it never records progress. `apply` is the only
+writer. That split gives you, for free:
 
 - `--dry-run` (print the plan, apply nothing),
 - review-before-write (`plan > plan.json`, inspect, then `apply --plan`),
@@ -142,25 +141,45 @@ is the only writer. That split gives you, for free:
 mailbox. It also carries `abmx_schema_version` and its own `PLAN_VERSION`; both
 are checked before applying.
 
-## Cursor discipline
+## Label discipline
 
-The rule: **advance the cursor only after every row in the batch succeeded.**
+There is no cursor. Every run lists the account's `abmx:*` labels, paginates the
+messages under each one, and lets the state database skip what was already
+delivered.
 
 ```
-fetch ──► parse ──► decide ──► plan ──► sink.apply ──┬─ all rows ok ──► save cursor
-                                                    └─ any error ─────► keep cursor
+list labels ──► validate [labels] ──► list messages per label
+      │                                      │
+      │ missing parser/account               ▼
+      └──────────── abort ─────────── fetch raw + tag label
+                                             │
+                                             ▼
+                               parse with the label's parser
+                                             │
+                              not strict ────┴──► abort the run
+                                             │
+                                             ▼
+                                   decide ──► apply
 ```
 
-A crash or a partial failure re-fetches a handful of messages. The state database
-skips what already landed, and an idempotent sink would ignore duplicates anyway.
-Advancing early would silently drop mail — the wrong failure mode.
+Why this is safer than a cursor:
 
-For Gmail specifically:
+- Mail labeled late is picked up on the next run; a cursor would have skipped it.
+- A partial failure leaves the failed message unseen, so it is retried.
+- An unmapped Gmail label, a missing parser, or a message carrying two labels
+  aborts the run instead of silently importing noise or skipping it.
+- A cap is a hard error, never a silent truncation.
 
-- A full sync reads `profile.historyId` **before** listing, so anything arriving
-  during the listing appears in the next `history.list`.
-- A truncated batch does not advance the cursor at all.
-- An expired history window (404) falls back to a full sync.
+The cost is listing message ids per label on every run. That is cheap; raw
+bodies are fetched only for messages the state has not seen.
+
+## Adding a fetcher
+
+1. New crate, `abmx-<name>`, depend on `abmx-core`.
+2. Implement `Fetcher`. Return `RawMessage`s with a stable key prefixed by the
+   transport (`imap:<uid>`, `dir:<name>`) and the `abmx:*` label that selected
+   them, so keys never collide in shared state.
+3. Add a builder in `abmx/src/config.rs` and one arm in `build_fetcher`.
 
 ## Adding a fetcher
 

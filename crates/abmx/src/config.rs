@@ -1,10 +1,9 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use abmx_actual::{ActualConfig, ActualSink, ClearedPolicy, NotesConfig};
-use abmx_core::{AccountMap, PolicyConfig, Sink};
+use abmx_core::{AccountMap, LabelRoute, LabelRoutes, PolicyConfig, Sink};
 use abmx_file::FileSink;
-use abmx_gmail::{build_query, GmailConfig, GmailFetcher};
+use abmx_gmail::{GmailConfig, GmailFetcher};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
@@ -18,9 +17,9 @@ pub struct Config {
     pub fetch: FetchSection,
     #[serde(default)]
     pub sink: SinkSection,
-    /// `abmx-parser` account key → sink account id. Never inferred.
+    /// Gmail label → parser + ledger account. The label is the routing identity.
     #[serde(default)]
-    pub accounts: BTreeMap<String, String>,
+    pub labels: LabelRoutes,
     #[serde(default)]
     pub policy: PolicyConfig,
 }
@@ -31,8 +30,6 @@ pub struct General {
     /// implicit discovery (XDG, `/etc`).
     #[serde(default)]
     pub parsers: Vec<PathBuf>,
-    #[serde(default)]
-    pub router: Option<PathBuf>,
     /// SQLite state file. Defaults to `$XDG_STATE_HOME/abmx/state.db`.
     #[serde(default)]
     pub state: Option<PathBuf>,
@@ -54,13 +51,7 @@ pub struct GmailSection {
     /// Where the refresh token lives. Defaults to the XDG state directory.
     #[serde(default)]
     pub token: Option<PathBuf>,
-    /// Appended to the query built from the parser corpus.
-    #[serde(default)]
-    pub query_extra: Option<String>,
-    #[serde(default)]
-    pub lookback_days: Option<u32>,
-    #[serde(default)]
-    pub labels: Vec<String>,
+    /// Hard cap. Exceeding it is an error, never a silent truncation.
     #[serde(default)]
     pub max_messages: Option<usize>,
     /// Loopback port for `abmx auth gmail`; `0` picks one.
@@ -124,7 +115,14 @@ impl Config {
     }
 
     pub fn account_map(&self) -> AccountMap {
-        AccountMap::from(self.accounts.clone())
+        self.labels.accounts()
+    }
+
+    /// The labels that are enabled and therefore need a parser and an account.
+    pub fn active_labels(&self) -> impl Iterator<Item = (&str, &LabelRoute)> {
+        self.labels
+            .iter()
+            .map(|(label, route)| (label.as_str(), route))
     }
 
     pub fn state_path(&self, base: &Path) -> PathBuf {
@@ -143,11 +141,6 @@ impl Config {
                 .iter()
                 .map(|path| paths::resolve_path(base, path))
                 .collect(),
-            router: self
-                .general
-                .router
-                .as_ref()
-                .map(|path| paths::resolve_path(base, path)),
         }
     }
 
@@ -242,9 +235,9 @@ impl Config {
             .max(1)
     }
 
-    /// Build the Gmail fetcher. `senders` comes from the loaded `abmx-parser` corpus, so
-    /// there is exactly one list of bank addresses in the system.
-    pub fn build_gmail(&self, base: &Path, senders: &[String]) -> Result<GmailFetcher> {
+    /// Build the Gmail fetcher. Routing comes from `[labels]`, not from the
+    /// parser corpus.
+    pub fn build_gmail(&self, base: &Path) -> Result<GmailFetcher> {
         let Some(gmail) = &self.fetch.gmail else {
             bail!("no fetcher configured: add [fetch.gmail] or use --from-dir");
         };
@@ -252,15 +245,9 @@ impl Config {
         let client_secret = self.gmail_client_secret(base)?;
         let token_path = self.gmail_token_path(base);
 
-        let lookback_days = gmail.lookback_days.unwrap_or(7);
-        let query = build_query(senders, lookback_days, gmail.query_extra.as_deref());
-
         let mut config = GmailConfig::new(&gmail.client_id, token_path);
         config.client_secret = client_secret;
-        config.query = query;
-        config.labels = gmail.labels.clone();
-        config.lookback_days = lookback_days;
-        config.max_messages = gmail.max_messages.unwrap_or(abmx_core::DEFAULT_LIMIT);
+        config.max_messages = gmail.max_messages.unwrap_or(10_000);
 
         GmailFetcher::new(config).map_err(Into::into)
     }
@@ -293,11 +280,8 @@ parsers = []
 client_id = "REPLACE.apps.googleusercontent.com"
 # client_secret_file = "/run/credentials/abmx.service/gmail-secret"
 # token = "~/.local/state/abmx/gmail-credentials.json"
-lookback_days = 7
-# Appended to the query abmx builds from the parser corpus.
-# query_extra = "-label:abmx-ignored"
-# labels = ["INBOX"]
-max_messages = 200
+# Hard cap. Exceeding it is an error, not a silent truncation.
+max_messages = 10000
 
 [sink.actual]
 url = "http://localhost:5007"
@@ -312,11 +296,13 @@ cleared = "never"
 # recreates rows you deleted. false makes ledger deletions permanent.
 # reimport_deleted = true
 
-# Map the parser's account keys to Actual account UUIDs.
-# Run `abmx accounts` to see what Actual calls them.
-[accounts]
-# "example-account" = "00000000-0000-0000-0000-000000000000"
-# "wallet-account" = "00000000-0000-0000-0000-000000000000"
+# Gmail label → parser + Actual account UUID.
+# Apply exactly one `abmx:*` label per tracked message, e.g. with a Gmail filter.
+# A labeled message with no entry here aborts `abmx sync`; nothing is guessed.
+# Run `abmx accounts` to see what Actual calls the accounts.
+[labels]
+# "abmx:example-qris" = { parser = "example-qris", account = "00000000-0000-0000-0000-000000000000" }
+# "abmx:grab"     = { parser = "grab",     account = "00000000-0000-0000-0000-000000000000" }
 
 [policy]
 # heuristic = "review"   # review | import | skip

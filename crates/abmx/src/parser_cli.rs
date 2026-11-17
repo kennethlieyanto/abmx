@@ -4,20 +4,18 @@
 //! code tells a pipeline whether to trust the result.
 //!
 //!   0  every input produced a strict transaction
-//!   2  at least one email was unmatched or failed to parse
+//!   2  at least one email failed to parse
 //!   3  at least one transaction was heuristic (unless --allow-heuristic)
 //!   1  the tool itself failed
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use abmx_parse::Outcome;
-use abmx_tx::{Money, Transaction};
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand, ValueEnum};
 
-const EXIT_UNMATCHED: i32 = 2;
+const EXIT_FAILED: i32 = 2;
 const EXIT_HEURISTIC: i32 = 3;
 
 #[derive(Args)]
@@ -25,10 +23,6 @@ pub struct ParserCli {
     /// Parser directory. Repeat to layer a local override over a base corpus.
     #[arg(long, global = true, action = clap::ArgAction::Append)]
     parsers: Vec<PathBuf>,
-
-    /// Router policy file. Defaults to `router.toml` inside the first parser directory.
-    #[arg(long, global = true)]
-    router: Option<PathBuf>,
 
     #[command(subcommand)]
     command: ParserCommand,
@@ -40,20 +34,17 @@ pub enum ParserCommand {
     Parse {
         path: PathBuf,
 
+        /// Parser id. Labels choose this in `abmx sync`; here it is explicit.
+        #[arg(long, value_name = "ID")]
+        parser: String,
+
         #[arg(long, value_enum, default_value_t = Format::Json)]
         format: Format,
-
-        /// Only emit transactions for this account key (e.g. example-account).
-        #[arg(long)]
-        account: Option<String>,
 
         /// Exit 0 even when heuristic transactions are present.
         #[arg(long)]
         allow_heuristic: bool,
     },
-
-    /// Explain which parser claims an email, and why.
-    Route { path: PathBuf },
 
     /// Print the JSON Schema of the transaction contract.
     Schema,
@@ -66,13 +57,7 @@ pub enum ParserCommand {
 
     /// List the loaded parsers and the file each came from.
     Specs {
-        #[arg(long, value_enum, default_value_t = Format::Json)]
-        format: Format,
-    },
-
-    /// List the sender addresses the resolved corpus covers.
-    Senders {
-        #[arg(long, value_enum, default_value_t = Format::Plain)]
+        #[arg(long, value_enum, default_value_t = Format::Table)]
         format: Format,
     },
 
@@ -88,25 +73,24 @@ pub enum ParserCommand {
         json: bool,
     },
 
-    /// Summarise how a directory of emails is parsed.
-    Corpus {
-        #[arg(long, default_value = "sample")]
-        dir: PathBuf,
+    /// Show the block regions a parser will see, without guessing.
+    Explain {
+        path: PathBuf,
+
+        #[arg(long, value_name = "ID")]
+        parser: String,
+    },
+
+    /// Static checks for the common spec mistakes.
+    Lint {
+        #[arg(long, value_name = "ID")]
+        parser: Option<String>,
     },
 
     /// Scaffold parsers/<id>/config.toml and parsers/<id>/fixtures/.
     Init {
-        /// Parser id, e.g. example.card_debit. It becomes the directory name.
+        /// Parser id, e.g. example-qris. It becomes the directory name.
         id: String,
-    },
-
-    /// Draft a parser spec from a directory of emails.
-    Infer {
-        dir: PathBuf,
-
-        /// Parser id to put in the draft.
-        #[arg(long)]
-        id: Option<String>,
     },
 }
 
@@ -119,54 +103,39 @@ pub enum Format {
 }
 
 pub fn run(cli: ParserCli) -> Result<i32> {
-    let ParserCli {
-        parsers,
-        router,
-        command,
-    } = cli;
-
-    let options = abmx_parser::Options { parsers, router };
+    let ParserCli { parsers, command } = cli;
+    let options = abmx_parser::Options { parsers };
 
     match command {
-        ParserCommand::Route { path } => {
-            let (parser, _) = load(&options)?;
-            let email = read_email(&path)?;
-            route(&parser, &email);
-            Ok(0)
-        }
         ParserCommand::Parse {
             path,
+            parser,
             format,
-            account,
             allow_heuristic,
         } => {
-            let (parser, _) = load(&options)?;
-            parse(&parser, &path, format, account.as_deref(), allow_heuristic)
+            let (corpus, _) = load(&options)?;
+            parse(&corpus, &parser, &path, format, allow_heuristic)
+        }
+        ParserCommand::Schema => {
+            println!("{}", serde_json::to_string_pretty(&abmx_parser::schema())?);
+            Ok(0)
+        }
+        ParserCommand::Paths { json } => paths(&options, json),
+        ParserCommand::Specs { format } => {
+            let (corpus, _) = load(&options)?;
+            specs(&corpus, format)
         }
         ParserCommand::Check {
             parser,
             verbose,
             json,
         } => check(&options, parser.as_deref(), verbose, json),
-        ParserCommand::Corpus { dir } => {
-            let (parser, _) = load(&options)?;
-            corpus(&parser, &dir)
+        ParserCommand::Explain { path, parser } => {
+            let (corpus, _) = load(&options)?;
+            explain(&corpus, &parser, &path)
         }
-        ParserCommand::Senders { format } => {
-            let (parser, _) = load(&options)?;
-            senders(&parser, format)
-        }
-        ParserCommand::Paths { json } => paths(&options, json),
-        ParserCommand::Specs { format } => {
-            let (parser, _) = load(&options)?;
-            specs(&parser, format)
-        }
-        ParserCommand::Schema => {
-            println!("{}", serde_json::to_string_pretty(&abmx_parser::schema())?);
-            Ok(0)
-        }
-        ParserCommand::Init { id } => init(&id, options.parsers.first().map(|path| path.as_path())),
-        ParserCommand::Infer { dir, id } => infer(&dir, id.as_deref()),
+        ParserCommand::Lint { parser } => lint(&options, parser.as_deref()),
+        ParserCommand::Init { id } => init(&id, options.parsers.first().map(PathBuf::as_path)),
     }
 }
 
@@ -182,163 +151,64 @@ fn load(options: &abmx_parser::Options) -> Result<(abmx_parser::Parser, abmx_par
                     .collect::<Vec<_>>()
                     .join(", ")
             };
-            anyhow::anyhow!(
-                "no parser specs found; tried {tried}\n  pass --parsers <dir> or set {}=<dir>",
-                abmx_parser::ENV_PARSERS
-            )
+            anyhow::anyhow!("no parser specs found; looked in {tried}")
         }
-        other => anyhow::Error::new(other),
+        other => anyhow::anyhow!("{other}"),
     })?;
-
-    for shadow in &parser.registry().shadows {
-        eprintln!(
-            "abmx: {} is shadowed by {}",
-            shadow.skipped.display(),
-            shadow.winner.display()
-        );
-    }
-
     Ok((parser, discovery))
 }
 
-fn read_email(path: &Path) -> Result<abmx_tx::NormalizedEmail> {
-    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    abmx_parser::parse_eml(&bytes, Some(path.display().to_string()))
-        .map_err(|error| anyhow::anyhow!("{}: {error}", path.display()))
-}
-
-fn route(parser: &abmx_parser::Parser, email: &abmx_tx::NormalizedEmail) {
-    let result = parser.registry().route(email);
-
-    println!("email:   {} / {}", email.from.email, email.subject);
-    println!("candidates:");
-    for candidate in &result.candidates {
-        let marker = if candidate.eligible() { "*" } else { " " };
-        println!(
-            " {marker} {:<26} sender={:<5} subject={:<5} requires={}/{} rejects={} contains={} excludes={}",
-            candidate.id,
-            candidate.sender,
-            candidate.subject,
-            candidate.requires_matched,
-            candidate.requires_total,
-            candidate.rejects_clear,
-            candidate.contains_ok,
-            candidate.excludes_ok
-        );
-    }
-
-    match result.parser {
-        Some(index) => println!(
-            "=> {} ({})",
-            parser.registry().parsers[index].id,
-            result.reason.as_str()
-        ),
-        None => println!("=> none ({})", result.reason.as_str()),
-    }
-}
-
 fn parse(
-    parser: &abmx_parser::Parser,
+    corpus: &abmx_parser::Parser,
+    id: &str,
     path: &Path,
     format: Format,
-    account: Option<&str>,
     allow_heuristic: bool,
 ) -> Result<i32> {
-    let results = parser
-        .parse_path(path)
+    let results = corpus
+        .parse_path_with(id, path, "cli")
         .with_context(|| format!("parsing {}", path.display()))?;
 
-    let mut transactions = Vec::new();
-    let mut unmatched = 0usize;
-    let mut failed = 0usize;
     let mut heuristic = 0usize;
+    let mut failed = 0usize;
 
     for (file, outcome) in &results {
         match outcome {
             Outcome::Parsed(transaction) => {
-                if let Some(account) = account {
-                    if transaction.account != account {
-                        continue;
-                    }
-                }
-                if transaction.extraction == abmx_tx::Extraction::Heuristic {
+                if transaction.extraction == abmx_parser::Extraction::Heuristic {
                     heuristic += 1;
-                    eprintln!(
-                        "abmx: heuristic: {} ({})",
-                        file.display(),
-                        transaction.warnings.join("; ")
-                    );
                 }
-                transactions.push(transaction.as_ref().clone());
+                match format {
+                    Format::Json => println!("{}", serde_json::to_string_pretty(transaction)?),
+                    Format::Ndjson => println!("{}", serde_json::to_string(transaction)?),
+                    Format::Table => println!(
+                        "{:<8} {:<20} {:>12} {}",
+                        transaction.occurred_on,
+                        transaction.counterparty.as_deref().unwrap_or("-"),
+                        transaction.amount.decimal(),
+                        transaction.amount.currency
+                    ),
+                    Format::Plain => println!("{}", serde_json::to_string(transaction)?),
+                }
             }
-            Outcome::Unmatched(reason) => {
-                unmatched += 1;
-                eprintln!("abmx: unmatched: {} ({reason})", file.display());
+            Outcome::Missing(parser) => {
+                failed += 1;
+                eprintln!("{}: parser `{parser}` is not in the corpus", file.display());
             }
             Outcome::Failed { parser, error } => {
                 failed += 1;
-                eprintln!("abmx: failed: {} ({parser}: {error})", file.display());
+                eprintln!("{}: {parser}: {error}", file.display());
             }
         }
     }
 
-    emit(&transactions, format)?;
-
-    let code = if unmatched + failed > 0 {
-        EXIT_UNMATCHED
+    if failed > 0 {
+        Ok(EXIT_FAILED)
     } else if heuristic > 0 && !allow_heuristic {
-        EXIT_HEURISTIC
+        Ok(EXIT_HEURISTIC)
     } else {
-        0
-    };
-
-    Ok(code)
-}
-
-fn emit(transactions: &[Transaction], format: Format) -> Result<()> {
-    let stdout = std::io::stdout();
-    let mut out = stdout.lock();
-
-    match format {
-        Format::Json => {
-            serde_json::to_writer_pretty(&mut out, transactions)?;
-            writeln!(out)?;
-        }
-        Format::Ndjson => {
-            for transaction in transactions {
-                serde_json::to_writer(&mut out, transaction)?;
-                writeln!(out)?;
-            }
-        }
-        Format::Table => {
-            writeln!(
-                out,
-                "{:<24} {:<11} {:<13} {:>16} {:<10} {:<28} {:<10} REF",
-                "PARSER", "DATE", "KIND", "AMOUNT", "ACCOUNT", "COUNTERPARTY", "STATUS"
-            )?;
-            for transaction in transactions {
-                writeln!(
-                    out,
-                    "{:<24} {:<11} {:<13} {:>16} {:<10} {:<28} {:<10} {}",
-                    transaction.parser,
-                    transaction.occurred_on,
-                    transaction.kind.as_str(),
-                    money(&transaction.amount),
-                    truncate(&transaction.account, 10),
-                    truncate(transaction.counterparty.as_deref().unwrap_or("-"), 28),
-                    transaction.status.as_str(),
-                    transaction.reference_id.as_deref().unwrap_or("-"),
-                )?;
-            }
-        }
-        Format::Plain => {
-            for transaction in transactions {
-                writeln!(out, "{}", transaction.id)?;
-            }
-        }
+        Ok(0)
     }
-
-    Ok(())
 }
 
 fn check(
@@ -347,760 +217,363 @@ fn check(
     verbose: bool,
     json: bool,
 ) -> Result<i32> {
-    let (parser, discovery) = load(options)?;
+    let (corpus, _) = load(options)?;
+    let summaries = corpus.registry().summaries();
+    let ids: Vec<&str> = summaries
+        .iter()
+        .map(|summary| summary.id.as_str())
+        .filter(|id| only.is_none_or(|only| only == *id))
+        .collect();
 
-    let mut failures: Vec<String> = Vec::new();
-    let mut checked = 0usize;
+    if ids.is_empty() {
+        bail!("no parser matched --parser");
+    }
 
-    for (index, entry) in parser.registry().parsers.iter().enumerate() {
-        let id = &entry.id;
-        if let Some(only) = only {
-            if only != id {
-                continue;
-            }
-        }
+    let mut rows = Vec::new();
+    let mut strict = 0usize;
+    let mut heuristic = 0usize;
+    let mut failures = 0usize;
 
-        // Fixtures live next to the spec: parsers/<id>/fixtures/*.eml.
-        let fixtures = entry
+    for id in ids {
+        let Some(parser) = corpus.registry().find(id) else {
+            continue;
+        };
+        let fixtures = parser
             .source_file
             .parent()
             .map(|dir| dir.join("fixtures"))
             .unwrap_or_default();
-        let files = files_with_extension(&fixtures, "eml");
-
-        if files.is_empty() {
-            failures.push(format!(
-                "{id}: no fixtures in {} (spec: {})",
-                fixtures.display(),
-                entry.source_file.display()
-            ));
+        if !fixtures.is_dir() {
+            failures += 1;
+            rows.push(serde_json::json!({
+                "parser": id,
+                "fixtures": fixtures.display().to_string(),
+                "status": "missing_fixtures",
+            }));
             continue;
         }
-
-        for file in files {
-            checked += 1;
-            let bytes = std::fs::read(&file)?;
-            let email = abmx_parser::parse_eml(&bytes, Some(file.display().to_string()))?;
-
-            let result = parser.registry().route(&email);
-            if result.parser != Some(index) {
-                let actual = result
-                    .parser
-                    .map(|found| parser.registry().parsers[found].id.as_str())
-                    .unwrap_or("none");
-                failures.push(format!(
-                    "{id}: {} routed to {actual} ({})",
-                    file.display(),
-                    result.reason.as_str()
-                ));
-                continue;
-            }
-
-            match parser.registry().run(&email) {
+        let results = corpus
+            .parse_path_with(id, &fixtures, "check")
+            .with_context(|| format!("parsing {}", fixtures.display()))?;
+        for (file, outcome) in results {
+            let (status, detail) = match outcome {
                 Outcome::Parsed(transaction) => {
-                    if !transaction.warnings.is_empty() {
-                        failures.push(format!(
-                            "{id}: {}: {}",
-                            file.display(),
-                            transaction.warnings.join("; ")
-                        ));
-                    } else if verbose {
-                        println!(
-                            "ok   {id}: {:<14} {} {} {} {}",
-                            file.file_name()
-                                .and_then(|name| name.to_str())
-                                .unwrap_or("?"),
-                            transaction.occurred_on,
-                            money(&transaction.amount),
-                            transaction.kind.as_str(),
-                            transaction.counterparty.as_deref().unwrap_or("-")
-                        );
-                    }
+                    let status = match transaction.extraction {
+                        abmx_parser::Extraction::Strict => {
+                            strict += 1;
+                            "strict"
+                        }
+                        abmx_parser::Extraction::Heuristic => {
+                            heuristic += 1;
+                            "heuristic"
+                        }
+                        abmx_parser::Extraction::Failed => {
+                            failures += 1;
+                            "failed"
+                        }
+                    };
+                    (status, transaction.warnings.join("; "))
+                }
+                Outcome::Missing(parser) => {
+                    failures += 1;
+                    ("failed", format!("parser `{parser}` missing"))
                 }
                 Outcome::Failed { error, .. } => {
-                    failures.push(format!("{id}: {}: {error}", file.display()))
+                    failures += 1;
+                    ("failed", error)
                 }
-                Outcome::Unmatched(reason) => {
-                    failures.push(format!("{id}: {}: {reason}", file.display()))
-                }
+            };
+            if verbose && detail.is_empty() {
+                eprintln!("{}: {id} -> {status}", file.display());
+            } else if !detail.is_empty() {
+                eprintln!("{}: {id} -> {status}: {detail}", file.display());
             }
-        }
-    }
-
-    // A parser directory with no spec means the spec was removed or renamed.
-    // Only meaningful for a full run, not `--parser <id>`.
-    if only.is_none() {
-        for root in &discovery.dirs {
-            for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
-                if !entry.path().is_dir() {
-                    continue;
-                }
-                let id = entry.file_name().to_string_lossy().to_string();
-                if parser.registry().find(&id).is_none() {
-                    failures.push(format!(
-                        "{id}: directory has no config.toml (expected {})",
-                        entry.path().join("config.toml").display()
-                    ));
-                }
-            }
+            rows.push(serde_json::json!({
+                "parser": id,
+                "file": file.display().to_string(),
+                "status": status,
+                "detail": detail,
+            }));
         }
     }
 
     if json {
-        let report = serde_json::json!({
-            "schema_version": abmx_parser::SCHEMA_VERSION,
-            "checked": checked,
-            "parsers": parser.registry().parsers.len(),
-            "dirs": discovery.dirs,
-            "failures": failures,
-            "ok": failures.is_empty(),
-        });
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else if failures.is_empty() {
-        println!("ok: {checked} fixtures parsed and routed correctly");
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "strict": strict,
+                "heuristic": heuristic,
+                "failures": failures,
+                "samples": rows,
+            }))?
+        );
+    } else if failures == 0 && heuristic == 0 {
+        println!("ok: {strict} fixtures parsed and routed correctly");
     } else {
-        for failure in &failures {
-            println!("FAIL {failure}");
-        }
+        println!("{strict} strict, {heuristic} heuristic, {failures} failure(s)");
     }
 
-    Ok(if failures.is_empty() {
+    Ok(if failures > 0 {
+        EXIT_FAILED
+    } else if heuristic > 0 {
+        EXIT_HEURISTIC
+    } else {
         0
-    } else {
-        EXIT_UNMATCHED
-    })
-}
-
-fn corpus(parser: &abmx_parser::Parser, dir: &Path) -> Result<i32> {
-    let results = parser
-        .parse_path(dir)
-        .with_context(|| format!("parsing {}", dir.display()))?;
-
-    let mut by_parser: BTreeMap<String, (usize, i64)> = BTreeMap::new();
-    let mut unmatched = Vec::new();
-    let mut failed = Vec::new();
-    let mut warnings = Vec::new();
-    let mut ids: BTreeMap<String, PathBuf> = BTreeMap::new();
-    let mut duplicates = 0usize;
-
-    for (file, outcome) in &results {
-        if let Outcome::Parsed(transaction) = outcome {
-            if let Some(message_id) = &transaction.source.message_id {
-                if ids.insert(message_id.clone(), file.clone()).is_some() {
-                    duplicates += 1;
-                }
-            }
-            let entry = by_parser
-                .entry(transaction.parser.clone())
-                .or_insert((0, 0));
-            entry.0 += 1;
-            entry.1 += transaction.amount.amount_minor;
-            for warning in &transaction.warnings {
-                warnings.push(format!("{}: {warning}", file.display()));
-            }
-        }
-    }
-
-    for (file, outcome) in &results {
-        match outcome {
-            Outcome::Unmatched(reason) => unmatched.push(format!("{}: {reason}", file.display())),
-            Outcome::Failed { parser, error } => {
-                failed.push(format!("{}: {parser}: {error}", file.display()))
-            }
-            Outcome::Parsed(transaction) => {
-                if let Some(route) = parser
-                    .registry()
-                    .route(&read_email(file)?)
-                    .parser
-                    .map(|index| parser.registry().parsers[index].id.clone())
-                {
-                    debug_assert_eq!(route, transaction.parser);
-                }
-            }
-        }
-    }
-
-    println!("corpus: {} emails", results.len());
-    println!();
-    println!("{:<26} {:>6} {:>18}", "PARSER", "COUNT", "TOTAL (minor)");
-    for (id, (count, total)) in &by_parser {
-        println!("{id:<26} {count:>6} {total:>18}");
-    }
-    for (title, lines) in [
-        ("unmatched", &unmatched),
-        ("failed", &failed),
-        ("warnings", &warnings),
-    ] {
-        if lines.is_empty() {
-            continue;
-        }
-        println!("\n{title} ({}):", lines.len());
-        for line in lines {
-            println!("  {line}");
-        }
-    }
-    if duplicates > 0 {
-        println!("\nduplicate Message-IDs: {duplicates}");
-    }
-
-    Ok(if unmatched.is_empty() && failed.is_empty() {
-        0
-    } else {
-        EXIT_UNMATCHED
     })
 }
 
 fn paths(options: &abmx_parser::Options, json: bool) -> Result<i32> {
     let discovery = abmx_parser::discover(options);
-    let env = std::env::var(abmx_parser::ENV_PARSERS)
-        .ok()
-        .filter(|value| !value.is_empty());
-
     if json {
-        let candidates: Vec<_> = discovery
+        let rows: Vec<serde_json::Value> = discovery
             .candidates
             .iter()
             .map(|candidate| {
                 serde_json::json!({
-                    "path": candidate.path,
+                    "path": candidate.path.display().to_string(),
                     "source": candidate.source,
                     "exists": candidate.exists,
                     "has_specs": candidate.has_specs,
-                    "used": discovery.dirs.contains(&candidate.path),
                     "status": discovery.status(candidate),
                 })
             })
             .collect();
-
-        let report = serde_json::json!({
-            "candidates": candidates,
-            "dirs": discovery.dirs,
-            "router": discovery.router,
-            "router_source": discovery.router_source,
-            "env_parsers": abmx_parser::ENV_PARSERS,
-            "env_parsers_value": env,
-            "env_router": abmx_parser::ENV_ROUTER,
-            "note": discovery.note(),
-        });
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        println!("{}", serde_json::to_string_pretty(&rows)?);
     } else {
         println!("{}", discovery.describe());
-
-        match &env {
-            Some(value) => println!(
-                "\nenv: {}={value} ({})",
-                abmx_parser::ENV_PARSERS,
-                if discovery.dirs.len() > 1 {
-                    "merged"
-                } else {
-                    "used"
-                }
-            ),
-            None => println!("\nenv: {} unset", abmx_parser::ENV_PARSERS),
-        }
-
-        match &discovery.router {
-            Some(router) => println!(
-                "router: {} ({})",
-                router.display(),
-                discovery.router_source.unwrap_or("?")
-            ),
-            None => println!("router: built-in defaults"),
-        }
-
         if let Some(note) = discovery.note() {
             println!("{note}");
         }
     }
-
-    Ok(if discovery.dirs.is_empty() {
-        EXIT_UNMATCHED
-    } else {
-        0
-    })
+    Ok(0)
 }
 
-fn specs(parser: &abmx_parser::Parser, format: Format) -> Result<i32> {
-    let summaries = parser.registry().summaries();
-
+fn specs(corpus: &abmx_parser::Parser, format: Format) -> Result<i32> {
     match format {
-        Format::Json => println!("{}", serde_json::to_string_pretty(&summaries)?),
+        Format::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&corpus.registry().summaries())?
+        ),
+        Format::Ndjson => {
+            for summary in corpus.registry().summaries() {
+                println!("{}", serde_json::to_string(&summary)?);
+            }
+        }
         Format::Table => {
-            println!("{:<26} {:>3}  {:<16} FILE", "PARSER", "VER", "ACCOUNT");
-            for summary in &summaries {
+            println!("{:<24} {:<4} {:<10} kind", "parser", "ver", "bank");
+            for summary in corpus.registry().summaries() {
                 println!(
-                    "{:<26} {:>3}  {:<16} {}",
-                    summary.id,
-                    summary.version,
-                    summary.account,
-                    summary.file.display()
+                    "{:<24} {:<4} {:<10} {:?}",
+                    summary.id, summary.version, summary.bank, summary.kind
                 );
             }
         }
-        _ => {
-            for summary in &summaries {
-                println!("{}\t{}", summary.id, summary.file.display());
+        Format::Plain => {
+            for summary in corpus.registry().summaries() {
+                println!("{}", summary.id);
             }
         }
     }
-
     Ok(0)
 }
 
-fn senders(parser: &abmx_parser::Parser, format: Format) -> Result<i32> {
-    let mut senders: BTreeSet<String> = BTreeSet::new();
-    for summary in parser.registry().summaries() {
-        senders.extend(summary.senders);
-    }
+fn explain(corpus: &abmx_parser::Parser, id: &str, path: &Path) -> Result<i32> {
+    let Some(parser) = corpus.registry().find(id) else {
+        bail!("no parser `{id}` in the corpus");
+    };
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let email = abmx_parser::parse_eml(&bytes, Some(path.display().to_string()))?;
+    let regions = abmx_parse::Regions::build(&email.blocks, &parser.spec.labels.list);
 
-    match format {
-        Format::Json => println!("{}", serde_json::to_string_pretty(&senders)?),
-        _ => {
-            for sender in &senders {
-                println!("{sender}");
-            }
+    println!("file:    {}", path.display());
+    println!("parser:  {id}");
+    println!("from:    {}", email.from.email);
+    println!("subject: {}", email.subject);
+    println!("date:    {}", email.date.to_rfc3339());
+    println!();
+
+    for label in &parser.spec.labels.list {
+        match regions.get(label) {
+            Some(blocks) => println!("{:<28} [{}]", label, blocks.join(" · ")),
+            None => println!("{:<28} (label not present)", label),
         }
     }
 
+    println!();
+    println!("fields:");
+    println!("  amount        <- {:?}", parser.spec.extract.amount.label);
+    if let Some(label) = &parser.spec.extract.occurred_at.label {
+        println!("  occurred_at   <- {label:?}");
+    }
+    if let Some(date) = &parser.spec.extract.occurred_at.date {
+        println!("  occurred_at   <- date {:?}", date.label);
+    }
+    if let Some(counterparty) = &parser.spec.extract.counterparty {
+        println!("  counterparty  <- {:?}", counterparty.label);
+    }
+    if let Some(list) = &parser.spec.status {
+        println!("  status        <- {:?}", list.label);
+    }
+
     Ok(0)
 }
 
-fn init(id: &str, parsers_root: Option<&Path>) -> Result<i32> {
-    if !abmx_parse::is_parser_id(id) {
-        bail!("parser id must look like `bank.type`, got `{id}`");
-    }
-    let bank = id.split('.').next().unwrap_or(id);
+fn lint(options: &abmx_parser::Options, only: Option<&str>) -> Result<i32> {
+    let (corpus, _) = load(options)?;
+    let mut problems = 0usize;
 
-    let parsers_dir = parsers_root
-        .map(Path::to_path_buf)
-        .unwrap_or_else(abmx::paths::default_parsers_dir);
-    let parser_dir = parsers_dir.join(id);
-    let spec_path = parser_dir.join("config.toml");
-    let fixture_dir = parser_dir.join("fixtures");
+    for parser in &corpus.registry().parsers {
+        if let Some(only) = only {
+            if parser.id != only {
+                continue;
+            }
+        }
 
-    if spec_path.exists() {
-        bail!("{} already exists", spec_path.display());
-    }
-
-    std::fs::create_dir_all(&fixture_dir)?;
-
-    let template = format!(
-        r#"spec_version = 1
-version = 1
-
-[match]
-senders  = ["TODO@example.com"]
-subject  = '^TODO subject$'
-requires = []
-rejects  = []
-
-[labels]
-# Every constant label block in this template, in document order.
-# Run `abmx dump <fixture>` to see the blocks.
-list = []
-
-[defaults]
-bank     = "{bank}"
-account  = "{bank}-todo"
-currency = "IDR"
-tz       = "Asia/Jakarta"
-kind     = "purchase"
-
-[extract.amount]
-label  = "TODO"
-regex  = '(?P<value>[0-9][0-9.,]*(?:\s*,\d{{2}})?)'
-number = "id"
-
-[extract.occurred_at]
-label   = "TODO"
-regex   = '(?P<value>\d{{1,2}} \w{{3}} \d{{4}} \d{{2}}:\d{{2}}:\d{{2}})'
-formats = ["%d %b %Y %H:%M:%S"]
-locale  = "id"
-
-[extract.counterparty]
-label = "TODO"
-"#
-    );
-
-    std::fs::write(&spec_path, template)?;
-    std::fs::write(
-        fixture_dir.join("README.md"),
-        "Drop redacted `.eml` files here. Run `abmx parser check --parser <id>` afterwards.\n",
-    )?;
-
-    println!("created {}", spec_path.display());
-    println!("created {}", fixture_dir.display());
-    println!(
-        "next: copy redacted .eml files into {}, then run\n  abmx parser check --parser {id} --parsers {}",
-        fixture_dir.display(),
-        parsers_dir.display()
-    );
-    Ok(0)
-}
-
-fn infer(dir: &Path, id: Option<&str>) -> Result<i32> {
-    let files = files_with_extension(dir, "eml");
-    if files.is_empty() {
-        bail!("no .eml files under {}", dir.display());
-    }
-
-    let mut emails = Vec::new();
-    for file in &files {
-        let bytes = std::fs::read(file)?;
-        emails.push(abmx_parser::parse_eml(
-            &bytes,
-            Some(file.display().to_string()),
-        )?);
-    }
-
-    let id = id.unwrap_or("bank.type").to_string();
-    let (bank, _kind) = id.split_once('.').unwrap_or((id.as_str(), "type"));
-
-    let senders: BTreeSet<&str> = emails
-        .iter()
-        .map(|email| email.from.email.as_str())
-        .collect();
-    let subjects: BTreeSet<&str> = emails.iter().map(|email| email.subject.as_str()).collect();
-
-    let counts: BTreeSet<usize> = emails.iter().map(|email| email.blocks.len()).collect();
-    if counts.len() > 1 {
-        eprintln!(
-            "warning: samples have different block counts {:?}; using the first file's shape",
-            counts
-        );
-    }
-
-    let width = emails[0].blocks.len().min(
-        emails
+        let declared: BTreeSet<String> = parser
+            .spec
+            .labels
+            .list
             .iter()
-            .map(|email| email.blocks.len())
-            .min()
-            .unwrap_or(0),
-    );
+            .map(|label| abmx_parse::norm(label))
+            .collect();
 
-    let mut labels = Vec::new();
-    let mut prose = Vec::new();
-    let mut varying: Vec<usize> = Vec::new();
-    for index in 0..width {
-        let first = &emails[0].blocks[index].text;
-        if emails
-            .iter()
-            .all(|email| email.blocks.get(index).map(|block| &block.text) == Some(first))
+        let mut field_labels = vec![parser.spec.extract.amount.label.clone()];
+        if let Some(label) = &parser.spec.extract.occurred_at.label {
+            field_labels.push(label.clone());
+        }
+        if let Some(date) = &parser.spec.extract.occurred_at.date {
+            field_labels.push(date.label.clone());
+        }
+        if let Some(time) = &parser.spec.extract.occurred_at.time {
+            field_labels.push(time.label.clone());
+        }
+        for field in [
+            &parser.spec.extract.counterparty,
+            &parser.spec.extract.counterparty_account,
+            &parser.spec.extract.channel,
+            &parser.spec.extract.account,
+            &parser.spec.extract.reference_id,
+            &parser.spec.extract.description,
+        ]
+        .into_iter()
+        .flatten()
         {
-            if is_label_like(first) {
-                labels.push(first.clone());
-            } else {
-                prose.push(first.clone());
+            field_labels.push(field.label.clone());
+        }
+        for field in parser.spec.extract.extra.values() {
+            field_labels.push(field.label.clone());
+        }
+        if let Some(status) = &parser.spec.status {
+            if let Some(label) = &status.label {
+                field_labels.push(label.clone());
             }
-        } else {
-            varying.push(index);
         }
-    }
 
-    let amount_label = guess_label(&labels, &emails, is_money);
-    let date_label = guess_label(&labels, &emails, is_datetime);
-    let split_date = find_label(&labels, &["date"]);
-    let split_time = find_label(&labels, &["time"]);
-    let kind = if labels
-        .iter()
-        .any(|label| label.to_ascii_lowercase().contains("transfer"))
-    {
-        "transfer_out"
-    } else {
-        "purchase"
-    };
-    let subject = if subjects.len() == 1 {
-        format!(
-            "'^{}'",
-            regex_escape(subjects.iter().next().copied().unwrap_or_default())
-        )
-    } else {
-        "'^TODO'  # subjects differ; anchor on a common prefix".to_string()
-    };
-
-    println!(
-        "# draft generated from {} email(s) in {}",
-        emails.len(),
-        dir.display()
-    );
-    println!("spec_version = 1");
-    println!("id = \"{id}\"");
-    println!("version = 1");
-    println!();
-    println!("[match]");
-    println!(
-        "senders  = [{}]",
-        senders
-            .iter()
-            .map(|sender| format!("\"{sender}\""))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-    println!("subject  = {subject}");
-    println!("requires = []  # add labels that distinguish this from sibling templates");
-    println!("rejects  = []");
-    println!();
-    println!("[labels]");
-    println!("list = [");
-    for label in &labels {
-        println!("  \"{}\",", label.replace('"', "\\\""));
-    }
-    println!("]");
-    println!();
-    println!("[defaults]");
-    println!("bank     = \"{bank}\"");
-    println!("account  = \"{bank}-todo\"");
-    println!("currency = \"IDR\"");
-    println!("tz       = \"Asia/Jakarta\"");
-    println!("kind     = \"{kind}\"");
-    println!();
-    println!("[extract.amount]");
-    println!("label  = \"{}\"", amount_label.as_deref().unwrap_or("TODO"));
-    println!("regex  = '(?P<value>[0-9][0-9.,]*(?:\\s*,\\d{{2}})?)'");
-    println!(
-        "number = \"{}\"",
-        detect_number_style(&emails, amount_label.as_deref())
-    );
-    println!();
-    println!("[extract.occurred_at]");
-    if let (Some(date), Some(time)) = (split_date, split_time) {
-        println!(
-            "date = {{ label = \"{date}\", regex = '(?P<value>\\d{{1,2}} \\w{{3}} \\d{{4}})', formats = [\"%d %b %Y\"], locale = \"id\" }}"
-        );
-        println!(
-            "time = {{ label = \"{time}\", regex = '(?P<value>\\d{{2}}:\\d{{2}}:\\d{{2}})', formats = [\"%H:%M:%S\"] }}"
-        );
-    } else {
-        println!("label   = \"{}\"", date_label.as_deref().unwrap_or("TODO"));
-        print!("{}", detect_date_block(&emails, date_label.as_deref()));
-    }
-    println!();
-    println!("[extract.counterparty]");
-    println!(
-        "label = \"{}\"",
-        labels
-            .iter()
-            .find(|label| {
-                matches!(
-                    label.to_ascii_lowercase().as_str(),
-                    "merchant"
-                        | "payment to"
-                        | "recipient"
-                        | "beneficiary name"
-                        | "company/product name"
-                        | "description"
-                )
-            })
-            .cloned()
-            .unwrap_or_else(|| "TODO".to_string())
-    );
-    println!();
-    println!(
-        "# {} block(s) vary and were not mapped; inspect `abmx dump`: {}",
-        varying.len(),
-        varying
-            .iter()
-            .take(12)
-            .map(|index| index.to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-    if !prose.is_empty() {
-        println!("# constant non-label blocks (left out of labels.list):");
-        for line in prose.iter().take(4) {
-            println!("#   {}", line.chars().take(70).collect::<String>());
+        for label in field_labels {
+            if !declared.contains(&abmx_parse::norm(&label)) {
+                problems += 1;
+                eprintln!(
+                    "{}: field label `{label}` is missing from labels.list",
+                    parser.id
+                );
+            }
         }
-    }
-    println!(
-        "# NOTE: this is a draft. Add fixtures, then run `abmx parser check --parser {id} --parsers <dir>`."
-    );
 
-    Ok(0)
-}
+        if parser
+            .spec
+            .extract
+            .amount
+            .regex
+            .as_deref()
+            .is_some_and(|regex| regex.trim_end().ends_with('$'))
+        {
+            problems += 1;
+            eprintln!(
+                "{}: amount regex is end-anchored; match the value shape instead",
+                parser.id
+            );
+        }
 
-fn guess_label(
-    labels: &[String],
-    emails: &[abmx_tx::NormalizedEmail],
-    predicate: fn(&str) -> bool,
-) -> Option<String> {
-    for label in labels {
-        let mut found = 0usize;
-        for email in emails {
-            let Some(index) = email
-                .blocks
-                .iter()
-                .position(|block| block.text.eq_ignore_ascii_case(label))
-            else {
+        let fixtures = parser
+            .source_file
+            .parent()
+            .map(|dir| dir.join("fixtures"))
+            .unwrap_or_default();
+        if !fixtures.is_dir() {
+            problems += 1;
+            eprintln!("{}: no fixtures directory", parser.id);
+            continue;
+        }
+
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut files = Vec::new();
+        collect_eml(&fixtures, &mut files);
+        for file in files {
+            let Ok(bytes) = std::fs::read(&file) else {
                 continue;
             };
-            let next_is_label = email
-                .blocks
-                .get(index + 1)
-                .map(|block| labels.iter().any(|l| l.eq_ignore_ascii_case(&block.text)))
-                .unwrap_or(true);
-            if next_is_label {
+            let Ok(email) = abmx_parser::parse_eml(&bytes, Some(file.display().to_string())) else {
                 continue;
-            }
-            if let Some(value) = email.blocks.get(index + 1) {
-                if predicate(&value.text) {
-                    found += 1;
-                }
+            };
+            for block in &email.blocks {
+                seen.insert(abmx_parse::norm(&block.text));
             }
         }
-        if found == emails.len() {
-            return Some(label.clone());
-        }
-    }
-    None
-}
 
-fn is_label_like(text: &str) -> bool {
-    let trimmed = text.trim();
-    let words = trimmed.split_whitespace().count();
-
-    if trimmed.chars().count() > 48 || words > 6 {
-        return false;
-    }
-    if words >= 4 && matches!(trimmed.chars().last(), Some(':' | ',' | '.')) {
-        return false;
-    }
-    trimmed.chars().any(|ch| ch.is_ascii_alphabetic())
-}
-
-fn find_label(labels: &[String], candidates: &[&str]) -> Option<String> {
-    labels
-        .iter()
-        .find(|label| {
-            let lower = label.to_ascii_lowercase();
-            candidates.iter().any(|candidate| lower == *candidate)
-        })
-        .cloned()
-}
-
-fn is_money(text: &str) -> bool {
-    let trimmed = text.trim();
-    let digits = trimmed.chars().filter(|ch| ch.is_ascii_digit()).count();
-    digits >= 3
-        && trimmed.chars().all(|ch| {
-            ch.is_ascii_digit() || matches!(ch, '.' | ',' | ' ' | '-' | 'R' | 'p' | 'I' | 'D' | 'P')
-        })
-}
-
-fn is_datetime(text: &str) -> bool {
-    let has_time = text.matches(':').count() >= 2;
-    let has_date = text.chars().filter(|ch| ch.is_ascii_digit()).count() >= 6
-        && (text.contains('-') || text.contains('/') || text.chars().any(|ch| ch.is_alphabetic()));
-    has_time && has_date
-}
-
-fn detect_number_style(emails: &[abmx_tx::NormalizedEmail], label: Option<&str>) -> &'static str {
-    let Some(label) = label else {
-        return "id";
-    };
-
-    for email in emails {
-        for (index, block) in email.blocks.iter().enumerate() {
-            if block.text.eq_ignore_ascii_case(label) {
-                if let Some(value) = email.blocks.get(index + 1) {
-                    let text = &value.text;
-                    if let (Some(comma), Some(dot)) = (text.rfind(','), text.rfind('.')) {
-                        return if comma > dot { "id" } else { "en" };
-                    }
-                }
+        for label in &parser.spec.labels.list {
+            if !seen.contains(&abmx_parse::norm(label)) {
+                eprintln!(
+                    "{}: labels.list contains `{label}`, which never appears in fixtures",
+                    parser.id
+                );
             }
         }
     }
 
-    "id"
-}
-
-fn detect_date_block(emails: &[abmx_tx::NormalizedEmail], label: Option<&str>) -> String {
-    let mut format = "%d %b %Y %H:%M:%S".to_string();
-
-    if let Some(label) = label {
-        for email in emails {
-            for (index, block) in email.blocks.iter().enumerate() {
-                if block.text.eq_ignore_ascii_case(label) {
-                    if let Some(value) = email.blocks.get(index + 1) {
-                        format = guess_format(&value.text);
-                    }
-                }
-            }
-        }
-    }
-
-    format!(
-        "regex   = '(?P<value>\\d{{1,2}} \\w{{3}} \\d{{4}} \\d{{2}}:\\d{{2}}:\\d{{2}})'\nformats = [\"{format}\"]\nlocale  = \"id\""
-    )
-}
-
-fn guess_format(value: &str) -> String {
-    if value.contains('-') && value.chars().filter(|ch| *ch == '-').count() >= 4 {
-        "%d-%m-%Y %H:%M:%S".to_string()
-    } else if value.contains('/') {
-        "%d/%m/%Y %H:%M:%S".to_string()
+    if problems == 0 {
+        println!("ok: no problems");
     } else {
-        "%d %b %Y %H:%M:%S".to_string()
+        println!("{problems} problem(s)");
     }
+    Ok(if problems > 0 { EXIT_FAILED } else { 0 })
 }
 
-fn regex_escape(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for ch in value.chars() {
-        if "\\^$.*+?()[]{}|".contains(ch) {
-            escaped.push('\\');
-        }
-        escaped.push(ch);
-    }
-    escaped
-}
-
-fn money(money: &Money) -> String {
-    let exponent = money.exponent();
-    let sign = if money.amount_minor < 0 { "-" } else { "" };
-    let absolute = money.amount_minor.unsigned_abs();
-
-    if exponent == 0 {
-        format!("{sign}{absolute} {}", money.currency)
-    } else {
-        let factor = 10u64.pow(exponent);
-        format!(
-            "{sign}{}.{:0width$} {}",
-            absolute / factor,
-            absolute % factor,
-            money.currency,
-            width = exponent as usize
-        )
-    }
-}
-
-fn truncate(value: &str, width: usize) -> String {
-    if value.chars().count() <= width {
-        value.to_string()
-    } else {
-        let shortened: String = value.chars().take(width.saturating_sub(1)).collect();
-        format!("{shortened}…")
-    }
-}
-
-fn files_with_extension(dir: &Path, extension: &str) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    collect_files(dir, extension, &mut files);
-    files.sort();
-    files
-}
-
-fn collect_files(dir: &Path, extension: &str, out: &mut Vec<PathBuf>) {
+fn collect_eml(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            collect_files(&path, extension, out);
-        } else if path.extension().and_then(|value| value.to_str()) == Some(extension) {
+            collect_eml(&path, out);
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("eml") {
             out.push(path);
         }
     }
+}
+
+fn init(id: &str, first: Option<&Path>) -> Result<i32> {
+    if !abmx_parse::is_parser_id(id) {
+        bail!("`{id}` is not a valid parser id");
+    }
+    let corpus = first
+        .map(Path::to_path_buf)
+        .unwrap_or_else(crate::paths::default_parsers_dir);
+    let dir = corpus.join(id);
+    let fixtures = dir.join("fixtures");
+    std::fs::create_dir_all(&fixtures)
+        .with_context(|| format!("creating {}", fixtures.display()))?;
+
+    let config = format!(
+        "spec_version = {}\nversion = 1\nenabled = true\n\n\
+         [labels]\nlist = []\n\n\
+         [defaults]\nbank = \"\"\ncurrency = \"IDR\"\ntz = \"Asia/Jakarta\"\nkind = \"purchase\"\n\n\
+         [extract.amount]\nlabel = \"\"\nregex = '(?P<value>[0-9][0-9.,]*)'\nnumber = \"id\"\n\n\
+         [extract.occurred_at]\nlabel = \"\"\nregex = ''\nformats = []\n",
+        abmx_parser::SPEC_VERSION
+    );
+    let path = dir.join("config.toml");
+    std::fs::write(&path, config).with_context(|| format!("writing {}", path.display()))?;
+    println!("wrote {}", path.display());
+    Ok(0)
 }

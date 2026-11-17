@@ -1,14 +1,12 @@
 use std::path::Path;
 
-use abmx_core::{Error, Result, Transaction, ABMX_SCHEMA_VERSION};
+use abmx_core::{Error, Result, ABMX_SCHEMA_VERSION};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::{Deserialize, Serialize};
 
 /// What the run remembers between invocations.
 ///
-/// SQLite rather than a JSON blob because the review queue needs to be
-/// queryable and "have I already delivered this message" is a lookup, not a
-/// linear scan.
+/// SQLite rather than a JSON blob because "have I already delivered this
+/// message" is a lookup, not a linear scan.
 ///
 /// Note what is *not* stored: which transactions the sink accepted. Sinks that
 /// answer `idempotent() == true` are their own source of truth. `messages` only
@@ -16,16 +14,6 @@ use serde::{Deserialize, Serialize};
 /// succeeded.
 pub struct State {
     conn: Connection,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReviewEntry {
-    pub tx_id: String,
-    /// Source message identity, so approving a row can mark it delivered.
-    pub message: String,
-    pub reason: String,
-    pub transaction: Transaction,
-    pub created_at: String,
 }
 
 impl State {
@@ -64,13 +52,6 @@ impl State {
                      tx_id       TEXT NOT NULL,
                      disposition TEXT NOT NULL,
                      seen_at     TEXT NOT NULL
-                 );
-                 CREATE TABLE IF NOT EXISTS review (
-                     tx_id       TEXT PRIMARY KEY,
-                     message     TEXT NOT NULL,
-                     reason      TEXT NOT NULL,
-                     payload     TEXT NOT NULL,
-                     created_at  TEXT NOT NULL
                  );",
             )
             .map_err(state_error)
@@ -143,127 +124,10 @@ impl State {
         Ok(())
     }
 
-    pub fn upsert_review(&self, entry: &ReviewEntry) -> Result<()> {
-        let transaction = serde_json::to_string(&entry.transaction)?;
-        self.conn
-            .execute(
-                "INSERT INTO review (tx_id, message, reason, payload, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(tx_id) DO UPDATE SET
-                     message = excluded.message,
-                     reason = excluded.reason,
-                     payload = excluded.payload",
-                params![
-                    entry.tx_id,
-                    entry.message,
-                    entry.reason,
-                    transaction,
-                    entry.created_at
-                ],
-            )
-            .map_err(state_error)?;
-        Ok(())
-    }
-
-    pub fn review(&self) -> Result<Vec<ReviewEntry>> {
-        let mut statement = self
-            .conn
-            .prepare(
-                "SELECT tx_id, message, reason, payload, created_at
-                 FROM review ORDER BY created_at DESC, tx_id",
-            )
-            .map_err(state_error)?;
-
-        let rows = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, String>(4)?,
-                ))
-            })
-            .map_err(state_error)?;
-
-        let mut entries = Vec::new();
-        for row in rows {
-            let (tx_id, message, reason, transaction, created_at) = row.map_err(state_error)?;
-            entries.push(ReviewEntry {
-                tx_id,
-                message,
-                reason,
-                transaction: serde_json::from_str(&transaction)?,
-                created_at,
-            });
-        }
-
-        Ok(entries)
-    }
-
-    pub fn review_entry(&self, tx_id: &str) -> Result<Option<ReviewEntry>> {
-        let row: Option<(String, String, String, String, String)> = self
-            .conn
-            .query_row(
-                "SELECT tx_id, message, reason, payload, created_at FROM review WHERE tx_id = ?1",
-                params![tx_id],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(state_error)?;
-
-        let Some((tx_id, message, reason, transaction, created_at)) = row else {
-            return Ok(None);
-        };
-
-        Ok(Some(ReviewEntry {
-            tx_id,
-            message,
-            reason,
-            transaction: serde_json::from_str(&transaction)?,
-            created_at,
-        }))
-    }
-
-    pub fn clear_review(&self, tx_id: &str) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM review WHERE tx_id = ?1", params![tx_id])
-            .map_err(state_error)?;
-        Ok(())
-    }
-
-    /// `(delivered messages, review rows)`.
-    pub fn counts(&self) -> Result<(usize, usize)> {
-        let messages: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))
-            .map_err(state_error)?;
-        let reviews: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM review", [], |row| row.get(0))
-            .map_err(state_error)?;
-        Ok((messages as usize, reviews as usize))
-    }
-
     /// Forget what has been delivered. Leaves `meta` alone.
     pub fn reset_progress(&self) -> Result<()> {
         self.conn
             .execute("DELETE FROM messages", [])
-            .map_err(state_error)?;
-        Ok(())
-    }
-
-    pub fn clear_reviews(&self) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM review", [])
             .map_err(state_error)?;
         Ok(())
     }
@@ -297,10 +161,10 @@ mod tests {
             .mark_seen("gmail:1", "actual", "mail_1", "imported")
             .unwrap();
 
-        assert_eq!(state.counts().unwrap(), (1, 0));
+        assert_eq!(state.seen_count().unwrap(), 1);
 
         state.reset_progress().unwrap();
-        assert_eq!(state.counts().unwrap(), (0, 0));
+        assert_eq!(state.seen_count().unwrap(), 0);
         assert!(!state.is_seen("gmail:1").unwrap());
 
         // The schema guard survives a reset; it is not progress.
@@ -308,16 +172,5 @@ mod tests {
             state.meta_get("abmx_schema_version").unwrap(),
             Some(ABMX_SCHEMA_VERSION.to_string())
         );
-    }
-
-    #[test]
-    fn clearing_reviews_leaves_progress_alone() {
-        let state = State::open_in_memory().unwrap();
-        state
-            .mark_seen("gmail:1", "actual", "mail_1", "imported")
-            .unwrap();
-
-        state.clear_reviews().unwrap();
-        assert_eq!(state.counts().unwrap(), (1, 0));
     }
 }

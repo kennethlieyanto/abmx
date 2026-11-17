@@ -18,7 +18,7 @@ parser and a ledger account. The parser never inspects the sender or subject.
 2. **Confirm one template per label.** The last three samples under a label must
    share a label skeleton. If they do not, stop: the user or a Gmail filter has
    mislabeled mail. Do not split the label into several parsers.
-3. **Choose the parser id.** It should match the label suffix: `abmx:example-qris`
+3. **Choose the parser id.** It must match the label suffix: `Receipt/abmx:example-qris`
    → `example-qris`. The directory name is the id.
 4. **Write `[labels].list`.** Include every constant label block in document
    order, including labels you do not extract. A missing label merges two
@@ -37,8 +37,8 @@ parser and a ledger account. The parser never inspects the sender or subject.
 8. **Write into the corpus and verify.** Put the spec at
    `<corpus>/<id>/config.toml`, copy the samples into
    `<corpus>/<id>/fixtures/01.eml`, `02.eml`, … then run
-   `abmx parser check --parser <id> --parsers <corpus>` and
-   `abmx verify parser <corpus>/<id>`. Repeat until every sample is `strict`.
+   `abmx parser check --parser <id> --parsers <corpus>`. Repeat until every
+   sample is `strict`.
 9. **Leave the corpus clean.** If you cannot make it pass, delete the
    `config.toml` you wrote and report why. Never leave a broken spec behind.
 
@@ -60,7 +60,7 @@ Exit codes: `0` all strict, `3` at least one heuristic, `2` unmatched or failed,
 - If the samples are different templates, do not author; report the label as
   mislabeled.
 - Never invent a ledger account, a UUID, or an account mapping. The account is
-  chosen by the user in `[labels]`.
+  chosen by the user in `[labels.accounts]`.
 - If a value is ambiguous, leave the optional field out rather than guessing.
 - Do not write into another parser's directory.
 
@@ -68,7 +68,6 @@ Exit codes: `0` all strict, `3` at least one heuristic, `2` unmatched or failed,
 
 1. Write `<corpus>/<id>/config.toml` and copy the samples to
    `<corpus>/<id>/fixtures/`.
-2. Add or confirm the `[labels]` entry: label, parser id, ledger account.
-3. Run `abmx verify parser <corpus>/<id>` and
-   `abmx verify parser --id <id> --label <label>`.
-4. Run `abmx labels --check` and `abmx doctor`.
+2. Add or confirm the `[labels.accounts]` entry for the parser id.
+3. Run `abmx parser check --parser <id> --parsers <corpus>`.
+4. Run `abmx status --check`.

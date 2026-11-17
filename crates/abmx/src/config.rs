@@ -1,7 +1,8 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use abmx_actual::{ActualConfig, ActualSink, ClearedPolicy, NotesConfig};
-use abmx_core::{AccountMap, LabelRoute, LabelRoutes, PolicyConfig, Sink};
+use abmx_core::{AccountMap, Sink};
 use abmx_file::FileSink;
 use abmx_gmail::{GmailConfig, GmailFetcher};
 use anyhow::{bail, Context, Result};
@@ -17,11 +18,70 @@ pub struct Config {
     pub fetch: FetchSection,
     #[serde(default)]
     pub sink: SinkSection,
-    /// Gmail label → parser + ledger account. The label is the routing identity.
     #[serde(default)]
-    pub labels: LabelRoutes,
+    pub labels: LabelsSection,
+}
+
+/// How a `Receipt/abmx:<parser>` Gmail label becomes an import.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LabelsSection {
+    /// Literal (case-insensitive) label prefix. The remainder must be a parser id.
+    pub prefix: String,
+    /// Ignore mail received before this date.
+    #[serde(default, deserialize_with = "deserialize_since")]
+    pub since: Option<chrono::NaiveDate>,
+    /// Parser id → sink account id.
     #[serde(default)]
-    pub policy: PolicyConfig,
+    pub accounts: BTreeMap<String, String>,
+}
+
+impl LabelsSection {
+    /// The parser id encoded in a label, when the remainder is valid.
+    pub fn parser_id(&self, label: &str) -> Option<String> {
+        let prefix = self.prefix.to_ascii_lowercase();
+        let lower = label.to_ascii_lowercase();
+        let rest = lower.strip_prefix(&prefix)?;
+        abmx_parse::is_parser_id(rest).then(|| rest.to_owned())
+    }
+}
+
+/// Accept both a TOML date (`since = 2026-11-10`) and a string.
+fn deserialize_since<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<chrono::NaiveDate>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let value = Option::<toml::Value>::deserialize(deserializer)?;
+    match value {
+        None => Ok(None),
+        Some(toml::Value::String(text)) => chrono::NaiveDate::parse_from_str(&text, "%Y-%m-%d")
+            .map(Some)
+            .map_err(D::Error::custom),
+        Some(toml::Value::Datetime(datetime)) => {
+            let date = datetime
+                .date
+                .ok_or_else(|| D::Error::custom("`since` must include a date"))?;
+            chrono::NaiveDate::from_ymd_opt(date.year as i32, date.month as u32, date.day as u32)
+                .map(Some)
+                .ok_or_else(|| D::Error::custom("invalid `since` date"))
+        }
+        Some(other) => Err(D::Error::custom(format!(
+            "`since` must be a date like 2026-11-10, got {other}"
+        ))),
+    }
+}
+
+impl Default for LabelsSection {
+    fn default() -> Self {
+        Self {
+            prefix: "Receipt/abmx:".to_owned(),
+            since: None,
+            accounts: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -119,14 +179,29 @@ impl Config {
     }
 
     pub fn account_map(&self) -> AccountMap {
-        self.labels.accounts()
+        AccountMap::from(self.labels.accounts.clone())
     }
 
-    /// The labels that are enabled and therefore need a parser and an account.
-    pub fn active_labels(&self) -> impl Iterator<Item = (&str, &LabelRoute)> {
-        self.labels
-            .iter()
-            .map(|(label, route)| (label.as_str(), route))
+    /// Validate the label contract before a mailbox is touched.
+    pub fn validate_labels(&self) -> Result<()> {
+        if self.labels.prefix.trim().is_empty() {
+            bail!("[labels].prefix must not be empty");
+        }
+        let mut problems = Vec::new();
+        for parser in self.labels.accounts.keys() {
+            if !abmx_parse::is_parser_id(parser) {
+                problems.push(format!(
+                    "`{parser}` is not a parser id (expected `bank.type`)"
+                ));
+            }
+        }
+        if !problems.is_empty() {
+            bail!(
+                "[labels.accounts] keys must be parser ids:\n  {}",
+                problems.join("\n  ")
+            );
+        }
+        Ok(())
     }
 
     pub fn state_path(&self, base: &Path) -> PathBuf {
@@ -252,6 +327,8 @@ impl Config {
         let mut config = GmailConfig::new(&gmail.client_id, token_path);
         config.client_secret = client_secret;
         config.max_messages = gmail.max_messages.unwrap_or(10_000);
+        config.prefix = self.labels.prefix.clone();
+        config.since = self.labels.since;
 
         GmailFetcher::new(config).map_err(Into::into)
     }
@@ -305,15 +382,16 @@ cleared = "never"
 # recreates rows you deleted. false makes ledger deletions permanent.
 # reimport_deleted = true
 
-# Gmail label → parser + Actual account UUID.
-# Apply exactly one `abmx:*` label per tracked message, e.g. with a Gmail filter.
-# A labeled message with no entry here aborts `abmx sync`; nothing is guessed.
+# Gmail labels are the routing contract. The user (via gmailctl) applies
+# one `Receipt/abmx:<parser-id>` label per tracked message; the remainder after
+# the prefix is the parser id. Plain `Receipt` and other labels are ignored.
 # Run `abmx accounts` to see what Actual calls the accounts.
 [labels]
-# "abmx:example-qris" = { parser = "example-qris", account = "00000000-0000-0000-0000-000000000000" }
-# "abmx:grab"     = { parser = "grab",     account = "00000000-0000-0000-0000-000000000000" }
+prefix = "Receipt/abmx:"
+# Ignore mail received before this date.
+# since = 2026-11-10
 
-[policy]
-# heuristic = "review"   # review | import | skip
-# failed = "skip"        # skip | review | import
+[labels.accounts]
+# "example.card_debit"       = "00000000-0000-0000-0000-000000000000"
+# "example.journal_transfer" = "00000000-0000-0000-0000-000000000000"
 "#;

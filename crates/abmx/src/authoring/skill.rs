@@ -4,12 +4,21 @@ use anyhow::{bail, Context, Result};
 
 use super::assets;
 
-/// The two skills written by `abmx generate skill parser`.
+/// The two skills the authoring skill tree writes.
 pub const SKILL_IDS: [&str; 2] = ["abmx-parser-authoring", "abmx-parser-install"];
 
 struct SkillFile {
     relative: &'static str,
     content: String,
+}
+
+/// The authoring skill, for `abmx skill` on stdout.
+pub fn render_authoring() -> Result<String> {
+    files()
+        .into_iter()
+        .next()
+        .map(|file| file.content)
+        .ok_or_else(|| anyhow::anyhow!("no authoring skill generated"))
 }
 
 /// Write the generated skill tree under `out`.
@@ -93,8 +102,8 @@ Run a candidate parser directory (or its `config.toml`) against the samples
 before installing it:
 
 ```sh
-abmx verify parser <parser-dir> --id <parser-id> --input <samples>
-abmx verify parser <parser-dir> --id <parser-id> --input <samples> --json
+abmx parser check --parser <parser-id> --parsers <corpus>
+abmx parser check --parser <parser-id> --parsers <corpus> -v
 ```
 
 The directory holds `config.toml`. When `--input` is omitted, verify uses
@@ -104,8 +113,8 @@ The directory holds `config.toml`. When `--input` is omitted, verify uses
 done until all three are `strict`:
 
 ```sh
-abmx verify parser <parser-dir> --id <parser-id>
-abmx verify parser --id <parser-id> --label abmx:<id>
+abmx parser check --parser <parser-id> --parsers <corpus>
+abmx author --label <label>
 abmx parser check --parser <parser-id>
 abmx parser explain <one.eml> --parser <parser-id>
 abmx parser lint --parser <parser-id>
@@ -138,7 +147,7 @@ description: Install a verified parser and map an `abmx:*` Gmail label to a ledg
 
 # Install a parser into abmx
 
-Use this only after `abmx verify parser` reports `strict` for every sample.
+Use this only after `abmx parser check --parser <id>` reports every sample `strict`.
 
 1. **Read the config.** The prompt names the config path. Otherwise use
    `--config`, `$ABMX_CONFIG`, `$XDG_CONFIG_HOME/abmx/config.toml`, or

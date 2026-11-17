@@ -5,9 +5,9 @@
 //!
 //! * [`Fetcher`] — a source of raw RFC 5322 bytes (Gmail, IMAP, a directory).
 //! * [`Sink`] — a destination for decided transactions (Actual, a file, a webhook).
-//! * [`policy`] — the pure function that turns a [`abmx_parser::Transaction`] into a
-//!   [`Decision`].
-//! * [`Plan`] — the inspectable artifact between deciding and writing.
+//! * [`policy`] — the pure function that turns a [`abmx_parser::Transaction`] into
+//!   "import" or a named defect.
+//! * [`Plan`] — the inspectable artifact between parsing and writing.
 //!
 //! The split matters because the two hard problems are different: `abmx-parser` owns
 //! *parsing*, `abmx` owns *delivery*. A new bank is a TOML file in `abmx-parser`; a new
@@ -25,11 +25,10 @@ pub use diff::{classify, LedgerMatch, LedgerRow};
 pub use error::{Error, Result};
 pub use fetcher::{FetchBatch, FetchRequest, Fetcher, MessageKey, RawMessage, DEFAULT_LIMIT};
 pub use money::cents;
-pub use plan::{Plan, PlannedRow, SourceReport, Stats, UnmatchedMessage, PLAN_VERSION};
-pub use policy::{
-    decide, AccountMap, Decision, FailedPolicy, HeuristicPolicy, LabelRoute, LabelRoutes,
-    PolicyConfig, ReviewReason, SkipReason,
+pub use plan::{
+    BrokenMessage, Plan, PlannedRow, SourceReport, Stats, UnmatchedMessage, PLAN_VERSION,
 };
+pub use policy::{check_transaction, AccountMap, BrokenReason};
 pub use sink::{ApplyOptions, ImportRow, Report, RowError, Sink, SinkAccount};
 
 /// The `abmx-parser` output contract this build was compiled against.

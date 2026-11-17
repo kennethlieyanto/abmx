@@ -16,12 +16,12 @@ max_messages = 50
 path = "out/ledger.jsonl"
 
 [labels]
-"abmx:example-card" = { parser = "example.card_debit", account = "uuid-example" }
-"abmx:wallet" = { parser = "wallet.qris_payment", account = "uuid-wallet" }
+prefix = "Receipt/abmx:"
+since = 2026-11-10
 
-[policy]
-heuristic = "skip"
-failed = "review"
+[labels.accounts]
+"example.card_debit" = "uuid-example"
+"wallet.qris_payment" = "uuid-wallet"
 "#;
 
 fn write(dir: &Path) -> std::path::PathBuf {
@@ -50,25 +50,62 @@ fn relative_paths_resolve_against_the_config_directory() {
 }
 
 #[test]
-fn accounts_and_policy_round_trip() {
+fn labels_round_trip_and_encode_the_parser_id() {
     let dir = tempfile::tempdir().unwrap();
     let path = write(dir.path());
     let config = Config::load(&path).unwrap();
 
-    let accounts = config.account_map();
-    assert_eq!(accounts.get("abmx:example-card"), Some("uuid-example"));
-    assert_eq!(accounts.get("abmx:wallet"), Some("uuid-wallet"));
-    assert_eq!(accounts.len(), 2);
+    assert_eq!(config.labels.prefix, "Receipt/abmx:");
     assert_eq!(
-        config
-            .labels
-            .get("abmx:example-card")
-            .map(|route| route.parser.as_str()),
-        Some("example.card_debit")
+        config.labels.since,
+        chrono::NaiveDate::from_ymd_opt(2026, 11, 10)
     );
 
-    assert_eq!(config.policy.heuristic, abmx_core::HeuristicPolicy::Skip);
-    assert_eq!(config.policy.failed, abmx_core::FailedPolicy::Review);
+    let accounts = config.account_map();
+    assert_eq!(accounts.get("example.card_debit"), Some("uuid-example"));
+    assert_eq!(accounts.get("wallet.qris_payment"), Some("uuid-wallet"));
+    assert_eq!(accounts.len(), 2);
+
+    assert_eq!(
+        config.labels.parser_id("Receipt/abmx:example.card_debit"),
+        Some("example.card_debit".to_owned())
+    );
+    // The prefix is case-insensitive; the parser id is normalised to lower case.
+    assert_eq!(
+        config.labels.parser_id("receipt/ABMX:example.card_debit"),
+        Some("example.card_debit".to_owned())
+    );
+    assert_eq!(config.labels.parser_id("Receipt"), None);
+    assert_eq!(config.labels.parser_id("Receipt/abmx:a/b"), None);
+    // Dots are conventional, not required: the gmailctl labels here use
+    // `example-qris` as well as `example.card_debit`.
+    assert_eq!(
+        config.labels.parser_id("Receipt/abmx:example-qris"),
+        Some("example-qris".to_owned())
+    );
+
+    config.validate_labels().unwrap();
+}
+
+#[test]
+fn an_invalid_account_key_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("abmx.toml");
+    std::fs::write(
+        &path,
+        r#"
+[labels]
+prefix = "Receipt/abmx:"
+
+[labels.accounts]
+"a/b" = "uuid"
+"#,
+    )
+    .unwrap();
+
+    let config = Config::load(&path).unwrap();
+    let error = config.validate_labels().unwrap_err().to_string();
+    assert!(error.contains("not a parser id"), "got: {error}");
 }
 
 #[test]

@@ -23,9 +23,6 @@ pub use sample::SampleMessage;
 pub const DEFAULT_BASE_URL: &str = "https://gmail.googleapis.com/gmail/v1";
 pub const DEFAULT_USER: &str = "me";
 
-/// Every label starting with this prefix is owned by abmx.
-pub const LABEL_PREFIX: &str = "abmx:";
-
 /// Everything the fetcher needs. Built from `abmx.toml` by the CLI.
 #[derive(Debug, Clone)]
 pub struct GmailConfig {
@@ -36,6 +33,10 @@ pub struct GmailConfig {
     pub client_id: String,
     pub client_secret: Option<String>,
     pub token_path: PathBuf,
+    /// Labels under this prefix belong to abmx; the remainder is the parser id.
+    pub prefix: String,
+    /// Ignore mail received before this date.
+    pub since: Option<chrono::NaiveDate>,
     /// Hard cap. Exceeding it is an error, never a silent truncation.
     pub max_messages: usize,
 }
@@ -49,6 +50,8 @@ impl GmailConfig {
             client_id: client_id.into(),
             client_secret: None,
             token_path: token_path.into(),
+            prefix: "Receipt/abmx:".to_owned(),
+            since: None,
             max_messages: 10_000,
         }
     }
@@ -56,6 +59,8 @@ impl GmailConfig {
 
 pub struct GmailFetcher {
     client: GmailClient,
+    prefix: String,
+    since: Option<chrono::NaiveDate>,
     max_messages: usize,
 }
 
@@ -76,6 +81,8 @@ impl GmailFetcher {
 
         Ok(Self {
             client,
+            prefix: config.prefix,
+            since: config.since,
             max_messages: config.max_messages.max(1),
         })
     }
@@ -89,13 +96,18 @@ impl GmailFetcher {
         self.client.list_labels()
     }
 
-    /// Every label under the `abmx:` prefix, sorted by name.
-    pub fn abmx_labels(&self) -> Result<Vec<GmailLabel>, GmailError> {
+    /// Every label under the configured prefix, sorted by name.
+    ///
+    /// The prefix is matched case-insensitively: Gmail preserves the case the
+    /// user typed, and `Receipt/abmx:` vs `receipt/abmx:` must not split the
+    /// corpus.
+    pub fn routed_labels(&self) -> Result<Vec<GmailLabel>, GmailError> {
+        let prefix = self.prefix.to_ascii_lowercase();
         let mut labels: Vec<GmailLabel> = self
             .client
             .list_labels()?
             .into_iter()
-            .filter(|label| label.name.starts_with(LABEL_PREFIX))
+            .filter(|label| label.name.to_ascii_lowercase().starts_with(&prefix))
             .collect();
         labels.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(labels)
@@ -103,11 +115,19 @@ impl GmailFetcher {
 
     /// Every message id carrying a label id, fully paginated.
     pub fn message_ids(&self, label_id: &str) -> Result<Vec<String>, GmailError> {
+        let mut query = "-in:spam -in:trash".to_owned();
+        if let Some(since) = self.since {
+            // Gmail's `after:` is exclusive; subtract a day so `since` includes
+            // the day the user typed.
+            let after = since - chrono::Duration::days(1);
+            query.push_str(&format!(" after:{}", after.format("%Y/%m/%d")));
+        }
+
         let mut ids = Vec::new();
         let mut page_token = None;
         loop {
             let page = self.client.list_messages(
-                "-in:spam -in:trash",
+                &query,
                 &[label_id.to_owned()],
                 page_token.as_deref(),
                 500,

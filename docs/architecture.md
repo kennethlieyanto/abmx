@@ -46,7 +46,7 @@ state**. Copying the stages would give symmetry but the wrong abstraction —
 | Parser            | Sync                | Difference                                              |
 | ----------------- | ------------------- | ------------------------------------------------------- |
 | input             | **Fetcher**         | same role, transport varies per user                    |
-| label routing     | `[labels]`          | the user's label names the parser; no inference         |
+| label routing     | gmailctl + `[labels.accounts]` | the label names the parser; the config maps it to an account |
 | parser spec       | `abmx-parser`       | not reimplemented                                       |
 | extraction result | `abmx-tx` contract  | the shared vocabulary between the halves                |
 | output schema     | **Policy → Sink**   | the decision and the write are separate                 |
@@ -71,17 +71,18 @@ pub trait Fetcher {
 - **Bytes, not transactions.** A fetcher produces RFC 5322 bytes. Parsing is
   always the parser's job.
 - **Label-tagged messages.** Each `RawMessage` carries the `abmx:*` label that
-  selected it, so the caller chooses the parser from `[labels]` without guessing.
+  selected it, so the caller chooses the parser from the label and the account from `[labels.accounts]` without guessing.
 
-### Policy
+### Classification
 
 ```rust
-pub fn decide(tx: &Transaction, policy: &PolicyConfig, accounts: &AccountMap) -> Decision;
+pub fn check_transaction(tx: &Transaction, accounts: &AccountMap) -> Result<(), BrokenReason>;
 ```
 
-A pure function: no clock, no I/O, no randomness. Same input, same decision —
-which is what makes plans reproducible and review queues meaningful. The whole
-decision layer is tested by a truth table, not by integration tests.
+A pure function: no clock, no I/O, no randomness. It answers one question — is
+this labeled row safe to write? `BrokenReason` names the defect (`heuristic`,
+`zero_amount`, `unmapped_account`, `bank_declared_failed`), which is what makes
+the failure actionable. There is no per-row human queue.
 
 ### Sink
 
@@ -103,7 +104,7 @@ pub trait Sink {
 - **Partial success is a `Report`, not an error.** A sink that imported 49 of 50
   rows should say so. The Actual sink bisects a failing chunk into single rows so
   one bad row cannot cost the rest.
-- **`snapshot()` is the read side.** `abmx diff` needs to know what the ledger
+- **`snapshot()` is the read side.** `abmx sync --dry-run --diff` needs to know what the ledger
   already holds, and only the sink knows how to ask. The method is read-only by
   contract, and a sink that cannot answer returns an error rather than an empty
   list, so "no matches" is never confused with "I cannot see".
@@ -115,7 +116,6 @@ SQLite, not a JSON blob:
 ```sql
 meta      (key, value)                       -- parser schema version, tool version
 messages  (key, sink, tx_id, disposition, seen_at)
-review    (tx_id, message, reason, payload, created_at)
 ```
 
 What is **not** stored: which transactions the sink accepted. That belongs to an
@@ -129,12 +129,12 @@ gone, remove the source (`abmx reset` forces the rebuild).
 
 ## Plan / apply
 
-`plan` reads the delivered set; it never records progress. `apply` is the only
-writer. That split gives you, for free:
+Planning reads the delivered set; it never records progress. Applying is the
+only writer. That split gives you, for free:
 
-- `--dry-run` (print the plan, apply nothing),
-- review-before-write (`plan > plan.json`, inspect, then `apply --plan`),
-- replay after a sink outage,
+- `--dry-run` (print the plan, write nothing),
+- `--json` (the plan on stdout, the summary on stderr),
+- `--diff` (compare the plan with the ledger without applying),
 - deterministic test fixtures.
 
 `Plan` carries the full transaction, not a reference, so it survives without the
@@ -148,7 +148,7 @@ messages under each one, and lets the state database skip what was already
 delivered.
 
 ```
-list labels ──► validate [labels] ──► list messages per label
+list labels ──► validate [labels.accounts] ──► list messages per label
       │                                      │
       │ missing parser/account               ▼
       └──────────── abort ─────────── fetch raw + tag label

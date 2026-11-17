@@ -6,13 +6,13 @@ use std::path::PathBuf;
 use abmx::state::State;
 use abmx::Runner;
 use abmx_actual::{ActualConfig, ActualSink, NotesConfig};
-use abmx_core::{ApplyOptions, FetchRequest, LabelRoute, LabelRoutes, PolicyConfig};
+use abmx_core::{AccountMap, ApplyOptions, FetchRequest};
 use abmx_gmail::auth::{Credentials, TokenStore};
 use abmx_gmail::{GmailConfig, GmailFetcher};
 use abmx_testkit::{MockServer, Response};
 use base64::Engine;
 
-const LABEL: &str = "abmx:test";
+const LABEL: &str = "Receipt/abmx:test.bank";
 
 const PARSER: &str = r#"
 spec_version = 2
@@ -81,19 +81,14 @@ fn gmail_fetcher(server: &MockServer, dir: &std::path::Path) -> GmailFetcher {
     let mut config = GmailConfig::new("client", &token_path);
     config.base_url = format!("{}/gmail/v1", server.url());
     config.token_url = format!("{}/token", server.url());
+    config.prefix = "Receipt/abmx:".to_owned();
     GmailFetcher::new(config).unwrap()
 }
 
-fn routes() -> LabelRoutes {
-    let mut routes = LabelRoutes::default();
-    routes.insert(
-        LABEL,
-        LabelRoute {
-            parser: "test.bank".to_owned(),
-            account: "acc-1".to_owned(),
-        },
-    );
-    routes
+fn accounts() -> AccountMap {
+    let mut accounts = AccountMap::new();
+    accounts.insert("test.bank", "acc-1");
+    accounts
 }
 
 #[test]
@@ -113,7 +108,7 @@ fn gmail_to_parser_to_actual() {
         "GET",
         "/gmail/v1/users/me/labels",
         vec![Response::json(
-            r#"{"labels":[{"id":"Label_1","name":"abmx:test"}]}"#,
+            r#"{"labels":[{"id":"Label_1","name":"Receipt/abmx:test.bank"}]}"#,
         )],
     );
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(EMAIL);
@@ -142,8 +137,8 @@ fn gmail_to_parser_to_actual() {
 
     let runner = Runner::new(
         parser,
-        PolicyConfig::default(),
-        routes(),
+        "Receipt/abmx:",
+        accounts(),
         State::open_in_memory().unwrap(),
     );
 

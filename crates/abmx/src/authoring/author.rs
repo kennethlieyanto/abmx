@@ -1,50 +1,55 @@
-//! `abmx author`: inventory `abmx:*` labels and package the last three samples
+//! `abmx author`: inventory routed labels and package the last three samples
 //! of each into a prompt.
 //!
-//! There is no sender clustering, no amount heuristic, and no representative
-//! message. The user labels mail; the label is the contract. A label with no
-//! parser or no mapping is a defect, not a hint.
+//! Routing is the label: `Receipt/abmx:<parser-id>`. gmailctl creates the label
+//! and the filter; abmx only reports whether that label has a parser, an
+//! account, and samples that parse strictly. There is no sender clustering and
+//! no amount heuristic.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use abmx_core::LabelRoutes;
 use abmx_gmail::GmailFetcher;
 use anyhow::{Context as _, Result};
+
+use crate::config::LabelsSection;
 
 use super::samples::{self, Sample};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LabelStatus {
-    /// Parser exists, mapping exists, and the last samples are all `strict`.
+    /// Parser exists, account mapping exists, last samples all strict.
     Ok,
-    /// A Gmail `abmx:*` label has no `[labels]` entry.
-    MissingMapping,
-    /// The configured parser directory does not exist.
+    /// The label's remainder is not a valid parser id.
+    BadLabel,
+    /// The parser id has no `[labels.accounts]` entry.
+    MissingAccount,
+    /// The parser directory does not exist.
     MissingParser,
     /// The parser exists but at least one of the last samples failed.
     ParseFailed,
-    /// The last samples do not share a label skeleton: the label is mislabeled.
+    /// The samples do not share a label skeleton: the label mixes templates.
     MixedShapes,
     /// Fewer than three messages: a parser cannot be trusted yet.
     InsufficientSamples,
     /// The label has no mail.
     Empty,
-    /// A `[labels]` entry has no matching Gmail label.
-    Orphan,
+    /// A `[labels.accounts]` entry has no matching Gmail label.
+    OrphanAccount,
 }
 
 impl LabelStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ok => "ok",
-            Self::MissingMapping => "missing_mapping",
+            Self::BadLabel => "bad_label",
+            Self::MissingAccount => "missing_account",
             Self::MissingParser => "missing_parser",
             Self::ParseFailed => "parse_failed",
             Self::MixedShapes => "mixed_shapes",
             Self::InsufficientSamples => "insufficient_samples",
             Self::Empty => "empty",
-            Self::Orphan => "orphan_config",
+            Self::OrphanAccount => "orphan_account",
         }
     }
 
@@ -111,26 +116,27 @@ pub struct Context<'a> {
     pub corpus: &'a Path,
     pub work_dir: &'a Path,
     pub summaries: &'a [abmx_parser::SpecSummary],
+    pub prefix: &'a str,
 }
 
 pub fn scan_gmail(
     fetcher: &GmailFetcher,
     parser: Option<&abmx_parser::Parser>,
-    routes: &LabelRoutes,
+    labels: &LabelsSection,
     options: &Options,
     work_dir: &Path,
 ) -> Result<Inventory> {
-    let mut labels = fetcher.abmx_labels()?;
+    let mut found = fetcher.routed_labels()?;
     if let Some(only) = &options.label {
-        labels.retain(|label| &label.name == only);
-        if labels.is_empty() {
-            anyhow::bail!("no `abmx:*` label named `{only}`");
+        found.retain(|label| label.name == *only);
+        if found.is_empty() {
+            anyhow::bail!("no routed label named `{only}`");
         }
     }
 
     let mut inventory = Inventory::default();
-    for label in &labels {
-        let route = routes.get(&label.name);
+    for label in &found {
+        let parser_id = labels.parser_id(&label.name);
         let ids = fetcher.label_message_ids(&label.name)?;
         let mut samples = Vec::new();
         let mut notes = Vec::new();
@@ -145,11 +151,13 @@ pub fn scan_gmail(
             }
         }
 
-        let status = evaluate(parser, route, &samples, &mut notes);
+        let status = evaluate(parser, labels, parser_id.as_deref(), &samples, &mut notes);
         inventory.labels.push(LabelReport {
             label: label.name.clone(),
-            parser: route.map(|route| route.parser.clone()),
-            account: route.map(|route| route.account.clone()),
+            parser: parser_id.clone(),
+            account: parser_id
+                .as_deref()
+                .and_then(|parser| labels.accounts.get(parser).cloned()),
             status,
             messages: ids.len(),
             samples,
@@ -157,17 +165,20 @@ pub fn scan_gmail(
         });
     }
 
-    let gmail_names: BTreeSet<&str> = labels.iter().map(|label| label.name.as_str()).collect();
-    for (name, route) in routes.iter() {
-        if !gmail_names.contains(name.as_str()) {
+    let routed: BTreeSet<String> = found
+        .iter()
+        .filter_map(|label| labels.parser_id(&label.name))
+        .collect();
+    for parser_id in labels.accounts.keys() {
+        if !routed.contains(parser_id) {
             inventory.orphans.push(LabelReport {
-                label: name.clone(),
-                parser: Some(route.parser.clone()),
-                account: Some(route.account.clone()),
-                status: LabelStatus::Orphan,
+                label: format!("{}{}", labels.prefix, parser_id),
+                parser: Some(parser_id.clone()),
+                account: Some(labels.accounts[parser_id].clone()),
+                status: LabelStatus::OrphanAccount,
                 messages: 0,
                 samples: Vec::new(),
-                notes: vec!["[labels] entry has no matching Gmail label".to_owned()],
+                notes: vec!["[labels.accounts] entry has no routed Gmail label".to_owned()],
             });
         }
     }
@@ -175,25 +186,36 @@ pub fn scan_gmail(
     Ok(inventory)
 }
 
-/// Offline mode. Immediate subdirectories are labels; a flat directory uses
-/// `--label`, or `abmx:dir`.
+/// Offline mode. Immediate subdirectories are labels; a flat directory needs
+/// `--label`, or exactly one configured parser.
 pub fn scan_input(
     input: &Path,
     parser: Option<&abmx_parser::Parser>,
-    routes: &LabelRoutes,
+    labels: &LabelsSection,
     options: &Options,
     work_dir: &Path,
 ) -> Result<Inventory> {
     let set = samples::load_path(input, options.samples.max(1))?;
-    let mut inventory = Inventory::default();
+    let default_label = options.label.clone().or_else(|| {
+        if labels.accounts.len() == 1 {
+            let parser = labels.accounts.keys().next().expect("one entry");
+            Some(format!("{}{}", labels.prefix, parser))
+        } else {
+            None
+        }
+    });
 
+    let mut inventory = Inventory::default();
     for group in &set.groups {
         let label = group
             .label
             .clone()
             .or_else(|| options.label.clone())
-            .unwrap_or_else(|| "abmx:dir".to_owned());
-        let route = routes.get(&label);
+            .or_else(|| default_label.clone());
+        let Some(label) = label else {
+            anyhow::bail!("--input needs --label unless exactly one parser is configured");
+        };
+        let parser_id = labels.parser_id(&label);
         let mut notes = Vec::new();
         let mut samples = Vec::new();
 
@@ -212,11 +234,13 @@ pub fn scan_input(
             }
         }
 
-        let status = evaluate(parser, route, &samples, &mut notes);
+        let status = evaluate(parser, labels, parser_id.as_deref(), &samples, &mut notes);
         inventory.labels.push(LabelReport {
             label,
-            parser: route.map(|route| route.parser.clone()),
-            account: route.map(|route| route.account.clone()),
+            parser: parser_id.clone(),
+            account: parser_id
+                .as_deref()
+                .and_then(|parser| labels.accounts.get(parser).cloned()),
             status,
             messages: group.samples.len(),
             samples,
@@ -233,7 +257,8 @@ pub fn scan_input(
 
 fn evaluate(
     parser: Option<&abmx_parser::Parser>,
-    route: Option<&abmx_core::LabelRoute>,
+    labels: &LabelsSection,
+    parser_id: Option<&str>,
     samples: &[Sample],
     notes: &mut Vec<String>,
 ) -> LabelStatus {
@@ -241,46 +266,58 @@ fn evaluate(
         return LabelStatus::Empty;
     }
 
-    let mixed = mixed_shapes(samples);
-    if mixed {
-        notes.push(
-            "the samples do not share a label skeleton; the Gmail label likely mixes templates"
-                .to_owned(),
-        );
-    }
-
-    let Some(route) = route else {
-        return LabelStatus::MissingMapping;
+    let Some(parser_id) = parser_id else {
+        notes.push(format!(
+            "the label does not encode a parser id after `{}`",
+            labels.prefix
+        ));
+        return LabelStatus::BadLabel;
     };
+
+    if !labels.accounts.contains_key(parser_id) {
+        notes.push(format!(
+            "parser `{parser_id}` has no [labels.accounts] entry"
+        ));
+        return LabelStatus::MissingAccount;
+    }
 
     let Some(parser) = parser else {
         return LabelStatus::MissingParser;
     };
 
-    if parser.registry().find(&route.parser).is_none() {
-        notes.push(format!(
-            "configured parser `{}` is not in the corpus",
-            route.parser
-        ));
+    if parser.registry().find(parser_id).is_none() {
+        notes.push(format!("parser `{parser_id}` is not in the corpus"));
         return LabelStatus::MissingParser;
     }
 
-    if mixed {
+    if mixed_shapes(samples) {
+        notes.push(
+            "the samples do not share a label skeleton; the routed label likely mixes templates"
+                .to_owned(),
+        );
         return LabelStatus::MixedShapes;
     }
 
     let mut failed = false;
     for sample in samples {
         match parser.parse_bytes_with(
-            &route.parser,
+            parser_id,
             &std::fs::read(&sample.origin).unwrap_or_default(),
             Some(sample.origin.clone()),
-            &sample.email.from.email,
+            parser_id,
         ) {
             Ok(abmx_parser::Outcome::Parsed(transaction)) => {
-                if transaction.extraction != abmx_parser::Extraction::Strict {
+                if transaction.status == abmx_parser::Status::Failed {
                     failed = true;
-                    notes.push(format!("{}: {}", sample.file_name, "not strict"));
+                    notes.push(format!(
+                        "{}: bank reported the transaction as failed; gmailctl should not route it",
+                        sample.file_name
+                    ));
+                } else if transaction.extraction != abmx_parser::Extraction::Strict
+                    || transaction.amount.amount_minor == 0
+                {
+                    failed = true;
+                    notes.push(format!("{}: not a strict, non-zero row", sample.file_name));
                 }
             }
             Ok(abmx_parser::Outcome::Missing(parser)) => {
@@ -367,7 +404,7 @@ pub fn summary(inventory: &Inventory) -> String {
     ));
     for report in inventory.labels.iter().chain(inventory.orphans.iter()) {
         out.push_str(&format!(
-            "  {:<24} {:<20} {:>4}  {}\n",
+            "  {:<32} {:<20} {:>4}  {}\n",
             report.label,
             report.status.as_str(),
             report.messages,
@@ -379,11 +416,11 @@ pub fn summary(inventory: &Inventory) -> String {
 
 pub fn render(context: &Context<'_>, inventory: &Inventory) -> String {
     let mut out = String::new();
-    out.push_str("# Task: author parsers for `abmx:*` labels\n\n");
+    out.push_str("# Task: author parsers for routed labels\n\n");
     out.push_str(
-        "Every `abmx:*` Gmail label is an explicit instruction to import that mail. \
-         One label maps to one parser and one ledger account. There is no sender or \
-         subject routing, and no guessing.\n\n",
+        "Every routed Gmail label is an explicit instruction to import that mail. One label \
+         maps to one parser and one ledger account. gmailctl owns routing and classification; \
+         do not re-implement it in a parser, and do not guess.\n\n",
     );
 
     out.push_str("## Environment\n\n");
@@ -403,13 +440,19 @@ pub fn render(context: &Context<'_>, inventory: &Inventory) -> String {
         context.work_dir.display()
     ));
     out.push_str(&format!(
+        "- label prefix: `{}`; the remainder is the parser id\n",
+        context.prefix
+    ));
+    out.push_str(&format!(
         "- spec format: `spec_version = {}` (extraction only; there is no `[match]` section)\n",
         abmx_parser::SPEC_VERSION
     ));
     out.push_str("- config contract:\n\n```toml\n[labels]\n");
-    out.push_str(
-        "\"abmx:<id>\" = { parser = \"<parser-id>\", account = \"<actual-account-uuid>\" }\n```\n\n",
-    );
+    out.push_str(&format!(
+        "prefix = \"{}\"\n\n[labels.accounts]\n",
+        context.prefix
+    ));
+    out.push_str("\"<parser-id>\" = \"<actual-account-uuid>\"\n```\n\n");
 
     out.push_str("## Inventory\n\n");
     out.push_str("| label | status | messages | parser | account |\n");
@@ -436,8 +479,8 @@ pub fn render(context: &Context<'_>, inventory: &Inventory) -> String {
 
     if !inventory.orphans.is_empty() {
         out.push_str(
-            "> `orphan_config` entries name a Gmail label that does not exist. Fix the label \
-             name or remove the `[labels]` entry.\n\n",
+            "> `orphan_account` entries name a parser with no routed Gmail label. Add a gmailctl \
+             rule, or remove the `[labels.accounts]` entry.\n\n",
         );
     }
 
@@ -482,8 +525,8 @@ pub fn render(context: &Context<'_>, inventory: &Inventory) -> String {
             LabelStatus::MixedShapes => {
                 out.push_str(
                     "**Do not write a parser for this label.** The samples are different \
-                     templates. Fix the Gmail label or the filter so that one label covers one \
-                     template, then re-run `abmx author`.\n\n",
+                     templates. Fix the gmailctl rule so one label covers one template, then \
+                     re-run `abmx author`.\n\n",
                 );
             }
             LabelStatus::InsufficientSamples => {
@@ -495,10 +538,16 @@ pub fn render(context: &Context<'_>, inventory: &Inventory) -> String {
             LabelStatus::Empty => {
                 out.push_str("The label has no mail. Nothing to author yet.\n\n");
             }
-            LabelStatus::MissingMapping => {
+            LabelStatus::MissingAccount => {
                 out.push_str(
-                    "Add a `[labels]` entry with the parser id and the ledger account first. \
-                     Run `abmx accounts --json` and ask the user which account to use.\n\n",
+                    "Add a `[labels.accounts]` entry for this parser id first. Run \
+                     `abmx accounts --json` and ask the user which account to use.\n\n",
+                );
+            }
+            LabelStatus::BadLabel => {
+                out.push_str(
+                    "The gmailctl rule attached a label whose remainder is not a parser id. \
+                     Fix the rule; do not write a parser.\n\n",
                 );
             }
             LabelStatus::MissingParser if report.samples.is_empty() => {
@@ -567,17 +616,17 @@ pub fn render(context: &Context<'_>, inventory: &Inventory) -> String {
 
     out.push_str("## Rules\n\n");
     out.push_str(
-        "- Write **one** parser per label. It must parse every sample above as `strict`.\n\
+        "- Write **one** parser per label. It must parse every sample above as `strict`, \
+         non-zero, and not `failed`.\n\
          - If it cannot, stop and report the mismatch. Do not split the label into several \
          parsers and do not relax extraction to make one sample pass.\n\
          - `labels.list` must contain every constant label block, in document order.\n\
          - Use the body date, the printed amount, and the correct `number` style.\n\
          - Ask the user for the ledger account; never invent a UUID.\n\
          - Copy the samples into `<corpus>/<parser-id>/fixtures/01.eml`, `02.eml`, …\n\
-         - Verify with `abmx verify parser <corpus>/<parser-id>` and \
-         `abmx verify parser --id <parser-id> --label <label>`.\n\
-         - If the label is wrong, ask the user to fix the Gmail label/filter rather than \
-         encoding the mistake in a parser.\n\n",
+         - Verify with `abmx parser check --parser <parser-id>` once the files are in place.\n\
+         - If the label is wrong, ask the user to fix the gmailctl rule rather than encoding \
+         the mistake in a parser.\n\n",
     );
 
     out.push_str("## Current parser corpus\n\n");
@@ -632,7 +681,10 @@ mod tests {
 
     #[test]
     fn safe_names_are_filesystem_friendly() {
-        assert_eq!(safe_name("abmx:example-qris"), "abmx-example-qris");
+        assert_eq!(
+            safe_name("Receipt/abmx:example.card_debit"),
+            "receipt-abmx-example-card-debit"
+        );
     }
 
     #[test]

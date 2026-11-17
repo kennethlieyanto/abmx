@@ -119,7 +119,7 @@ one:
 labelIds=<label id>  q=-in:spam -in:trash
 ```
 
-- Every `abmx:*` label must have an entry in `[labels]`; an unmapped label is an
+- Every label under `[labels].prefix` must have an entry in `[labels.accounts]`; an unrouted label is an
   error, not a silent skip.
 - A message carrying two `abmx:*` labels is an error; the routing is ambiguous.
 - Full pagination is used. If `max_messages` is exceeded, the run fails rather
@@ -131,10 +131,10 @@ labelIds=<label id>  q=-in:spam -in:trash
 
 Labels are the routing identity, not a hint. The user applies exactly one
 `abmx:<id>` label to tracked mail (a Gmail filter is the usual way), and
-`[labels]` maps it to a parser and a ledger account.
+`[labels.accounts]` maps the parser id to a ledger account.
 
 ```bash
-abmx author --label abmx:example-qris
+abmx author --label Receipt/abmx:example-qris
 ```
 
 `abmx author` takes the newest three messages under the label, writes them under
@@ -161,8 +161,8 @@ exits `0`, and it prints a warning with the manual URL:
 
 <https://myaccount.google.com/permissions>
 
-`auth logout` does **not** touch sync state. The cursor, delivered messages and
-review queue stay, so the next sync continues where it left off. Use
+`auth logout` does **not** touch sync state. Delivered messages stay recorded,
+so the next sync continues where it left off. Use
 `abmx reset` if you also want it to re-fetch everything.
 
 ## Troubleshooting
@@ -176,14 +176,14 @@ review queue stay, so the next sync continues where it left off. Use
 | `no refresh token returned` | Google only returns one on the first consent | remove app access, re-authorize (the flow already sends `prompt=consent`) |
 | browser shows "This site can't be reached" after approving | the redirect's `127.0.0.1` is the browser's machine, not the CLI's | `abmx auth gmail --manual`, then paste the URL from the address bar |
 | `state mismatch` | the pasted URL came from a different run | re-run `--manual` and paste the URL from that same run |
-| nothing found | sender list does not match your bank's actual address | `abmx parsers`, then compare with a real email |
+| nothing found | sender list does not match your bank's actual address | `abmx status`, then compare with a real email |
 
 ## Verifying without Gmail
 
 You do not need OAuth to test the pipeline:
 
 ```bash
-abmx plan --from-dir ./saved-emails/
+abmx sync --dry-run --from-dir ./saved-emails --label "Receipt/abmx:<id>"
 ```
 
 Save a few real `.eml` files (or export them) and run against those. Same parser,

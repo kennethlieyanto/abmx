@@ -85,7 +85,10 @@ budget_sync_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 # budget_password_file = "/run/credentials/abmx.service/actual-budget-password"
 
 [labels]
-"abmx:example-card" = { parser = "example-card", account = "00000000-0000-0000-0000-000000000000" }
+prefix = "Receipt/abmx:"
+
+[labels.accounts]
+"example-card" = "00000000-0000-0000-0000-000000000000"
 ```
 
 Find the **Sync ID** in Actual: Settings → Show advanced settings → Sync ID.
@@ -95,7 +98,7 @@ Find account UUIDs with:
 abmx accounts
 ```
 
-That prints every account with its id and whether `[labels]` maps onto it. The
+That prints every account with its id and whether `[labels.accounts]` maps onto it. The
 mapping is never inferred: the label is the routing identity, the account UUID is
 the ledger destination, and guessing would be how transactions end up in the
 wrong account.
@@ -156,27 +159,26 @@ That id is a hash of the email's `Message-ID`, so it is stable across parser
 changes and re-runs. Actual's `importTransactions` will never add the same
 `imported_id` twice.
 
-### Seeing what will happen first: `abmx diff`
+### Seeing what will happen first: `abmx sync --dry-run --diff`
 
 `importTransactions` reconciles by `imported_id` **and** by a fuzzy
 amount/date/payee match. That second path is where surprises live: a row that
 already exists under a *different* importer's id (a CSV import, a bank sync)
 can end up duplicated instead of reconciled.
 
-`abmx diff` reads the ledger for the plan's date window and classifies every
-row before anything is written:
+`abmx sync --dry-run --diff` reads the ledger for the plan's date window and
+classifies every row before anything is written:
 
 ```
-date               amount account        counterparty                   ledger
-2026-11-12    -128000 IDR example-account    EXAMPLE PAYEE               new
-2026-11-07    -372000 IDR example-account    EXAMPLE PAYEE            match (manual entry)
-2026-11-06     -72000 IDR example-account    EXAMPLE MERCHANT         match (foreign id example-2026-11-06-merchant)
+ledger: 12 new, 2 already present, 1 foreign imported_id
+  foreign  2026-11-06  -72,000 IDR  EXAMPLE MERCHANT  imported as example-2026-11-06-merchant
 ```
 
 - `new` — nothing in the ledger has this account, date and amount.
-- `match (manual entry)` — a manual row will be reconciled (usually what you want).
-- `match (foreign id …)` — the existing row came from another importer, so expect
-  a duplicate; `diff` exits `3` when any row looks like this.
+- `already present` — a manual row or a row abmx itself imported; it will reconcile.
+- `foreign imported_id` — the existing row came from another importer, so expect a
+  duplicate. The exit code is still `0` unless a label is broken; treat the
+  foreign line as a warning before applying for real.
 
 The match is deliberately conservative: account + date + amount only. Payee
 similarity is Actual's judgement, not ours.
@@ -264,7 +266,7 @@ still validates the account ids and the payload.
 | `Unknown error while interacting with Actual Api` | wrapper cannot reach Actual | check `ACTUAL_SERVER_URL` from *inside* the container; `just actual-api-logs` |
 | amounts are 100× too big | you are not using `abmx`'s sink | do not hand-write the `amount` field |
 | rows appear twice | a sink other than `importTransactions` was used | `abmx` always uses the reconciling import endpoint |
-| `account not found` | mapping points at a deleted account | `abmx accounts`, then fix `[labels]` |
+| `account not found` | mapping points at a deleted account | `abmx accounts`, then fix `[labels.accounts]` |
 | container exits immediately | `./var/actual-http-api` not writable | `just actual-api` creates it owned by you; if it is root-owned, remove it and retry |
 
 ## Concurrency

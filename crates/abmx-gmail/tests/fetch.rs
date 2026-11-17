@@ -24,6 +24,7 @@ fn fetcher(server: &MockServer, dir: &std::path::Path) -> GmailFetcher {
     let mut config = GmailConfig::new("client", store.path());
     config.base_url = format!("{}/gmail/v1", server.url());
     config.token_url = format!("{}/token", server.url());
+    config.prefix = "abmx:".to_owned();
     GmailFetcher::new(config).unwrap()
 }
 
@@ -87,7 +88,7 @@ fn fetch_is_driven_by_the_configured_label() {
 }
 
 #[test]
-fn a_message_under_two_abmx_labels_is_rejected() {
+fn a_message_under_two_routed_labels_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let server = MockServer::start();
     token_route(&server);
@@ -188,7 +189,7 @@ fn sampling_a_label_returns_the_newest_messages() {
 }
 
 #[test]
-fn abmx_labels_are_filtered_and_sorted() {
+fn routed_labels_are_filtered_and_sorted() {
     let dir = tempfile::tempdir().unwrap();
     let server = MockServer::start();
     token_route(&server);
@@ -196,7 +197,7 @@ fn abmx_labels_are_filtered_and_sorted() {
 
     let fetcher = fetcher(&server, dir.path());
     let labels: Vec<String> = fetcher
-        .abmx_labels()
+        .routed_labels()
         .unwrap()
         .into_iter()
         .map(|label| label.name)

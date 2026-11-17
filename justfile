@@ -25,7 +25,7 @@ test:
 # Everything CI runs, including the parser corpus.
 ci: check test fixtures
 
-# Run the binary, e.g. `just run plan --from-dir ./mail`.
+# Run the binary, e.g. `just run status`.
 run *args:
     cargo run -q -p abmx -- {{args}}
 
@@ -46,11 +46,13 @@ demo dir parser="example.journal_transfer" parsers="parsers":
     path = "$work/ledger.jsonl"
 
     [labels]
-    "abmx:dir" = { parser = "{{parser}}", account = "demo" }
+    prefix = "Receipt/abmx:"
+
+    [labels.accounts]
+    "{{parser}}" = "demo"
     EOF
-    cargo run -q -p abmx -- --config "$work/abmx.toml" plan --from-dir "$work/mail" -v > /dev/null || true
-    cargo run -q -p abmx -- --config "$work/abmx.toml" sync --from-dir "$work/mail"
-    cargo run -q -p abmx -- --config "$work/abmx.toml" review || true
+    cargo run -q -p abmx -- --config "$work/abmx.toml" sync --dry-run --from-dir "$work/mail" --label "Receipt/abmx:{{parser}}"
+    cargo run -q -p abmx -- --config "$work/abmx.toml" sync --from-dir "$work/mail" --label "Receipt/abmx:{{parser}}"
     echo "ledger: $work/ledger.jsonl"
     cat "$work/ledger.jsonl"
 

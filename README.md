@@ -5,28 +5,28 @@ Sync bank transaction emails into an Actual Budget ledger — automatically.
 `abmx` fetches bank notification mail, parses it with a parser corpus you can
 teach without rebuilding, decides what is safe to import, and writes it to a
 ledger. It never guesses: an unsure parse, an unmapped account, or a row the
-bank reported as failed lands in a review queue instead.
+bank reported as failed is reported as a broken label and retried after the parser or Gmail rule is fixed.
 
 ```
-Gmail ──► abmx ──► parser corpus ──► policy ──► plan ──► Actual Budget
-         fetch     .eml → Transaction   decide    diff     apply
+Gmail (routed labels) ──► abmx ──► parser corpus ──► classify ──► Actual Budget
+                          fetch     .eml → Transaction   import      apply
 ```
 
 ```
 $ abmx sync
-fetched 15, parsed 12 — import 12, review 0, skip 0, unmatched 3, failed 0
+fetched 15, parsed 15 — import 13, broken 2, unmatched 0, failed 0
 
-date                 amount account        decision counterparty
-2026-11-12     -128,000 IDR example-account    import   EXAMPLE PAYEE
-2026-11-11     -124,300 IDR example-account    import   EXAMPLE MERCHANT
+date                 amount label                        counterparty
+2026-11-12     -128,000 IDR Receipt/abmx:example.card_debit  EXAMPLE PAYEE
+2026-11-11     -124,300 IDR Receipt/abmx:example.card_debit  EXAMPLE MERCHANT
 ...
 
-unmatched (3), no parser claimed them:
-  2026-11-06  "Login with Biometrics Activation Notification"   example@example.invalid
-  2026-11-06  "New Device Accessing myBank"                      example@example.invalid
-  2026-11-06  "Your example ID Password has been changed"           example@example.invalid
+broken (2), not imported:
+  Receipt/abmx:example.journal_va   parse_failed   amount: no value matched
+  next: abmx author --label Receipt/abmx:example.journal_va
+  nothing was written to the ledger
 
-applied: added 12, updated 0, skipped 0, errors 0
+applied: added 0, updated 0, skipped 0, errors 0
 ```
 
 `-q` prints only the two summary lines; `-v` adds the parser id and source
@@ -65,50 +65,51 @@ never reads the working directory.
 abmx init                       # writes ~/.config/abmx/config.toml
 $EDITOR ~/.config/abmx/config.toml   # Gmail client id + Actual endpoint
 abmx auth gmail                 # OAuth2 + PKCE, stores a refresh token (0600)
-abmx labels                     # inspect the abmx:* labels and their parsers
-abmx author                     # build a prompt for labels without a parser
-abmx sync                       # import everything labeled
+abmx status                     # config, corpus, labels, accounts, auth
+abmx sync --dry-run             # see the plan, write nothing
+abmx sync                       # import everything routed
 ```
 
-Routing is explicit. The user applies exactly one `abmx:<id>` label to a tracked
-message (a Gmail filter is the usual way), and `[labels]` in the config maps that
-label to a parser and a ledger account:
+Routing is explicit and lives in two places:
+
+- **gmailctl** labels the mail. A tracked message carries exactly one
+  `Receipt/abmx:<parser-id>` label; merchant receipts keep the plain `Receipt`
+  label and are never imported.
+- **`[labels.accounts]`** maps that parser id to an Actual account:
 
 ```toml
 [labels]
-"abmx:example-qris" = { parser = "example-qris", account = "<actual account uuid>" }
+prefix = "Receipt/abmx:"
+since  = 2026-11-10          # ignore mail received before this date
+
+[labels.accounts]
+"example.card_debit" = "<actual account uuid>"
 ```
 
-`abmx author` is the one step with a human in the loop. It takes the **last
-three** messages under every `abmx:*` label, writes them to
-`~/.local/state/abmx/author/<timestamp>/`, and emits a prompt with their block
-dumps:
+gmailctl owns classification: OTP and security mail go to `Notifications`,
+promos to `Newsletter`, merchant receipts to plain `Receipt`, statements to
+`Financial Statements`. `abmx` only sees what was explicitly routed to it.
+
+`abmx status` says what is missing. When a routed label has no parser,
+`abmx author` packages the newest three messages into a prompt:
 
 ```bash
-opencode --prompt "$(abmx author)"
+opencode run --auto "$(abmx author)"
 ```
 
 ```
-5 label(s), 15 sample(s); 1 need work
-  abmx:example-qris            missing_parser        3  -
-  abmx:example-journal         ok                    3  example-journal
+1 label(s), 3 sample(s); 1 need work
+  Receipt/abmx:example-qris      missing_parser      3  -
 ```
 
-The agent writes one parser per label, asks which ledger account it belongs to,
-and verifies all three samples. If the three are different templates, the label
-is mislabeled and the agent stops instead of guessing. Nothing to install,
-nothing to rebuild.
+The agent writes the parser straight into `~/.config/abmx/parsers/<id>/` with
+its fixtures, verifies it with `abmx parser check --parser <id>`, and updates
+`[labels.accounts]` after asking which account it belongs to.
 
-Already have `.eml` files? `abmx author --input <dir>` does the same offline.
-To make the next one a one-liner, install the skill once:
-
-```bash
-abmx generate skill parser --global
-```
-
-Then put `abmx sync` on a timer (see the NixOS module below). `sync` refuses to
-run when an `abmx:*` label has no parser or mapping, so nothing is silently
-skipped.
+Already have `.eml` files? `abmx author --input <dir> --label Receipt/abmx:<id>`
+does the same offline. Then put `abmx sync` on a timer (see the NixOS module
+below): `sync` refuses to run when a routed label has no parser or account, so
+nothing is silently skipped.
 
 ### You need
 
@@ -146,77 +147,49 @@ automatically — Actual's `cleared` flag stays yours to set against a statement
 
 ## Authoring a parser with an AI
 
-Parsers are runtime data: a `config.toml` per bank template, loaded from a
-directory. Adding one does not require rebuilding or writing code. The spec
-format is documented in [docs/parsing.md](docs/parsing.md).
+Parsers are runtime data: a `config.toml` per template, addressed by the parser
+id in the label. gmailctl routes; `abmx` parses. The spec format is in
+[docs/parsing.md](docs/parsing.md).
 
-`abmx author` does the packaging:
+`abmx author`:
 
-- **inventory** — list every `abmx:*` Gmail label and whether it has a parser and
-  an account.
-- **sample** — fetch the last three messages under each label, plus the variance
-  table that tells the agent which blocks are labels and which are values.
-- **refuse to guess** — a label with fewer than three samples is
-  `insufficient_samples`; a label whose samples are different templates is
-  `mixed_shapes` and the agent is told to fix the label, not split the parser.
+- inventories every label under `[labels].prefix` and reports
+  `missing_parser`, `missing_account`, `parse_failed`, `mixed_shapes`,
+  `insufficient_samples`, `empty`, or `orphan_account`;
+- samples the newest three messages per label, honouring `[labels].since`;
+- writes one representative `.eml` per label under
+  `~/.local/state/abmx/author/<timestamp>/`;
+- emits a prompt with block dumps and a variance table.
 
-The agent writes each parser straight into `~/.config/abmx/parsers/<id>/` with
-its fixtures and verifies it against all three samples.
-
-```bash
-opencode --prompt "$(abmx author)"
-```
-
-Options: `--label abmx:example-qris` restricts it to one label, `--samples N`
-changes the evidence depth, `--json` emits the machine-readable bundle, and
-`--input <dir>` works offline.
+Options: `--label <label>` restricts it to one route, `--samples N` changes the
+evidence depth, `--input <dir>` works offline, `--json` emits the bundle, and
+`--out FILE` writes the prompt instead of stdout.
 
 ### The verification loop
 
-The rules are the same whatever produced the draft. `abmx parser check` verifies
-every parser against its colocated fixtures; `abmx verify parser <dir>` checks
-one candidate against a directory of samples; `abmx verify parser --label`
-checks the live last-three under a label. A spec is only done when every sample
-is `strict`; `heuristic` means a zero amount or a missing field, and a missing
-parser means the label and the corpus disagree. `abmx parser explain` shows the
-region behind each field, and `abmx parser lint` catches the common spec
-mistakes before a sync.
+`abmx parser check --parser <id>` verifies the parser against its colocated
+fixtures. A spec is done when every sample is `strict`, non-zero, and not
+`failed`. `abmx status --strict` samples the live newest three under every
+routed label and reports the same statuses.
 
-```bash
-abmx parser check --parser example.card_debit
-abmx verify parser ~/.config/abmx/parsers/example.card_debit
-```
+If the samples under one label do not share a label skeleton, `author` reports
+`mixed_shapes` and tells the agent to fix the gmailctl rule rather than write a
+parser for two templates.
 
-### Manual prompt
+### Reusable skill
 
-If you want to drive the authoring yourself, `abmx author --input` renders a
-prompt from a directory of `.eml` files (one subdirectory per label):
-
-```bash
-abmx author --input ./eml-dir --out ./prompt.md
-opencode run --auto --file ./prompt.md "Follow the prompt."
-```
-
-### Reusable skills
-
-For recurring authoring, install the skills once:
-
-```bash
-abmx generate skill parser --global   # ~/.config/opencode/skills
-abmx generate skill parser --out .opencode/skills
-```
-
-Then the prompt is simply "author the parsers for these emails"; the skill knows
-the corpus layout, the verification loop, and the account-mapping rules.
+`abmx skill` prints the authoring skill to stdout. Save it under your agent's
+skills directory once; after that the prompt is simply "author the parsers for
+these emails".
 
 ## The four primitives
 
 | Primitive   | Responsibility                            | Ships with                 |
 | ----------- | ----------------------------------------- | -------------------------- |
 | **Fetcher** | a source of raw RFC 5322 bytes            | Gmail API, local directory |
-| **Policy**  | `Transaction` → import / review / skip    | one pure function          |
+| **Policy**  | `Transaction` → import or broken           | one pure function          |
 | **Sink**    | decided rows → the ledger                 | Actual Budget, JSONL file  |
-| **State**   | delivered messages, review queue          | SQLite                     |
+| **State**   | delivered messages                        | SQLite                     |
 
 A new mailbox is a new `Fetcher`. A new ledger is a new `Sink`. Neither requires
 touching the runner, the CLI, or the other integrations. Adding a *bank*, by
@@ -241,10 +214,10 @@ Three independent layers, because they fail in different ways:
 2. **State** — a delivered message is recorded so the next run doesn't even
    re-parse it. This is an optimisation for idempotent sinks and a requirement
    for sinks that have no idempotency key.
-3. **Label scan + state** — every run scans the configured `abmx:*` labels and
-   lets the state database skip messages already delivered. Mail labeled late is
-   picked up on the next run; a partial failure leaves the failed message unseen
-   so it is retried.
+3. **Label scan + state** — every run scans the labels under `[labels].prefix`
+   and lets the state database skip messages already delivered. Mail labeled late
+   is picked up on the next run; a broken row is never marked delivered, so it is
+   retried after the parser is fixed.
 
 ## Config
 
@@ -268,13 +241,12 @@ cleared = "never"
 # notes_fields = ["description", "reference_id", "channel", "parser"]
 
 [labels]
-"abmx:example-journal" = { parser = "example-journal", account = "<actual account uuid>" }
-"abmx:example-qris"    = { parser = "example-qris",    account = "<actual account uuid>" }
-"abmx:grab"        = { parser = "grab",        account = "<actual account uuid>" }
+prefix = "Receipt/abmx:"          # literal, case-insensitive
+since  = 2026-11-10               # ignore mail received before this date
 
-[policy]
-heuristic = "review"               # review | import | skip
-failed = "skip"                    # skip | review | import
+[labels.accounts]                 # parser id -> Actual account uuid
+"example.card_debit"       = "<actual account uuid>"
+"example.journal_transfer" = "<actual account uuid>"
 ```
 
 Resolution order: `--config` → `$ABMX_CONFIG` → `$XDG_CONFIG_HOME/abmx/config.toml`
@@ -307,29 +279,16 @@ directory sees the secrets without exporting them by hand.
 abmx init [--path FILE] [--force]   write a starter config
 abmx auth gmail [--manual]          OAuth2 + PKCE; --manual for a headless box
 abmx auth logout [--no-revoke]      revoke the refresh token, then remove it locally
-abmx doctor [--online] [--strict]     check config, parsers, labels, state, sink, auth
-abmx labels [--check] [--json]      every abmx:* label, its parser, and its account
-abmx author [--label L] [--samples N] [--json] [--input DIR] [--out FILE]
-                                      inventory labels and emit a prompt for the ones needing work
-abmx plan [--from-dir DIR] [--out FILE]
-                                      fetch + parse + decide, print the plan as JSON
-abmx apply [--plan FILE] [--dry-run]
-                                      write a plan (current or saved)
-abmx sync [--dry-run]               plan + apply; the timer entrypoint
-abmx diff [--json] [--since D] [--until D]
-                                      compare the plan against what the ledger already holds
-abmx reset [--review] [--purge] [--yes]
-                                      forget delivered messages
-abmx review [--json]                rows waiting for a human
-abmx approve <id>… [--dry-run]      import reviewed rows
-abmx accounts [--json]              sink accounts and how [labels] maps onto them
-abmx parsers                        loaded parsers and the labels they serve
+abmx status [--online] [--strict] [--check] [--json]
+                                      config, corpus, labels, accounts, state, sink, auth
+abmx author [--label L] [--samples N] [--input DIR] [--json] [--out FILE]
+                                      inventory routed labels and emit an authoring prompt
+abmx sync [--dry-run] [--json] [--diff] [--from-dir DIR] [--label L] [--limit N]
+                                      fetch, parse, and write the ledger
+abmx reset [--purge] [--yes]        forget delivered messages
+abmx accounts [--json]              sink accounts and how [labels.accounts] maps onto them
+abmx skill                          print the parser-authoring skill to stdout
 abmx dump <path> [--json]           normalized block dump (authoring aid)
-abmx verify parser <dir|config.toml> [--id ID] [--input DIR] [--json]
-                                      check a candidate parser against samples
-abmx verify parser <dir> --label abmx:example-qris [--all] [--limit N]
-                                      check it against the live last-three
-abmx generate skill parser …        write the OpenCode authoring skills
 
 abmx parser paths [--json]          parser search order and which directory won
 abmx parser specs [--format F]      loaded parsers and their files
@@ -349,50 +308,30 @@ Every `abmx parser` command takes `--parsers <dir>` (repeatable) or
 `/etc/abmx/parsers`. The working directory is never read. Fixtures are always
 read from the winning parser's own `fixtures/` directory.
 
-**stdout is data, stderr is diagnostics.** `abmx plan` writes the plan JSON to
-stdout and the human summary to stderr, so it pipes cleanly:
+**stdout is data, stderr is diagnostics.** `sync --dry-run --json` writes the
+plan JSON to stdout and the human summary to stderr, so it pipes cleanly:
 
 ```bash
-abmx plan --from-dir ./mail > plan.json
-abmx apply --plan plan.json --dry-run
+abmx sync --dry-run --json > plan.json
 ```
 
-`--from-dir` reads saved `.eml` files instead of calling Gmail. It is the fastest
-way to test a config, and the recovery path if a mailbox provider breaks.
+`--diff` (with `--dry-run`) additionally reads the ledger and reports rows that
+are already present, including any imported under a foreign `imported_id`.
+
+`--from-dir` reads saved `.eml` files instead of calling Gmail; with a flat
+directory it needs `--label`, unless exactly one parser is configured.
 
 ### Exit codes
 
-| Code | Meaning                                                                                                                                    |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `0`  | clean                                                                                                                                      |
-| `1`  | the tool failed (config, network, state)                                                                                                   |
-| `2`  | at least one message or row failed                                                                                                         |
-| `3`  | `plan` / `review` / `diff` only: rows are waiting for review, or `diff` found a row the ledger already holds under a foreign `imported_id` |
+| Code | Meaning |
+| --- | --- |
+| `0` | clean |
+| `1` | the tool failed (config, auth, network, state) |
+| `2` | one or more routed labels need a parser or account fix |
 
-`sync` and `apply` return `0` when the only outstanding work is a review row —
-a timer that fails every 15 minutes because one heuristic email is waiting is a
-timer nobody reads. Use `abmx review` (exit `3` when non-empty) to detect them.
-
-`abmx parser` follows the parser's own convention: `0` all strict, `2` unmatched
-or failed, `3` heuristic unless `--allow-heuristic`.
-
-## Policy
-
-| Situation                   | Default | Why                                   |
-| --------------------------- | ------- | ------------------------------------- |
-| `status = failed`           | skip    | the bank says it did not happen       |
-| `extraction = heuristic`    | review  | the amount is plausible, not verified |
-| zero amount                 | review  | almost always the wrong block matched |
-| label not in `[labels]`     | review  | never guess a ledger account          |
-| everything else             | import  |                                       |
-
-Review rows are **re-checked on every sync**, even though their messages are
-in the review queue: the queue stores the transaction, so fixing `[labels]` or
-`[policy]` imports them on the next run — no reset and no per-row approval.
-`abmx approve` is only for forcing a row the policy still rejects.
-
-`plan` and `--dry-run` do not record the queue (a dry run must not write state),
-so they say "would be held for review" rather than pointing at `abmx review`.
+`sync --dry-run` exits `2` when a label is broken, so a timer or healthcheck can
+alert without writing anything. A normal `sync` writes no rows at all when any
+label is broken: the summary names the label and the next command.
 
 ## Actual Budget specifics
 

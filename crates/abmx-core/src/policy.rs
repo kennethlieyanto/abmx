@@ -1,113 +1,14 @@
 use std::collections::BTreeMap;
 
-use abmx_parser::{Extraction, Status};
-use abmx_tx::Transaction;
 use serde::{Deserialize, Serialize};
 
-/// What to do with a row that `abmx-parser` marked `heuristic`.
+use abmx_parser::{Extraction, Status};
+use abmx_tx::Transaction;
+
+/// Parser id → sink account id.
 ///
-/// The default is `Review`: a heuristic row has a plausible but unverified
-/// amount, and writing a wrong amount into a ledger is worse than writing
-/// nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum HeuristicPolicy {
-    #[default]
-    Review,
-    Import,
-    Skip,
-}
-
-/// What to do with a row the bank reported as failed.
-///
-/// The default is `Skip`, and `abmx-parser`'s own contract says failed rows must not be
-/// imported. The other variants exist for ledgers that want the audit trail.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum FailedPolicy {
-    #[default]
-    Skip,
-    Review,
-    Import,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct PolicyConfig {
-    #[serde(default)]
-    pub heuristic: HeuristicPolicy,
-    #[serde(default)]
-    pub failed: FailedPolicy,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "decision", content = "detail", rename_all = "snake_case")]
-pub enum Decision {
-    /// Write this row to the sink.
-    Import,
-    /// Hold this row for a human. Never written to the sink.
-    Review(ReviewReason),
-    /// Drop this row deliberately, with a reason.
-    Skip(SkipReason),
-}
-
-impl Decision {
-    pub fn is_import(&self) -> bool {
-        matches!(self, Self::Import)
-    }
-
-    pub fn is_review(&self) -> bool {
-        matches!(self, Self::Review(_))
-    }
-
-    pub fn is_skip(&self) -> bool {
-        matches!(self, Self::Skip(_))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "reason", rename_all = "snake_case")]
-pub enum ReviewReason {
-    /// `abmx-parser` extracted a row but flagged it.
-    Heuristic { warnings: Vec<String> },
-    /// The parser's account key has no entry in `[accounts]`.
-    UnmappedAccount { account: String },
-    /// A zero amount almost always means the parser matched the wrong block.
-    ZeroAmount,
-}
-
-impl ReviewReason {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Heuristic { .. } => "heuristic",
-            Self::UnmappedAccount { .. } => "unmapped_account",
-            Self::ZeroAmount => "zero_amount",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "reason", rename_all = "snake_case")]
-pub enum SkipReason {
-    /// The bank reported the transaction as failed.
-    Failed,
-    /// A configured policy dropped it.
-    Policy { detail: String },
-}
-
-impl SkipReason {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Failed => "failed",
-            Self::Policy { .. } => "policy",
-        }
-    }
-}
-
-/// Mapping from a configured Gmail label (`abmx:example-qris`) to a sink's own
-/// account identity (an Actual account UUID).
-///
-/// Kept as its own type so it is impossible to pass an unmapped label by
-/// accident and so `doctor` can enumerate what is missing.
+/// The key is the parser id (the label's remainder), not the Gmail label, so a
+/// label rename never touches the account mapping.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AccountMap(BTreeMap<String, String>);
@@ -158,105 +59,95 @@ impl FromIterator<(String, String)> for AccountMap {
     }
 }
 
-/// One `[labels]` entry: the parser that owns the label and the ledger account
-/// its rows belong to.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LabelRoute {
-    pub parser: String,
-    pub account: String,
-}
-
-/// Label → route. The label is the only routing identity; there is no
-/// sender/subject inference.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct LabelRoutes(BTreeMap<String, LabelRoute>);
-
-impl std::ops::Deref for LabelRoutes {
-    type Target = BTreeMap<String, LabelRoute>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl LabelRoutes {
-    pub fn insert(&mut self, label: impl Into<String>, route: LabelRoute) -> Option<LabelRoute> {
-        self.0.insert(label.into(), route)
-    }
-
-    /// The account map the policy layer consumes. The key is the label, which
-    /// the runner writes into `Transaction.account`.
-    pub fn accounts(&self) -> AccountMap {
-        self.0
-            .iter()
-            .filter(|(_, route)| !route.account.trim().is_empty())
-            .map(|(label, route)| (label.clone(), route.account.clone()))
-            .collect()
-    }
-}
-
-/// The whole decision layer, as one pure function.
+/// Why a labeled message was **not** imported.
 ///
-/// No clock, no I/O, no randomness: given the same transaction and config it
-/// always returns the same decision, which is what makes plans reproducible and
-/// review queues meaningful.
-pub fn decide(tx: &Transaction, policy: &PolicyConfig, accounts: &AccountMap) -> Decision {
-    // 1. A failed transaction is not money. Decide before anything else so a
-    //    failed heuristic row cannot be imported by accident.
+/// These are defects in the parser or the Gmail rule, never per-row judgement
+/// calls: the fix is always `abmx author --label …`, a `[labels.accounts]`
+/// entry, or a gmailctl rule. Nothing is ever "approved" by a human.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "reason", rename_all = "snake_case")]
+pub enum BrokenReason {
+    /// The parser flagged the extraction: template drift or an incomplete spec.
+    Heuristic { warnings: Vec<String> },
+    /// A zero amount almost always means the wrong block was matched.
+    ZeroAmount,
+    /// No `[labels.accounts]` entry for this parser id.
+    UnmappedAccount { parser: String },
+    /// The Gmail rule routed a transaction the bank reported as failed.
+    BankDeclaredFailed,
+}
+
+impl BrokenReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Heuristic { .. } => "heuristic",
+            Self::ZeroAmount => "zero_amount",
+            Self::UnmappedAccount { .. } => "unmapped_account",
+            Self::BankDeclaredFailed => "bank_declared_failed",
+        }
+    }
+
+    /// One line for `sync` and `status`.
+    pub fn detail(&self) -> String {
+        match self {
+            Self::Heuristic { warnings } if warnings.is_empty() => {
+                "the parser did not produce a strict row".to_owned()
+            }
+            Self::Heuristic { warnings } => warnings.join("; "),
+            Self::ZeroAmount => "amount is zero".to_owned(),
+            Self::UnmappedAccount { parser } => {
+                format!("parser `{parser}` has no [labels.accounts] entry")
+            }
+            Self::BankDeclaredFailed => {
+                "the bank reported the transaction as failed; the Gmail rule should not route it"
+                    .to_owned()
+            }
+        }
+    }
+}
+
+/// The whole decision: import, or record why not.
+///
+/// No clock, no I/O, no randomness. The order is deliberate: a failed row is
+/// judged before anything else so it can never be imported by accident.
+pub fn check_transaction(tx: &Transaction, accounts: &AccountMap) -> Result<(), BrokenReason> {
     if tx.status == Status::Failed {
-        return match policy.failed {
-            FailedPolicy::Skip => Decision::Skip(SkipReason::Failed),
-            FailedPolicy::Review => Decision::Review(ReviewReason::Heuristic {
-                warnings: vec!["bank reported the transaction as failed".to_owned()],
-            }),
-            FailedPolicy::Import => Decision::Import,
-        };
+        return Err(BrokenReason::BankDeclaredFailed);
     }
 
-    // 2. A zero amount is the one plausibility check `abmx-parser` does outside the spec.
-    //    Treat it as suspicious even if a spec somehow produced `strict`.
     if tx.amount.amount_minor == 0 {
-        return Decision::Review(ReviewReason::ZeroAmount);
+        return Err(BrokenReason::ZeroAmount);
     }
 
-    // 3. Suspect extraction. `abmx-parser` already tells us why.
     if tx.extraction == Extraction::Heuristic {
-        return match policy.heuristic {
-            HeuristicPolicy::Review => Decision::Review(ReviewReason::Heuristic {
-                warnings: tx.warnings.clone(),
-            }),
-            HeuristicPolicy::Skip => Decision::Skip(SkipReason::Policy {
-                detail: "heuristic row".to_owned(),
-            }),
-            HeuristicPolicy::Import => Decision::Import,
-        };
-    }
-
-    // 4. Never guess which ledger account a bank account maps to.
-    if !accounts.contains(&tx.account) {
-        return Decision::Review(ReviewReason::UnmappedAccount {
-            account: tx.account.clone(),
+        return Err(BrokenReason::Heuristic {
+            warnings: tx.warnings.clone(),
         });
     }
 
-    Decision::Import
+    if !accounts.contains(&tx.parser) {
+        return Err(BrokenReason::UnmappedAccount {
+            parser: tx.parser.clone(),
+        });
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use abmx_parser::{Money, Source};
+    use abmx_parser::{Kind, Money, Source};
 
-    fn tx(account: &str, amount: i64, extraction: Extraction, status: Status) -> Transaction {
+    fn tx(parser: &str, amount: i64, extraction: Extraction, status: Status) -> Transaction {
         Transaction {
             source: Source::default(),
             id: "mail_test".into(),
-            parser: "example.card_debit".into(),
+            parser: parser.into(),
             parser_version: 1,
             bank: "example".into(),
-            account: account.into(),
-            kind: abmx_parser::Kind::Purchase,
+            account: parser.into(),
+            kind: Kind::Purchase,
             status,
             amount: Money {
                 amount_minor: amount,
@@ -281,89 +172,79 @@ mod tests {
 
     fn accounts() -> AccountMap {
         let mut map = AccountMap::new();
-        map.insert("example-account", "uuid-example");
+        map.insert("example.card_debit", "uuid-example");
         map
     }
 
     #[test]
     fn strict_settled_mapped_row_imports() {
-        let d = decide(
-            &tx("example-account", -27500, Extraction::Strict, Status::Settled),
-            &PolicyConfig::default(),
-            &accounts(),
+        assert_eq!(
+            check_transaction(
+                &tx(
+                    "example.card_debit",
+                    -27500,
+                    Extraction::Strict,
+                    Status::Settled
+                ),
+                &accounts()
+            ),
+            Ok(())
         );
-        assert_eq!(d, Decision::Import);
     }
 
     #[test]
-    fn failed_rows_are_skipped_by_default() {
-        let d = decide(
-            &tx("example-account", -27500, Extraction::Strict, Status::Failed),
-            &PolicyConfig::default(),
-            &accounts(),
+    fn failed_rows_are_never_imported() {
+        assert_eq!(
+            check_transaction(
+                &tx("example.card_debit", -27500, Extraction::Strict, Status::Failed),
+                &accounts()
+            ),
+            Err(BrokenReason::BankDeclaredFailed)
         );
-        assert_eq!(d, Decision::Skip(SkipReason::Failed));
     }
 
     #[test]
-    fn heuristic_rows_go_to_review_by_default() {
-        let d = decide(
-            &tx("example-account", -27500, Extraction::Heuristic, Status::Settled),
-            &PolicyConfig::default(),
-            &accounts(),
-        );
+    fn heuristic_rows_are_broken() {
         assert!(matches!(
-            d,
-            Decision::Review(ReviewReason::Heuristic { .. })
+            check_transaction(
+                &tx(
+                    "example.card_debit",
+                    -27500,
+                    Extraction::Heuristic,
+                    Status::Settled
+                ),
+                &accounts()
+            ),
+            Err(BrokenReason::Heuristic { .. })
         ));
     }
 
     #[test]
-    fn unmapped_accounts_are_never_guessed() {
-        let d = decide(
-            &tx("wallet-account", -1000, Extraction::Strict, Status::Settled),
-            &PolicyConfig::default(),
-            &accounts(),
-        );
+    fn zero_amount_is_broken() {
         assert_eq!(
-            d,
-            Decision::Review(ReviewReason::UnmappedAccount {
-                account: "wallet-account".into()
+            check_transaction(
+                &tx("example.card_debit", 0, Extraction::Strict, Status::Settled),
+                &accounts()
+            ),
+            Err(BrokenReason::ZeroAmount)
+        );
+    }
+
+    #[test]
+    fn unmapped_parser_is_broken() {
+        assert_eq!(
+            check_transaction(
+                &tx(
+                    "wallet.qris_payment",
+                    -1000,
+                    Extraction::Strict,
+                    Status::Settled
+                ),
+                &accounts()
+            ),
+            Err(BrokenReason::UnmappedAccount {
+                parser: "wallet.qris_payment".into()
             })
         );
-    }
-
-    #[test]
-    fn zero_amount_is_reviewed_even_when_strict() {
-        let d = decide(
-            &tx("example-account", 0, Extraction::Strict, Status::Settled),
-            &PolicyConfig::default(),
-            &accounts(),
-        );
-        assert_eq!(d, Decision::Review(ReviewReason::ZeroAmount));
-    }
-
-    #[test]
-    fn failed_beats_unmapped_account() {
-        let d = decide(
-            &tx("wallet-account", -1000, Extraction::Strict, Status::Failed),
-            &PolicyConfig::default(),
-            &accounts(),
-        );
-        assert_eq!(d, Decision::Skip(SkipReason::Failed));
-    }
-
-    #[test]
-    fn policy_can_import_heuristic_rows() {
-        let policy = PolicyConfig {
-            heuristic: HeuristicPolicy::Import,
-            ..Default::default()
-        };
-        let d = decide(
-            &tx("example-account", -27500, Extraction::Heuristic, Status::Settled),
-            &policy,
-            &accounts(),
-        );
-        assert_eq!(d, Decision::Import);
     }
 }

@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use abmx::authoring::author::{self, LabelStatus};
-use abmx_core::{LabelRoute, LabelRoutes};
+use abmx::config::LabelsSection;
 use abmx_gmail::auth::{Credentials, TokenStore};
 use abmx_gmail::{GmailConfig, GmailFetcher};
 use abmx_testkit::{MockServer, Response};
@@ -36,6 +36,7 @@ fn fetcher(server: &MockServer, dir: &Path) -> GmailFetcher {
     let mut config = GmailConfig::new("client", &token_path);
     config.base_url = format!("{}/gmail/v1", server.url());
     config.token_url = format!("{}/token", server.url());
+    config.prefix = "Receipt/abmx:".to_owned();
     GmailFetcher::new(config).unwrap()
 }
 
@@ -55,7 +56,7 @@ fn scan_takes_the_last_three_and_reports_missing_mapping() {
         "GET",
         "/gmail/v1/users/me/labels",
         vec![Response::json(
-            r#"{"labels":[{"id":"Label_1","name":"abmx:example-qris"}]}"#,
+            r#"{"labels":[{"id":"Label_1","name":"Receipt/abmx:example-qris"}]}"#,
         )],
     );
 
@@ -83,21 +84,22 @@ fn scan_takes_the_last_three_and_reports_missing_mapping() {
         corpus: &corpus,
         work_dir: dir.path(),
         summaries: &[],
+        prefix: "Receipt/abmx:",
     };
 
-    let routes = LabelRoutes::default();
-    let inventory = author::scan_gmail(&fetcher, None, &routes, &options, dir.path()).unwrap();
+    let labels = LabelsSection::default();
+    let inventory = author::scan_gmail(&fetcher, None, &labels, &options, dir.path()).unwrap();
 
     assert_eq!(inventory.labels.len(), 1);
     let report = &inventory.labels[0];
-    assert_eq!(report.label, "abmx:example-qris");
-    assert_eq!(report.status, LabelStatus::MissingMapping);
+    assert_eq!(report.label, "Receipt/abmx:example-qris");
+    assert_eq!(report.status, LabelStatus::MissingAccount);
     assert_eq!(report.samples.len(), 3);
     assert_eq!(report.messages, 3);
 
     let prompt = author::render(&context, &inventory);
-    assert!(prompt.contains("abmx:example-qris"));
-    assert!(prompt.contains("missing_mapping"));
+    assert!(prompt.contains("Receipt/abmx:example-qris"));
+    assert!(prompt.contains("missing_account"));
     assert!(prompt.contains("Rp 27.500"));
     assert!(prompt.contains("One label maps to one parser"));
 }
@@ -118,7 +120,7 @@ fn a_configured_label_with_a_parser_is_ok() {
         "GET",
         "/gmail/v1/users/me/labels",
         vec![Response::json(
-            r#"{"labels":[{"id":"Label_1","name":"abmx:example-qris"}]}"#,
+            r#"{"labels":[{"id":"Label_1","name":"Receipt/abmx:example-qris"}]}"#,
         )],
     );
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(EMAIL);
@@ -170,20 +172,16 @@ label = "Payment to"
     })
     .unwrap();
 
-    let mut routes = LabelRoutes::default();
-    routes.insert(
-        "abmx:example-qris",
-        LabelRoute {
-            parser: "example-qris".to_owned(),
-            account: "uuid".to_owned(),
-        },
-    );
+    let mut labels = LabelsSection::default();
+    labels
+        .accounts
+        .insert("example-qris".to_owned(), "uuid".to_owned());
 
     let fetcher = fetcher(&server, dir.path());
     let inventory = author::scan_gmail(
         &fetcher,
         Some(&parser),
-        &routes,
+        &labels,
         &author::Options::default(),
         dir.path(),
     )

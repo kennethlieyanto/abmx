@@ -1,7 +1,7 @@
 //! `abmx author`: inventory routed labels and package the last three samples
 //! of each into a prompt.
 //!
-//! Routing is the label: `Receipt/abmx:<parser-id>`. gmailctl creates the label
+//! Routing is the label: `receipt/<parser-id>`. gmailctl creates the label
 //! and the filter; abmx only reports whether that label has a parser, an
 //! account, and samples that parse strictly. There is no sender clustering and
 //! no amount heuristic.
@@ -34,6 +34,8 @@ pub enum LabelStatus {
     InsufficientSamples,
     /// The label has no mail.
     Empty,
+    /// The user declined this label in `abmx setup`.
+    Ignored,
     /// A `[labels.accounts]` entry has no matching Gmail label.
     OrphanAccount,
 }
@@ -49,12 +51,13 @@ impl LabelStatus {
             Self::MixedShapes => "mixed_shapes",
             Self::InsufficientSamples => "insufficient_samples",
             Self::Empty => "empty",
+            Self::Ignored => "ignored",
             Self::OrphanAccount => "orphan_account",
         }
     }
 
     pub fn needs_work(self) -> bool {
-        !matches!(self, Self::Ok)
+        !matches!(self, Self::Ok | Self::Ignored)
     }
 }
 
@@ -128,7 +131,7 @@ pub fn scan_gmail(
 ) -> Result<Inventory> {
     let mut found = fetcher.routed_labels()?;
     if let Some(only) = &options.label {
-        found.retain(|label| label.name == *only);
+        found.retain(|label| label.name.eq_ignore_ascii_case(only));
         if found.is_empty() {
             anyhow::bail!("no routed label named `{only}`");
         }
@@ -137,6 +140,25 @@ pub fn scan_gmail(
     let mut inventory = Inventory::default();
     for label in &found {
         let parser_id = labels.parser_id(&label.name);
+
+        // A declined label is not sampled: authoring a parser for mail the user
+        // does not want to import would only waste API calls and attention.
+        if parser_id
+            .as_deref()
+            .is_some_and(|parser| labels.is_ignored(parser))
+        {
+            inventory.labels.push(LabelReport {
+                label: label.name.clone(),
+                parser: parser_id,
+                account: None,
+                status: LabelStatus::Ignored,
+                messages: 0,
+                samples: Vec::new(),
+                notes: vec!["declined in `abmx setup`; `abmx setup --review` asks again".to_owned()],
+            });
+            continue;
+        }
+
         let ids = fetcher.label_message_ids(&label.name)?;
         let mut samples = Vec::new();
         let mut notes = Vec::new();
@@ -216,6 +238,23 @@ pub fn scan_input(
             anyhow::bail!("--input needs --label unless exactly one parser is configured");
         };
         let parser_id = labels.parser_id(&label);
+        if parser_id
+            .as_deref()
+            .is_some_and(|parser| labels.is_ignored(parser))
+        {
+            inventory.labels.push(LabelReport {
+                label,
+                parser: parser_id,
+                account: None,
+                status: LabelStatus::Ignored,
+                messages: 0,
+                samples: Vec::new(),
+                notes: vec![
+                    "declined in `abmx setup`; `abmx setup --review` asks again".to_owned()
+                ],
+            });
+            continue;
+        }
         let mut notes = Vec::new();
         let mut samples = Vec::new();
 
@@ -429,7 +468,7 @@ pub fn render(context: &Context<'_>, inventory: &Inventory) -> String {
         context
             .config_path
             .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "(none; run `abmx init` first)".to_owned())
+            .unwrap_or_else(|| "(none; run `abmx setup` first)".to_owned())
     ));
     out.push_str(&format!(
         "- parser corpus: `{}`\n",
@@ -492,7 +531,7 @@ pub fn render(context: &Context<'_>, inventory: &Inventory) -> String {
         .collect();
 
     if working.is_empty() {
-        out.push_str("Every label is `ok`. Nothing to author.\n");
+        out.push_str("Every managed label is `ok`. Nothing to author.\n");
         return out;
     }
 
@@ -682,8 +721,8 @@ mod tests {
     #[test]
     fn safe_names_are_filesystem_friendly() {
         assert_eq!(
-            safe_name("Receipt/abmx:example.card_debit"),
-            "receipt-abmx-example-card-debit"
+            safe_name("receipt/example.card_debit"),
+            "receipt-example-card-debit"
         );
     }
 

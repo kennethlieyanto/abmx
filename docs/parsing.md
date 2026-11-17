@@ -30,7 +30,7 @@ a lower-precedence corpus: an empty corpus in the place you asked it to look is 
 broken install, and silently reading a different one is worse.
 
 `abmx parser paths` prints the chain and marks skipped candidates. There is no
-router file: a parser is selected by the `abmx:*` label mapped to it in
+router file: a parser is selected by the `receipt/*` label mapped to it in
 `abmx.toml`.
 
 ## Input

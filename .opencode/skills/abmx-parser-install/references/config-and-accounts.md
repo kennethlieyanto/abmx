@@ -6,23 +6,28 @@ One label is the whole contract:
 
 ```toml
 [labels]
-"abmx:example-qris" = { parser = "example-qris", account = "<actual-account-uuid>" }
+prefix = "receipt/"
+
+[labels.accounts]
+"<parser-id>" = "<actual-account-uuid>"
 ```
 
 | Layer | Field | Example | Meaning |
 | --- | --- | --- | --- |
-| Gmail | label | `abmx:example-qris` | the user's explicit routing decision |
-| abmx config | `[labels].parser` | `example-qris` | the parser directory |
-| abmx config | `[labels].account` | `<uuid>` | the sink's account id |
+| Gmail | label | `receipt/example-qris` | the user's explicit routing decision |
+| abmx config | `[labels.accounts]` key | `example-qris` | the parser directory |
+| abmx config | `[labels.accounts]` value | `<uuid>` | the sink's account id |
 
 Rules:
 
-- Apply exactly one `abmx:*` label per tracked message.
-- A message with two `abmx:*` labels aborts the run: the routing is ambiguous.
-- A labeled message with no `[labels]` entry aborts the run.
-- A `[labels]` entry with no Gmail label is `orphan_config`; fix the label or the
-  entry.
+- Apply exactly one `receipt/<parser-id>` label per tracked message.
+- A message with two abmx labels aborts the run: the routing is ambiguous.
+- A label with no `[labels.accounts]` entry is unmanaged and is not fetched.
+- `[labels].ignore` records labels the user declined; `abmx setup --review`
+  asks again.
+- A `[labels.accounts]` entry with no Gmail label is `orphan_account`; fix the
+  label or the entry.
 - The sink UUID comes from `abmx accounts`; never guess it.
 - There is no `[accounts]` table and no `[defaults].account` in the parser.
 - A label whose last three samples are different templates is mislabeled. Fix
-  the Gmail label/filter; do not split it in the parser.
+  the gmailctl rule; do not split it in the parser.

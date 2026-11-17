@@ -4,13 +4,12 @@ use std::path::{Path, PathBuf};
 use abmx::authoring::{self, author};
 use abmx::config::{Config, INIT_TEMPLATE};
 use abmx::fetchers::DirFetcher;
+use abmx::labels;
 use abmx::paths;
 use abmx::state::State;
 use abmx::Runner;
 use abmx_core::{ApplyOptions, FetchRequest, Fetcher, LedgerMatch, Plan, Report};
-use abmx_gmail::{
-    authorize, authorize_manual, revoke_refresh_token, OAuthConfig, TokenStore, REVOKE_URL,
-};
+use abmx_gmail::{revoke_refresh_token, TokenStore, REVOKE_URL};
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
@@ -58,6 +57,22 @@ enum Command {
         path: Option<PathBuf>,
         #[arg(long)]
         force: bool,
+    },
+
+    /// Interactive quickstart: config, Gmail, labels, and account mapping.
+    Setup {
+        /// Approve in any browser and paste the callback URL back.
+        #[arg(long)]
+        manual: bool,
+        /// Print the Gmail authorization URL instead of opening a browser.
+        #[arg(long)]
+        no_browser: bool,
+        /// Re-offer labels you previously declined.
+        #[arg(long)]
+        review: bool,
+        /// Re-ask account mappings that already exist.
+        #[arg(long)]
+        remap: bool,
     },
 
     /// Authorize or deauthorize a mail provider.
@@ -223,6 +238,12 @@ fn run(cli: Cli) -> Result<i32> {
 
     match cli.command {
         Command::Init { path, force } => init(path, force),
+        Command::Setup {
+            manual,
+            no_browser,
+            review,
+            remap,
+        } => setup(&settings, manual, no_browser, review, remap),
         Command::Auth { command } => match command {
             AuthCommand::Gmail {
                 no_browser,
@@ -319,55 +340,52 @@ fn build_runner(config: &Config, base: &Path) -> Result<Runner> {
 
 /// Check the Gmail label inventory against `[labels.accounts]`.
 ///
-/// Returns the labels `sync` should fetch. Bails with every problem at once so a
-/// server operator sees the whole fix list, not one line per restart.
-fn validate_label_inventory(
+/// Only mapped labels are fetched. A discovered label with no account entry is
+/// unmanaged, not an error: the user may have declined it, or gmailctl may have
+/// created it ahead of time. A *configured* account with no Gmail label is
+/// different — that is drift and fails loudly.
+fn resolve_label_inventory(
     fetcher: &abmx_gmail::GmailFetcher,
     config: &Config,
 ) -> Result<Vec<String>> {
-    let labels = fetcher.routed_labels()?;
-    let mut names = Vec::new();
-    let mut problems = Vec::new();
+    let discovered: Vec<String> = fetcher
+        .routed_labels()?
+        .into_iter()
+        .map(|label| label.name)
+        .collect();
+    let plan = labels::plan(&discovered, &config.labels);
 
-    for label in &labels {
-        match config.labels.parser_id(&label.name) {
-            Some(parser_id) => {
-                if config.labels.accounts.contains_key(&parser_id) {
-                    names.push(label.name.clone());
-                } else {
-                    problems.push(format!(
-                        "`{}` routes to parser `{parser_id}`, which has no [labels.accounts] entry",
-                        label.name
-                    ));
-                }
-            }
-            None => problems.push(format!(
-                "`{}` has no valid parser id after `{}`",
-                label.name, config.labels.prefix
-            )),
-        }
-    }
-
-    for parser_id in config.labels.accounts.keys() {
-        let routed = labels
-            .iter()
-            .any(|label| config.labels.parser_id(&label.name).as_deref() == Some(parser_id));
-        if !routed {
-            problems.push(format!(
-                "`{parser_id}` is in [labels.accounts] but no Gmail label routes to it"
-            ));
-        }
-    }
-
-    if !problems.is_empty() {
+    if !plan.orphans.is_empty() {
         bail!(
-            "label inventory does not match Gmail:\n  {}\n\
-             fix the gmailctl rule or [labels.accounts] before syncing",
-            problems.join("\n  ")
+            "[labels.accounts] maps parser(s) with no Gmail label:\n  {}\n\
+             add the gmailctl rule or remove the [labels.accounts] entry",
+            plan.orphans.join("\n  ")
         );
     }
 
-    Ok(names)
+    if !plan.invalid.is_empty() {
+        eprintln!(
+            "note: ignoring {} label(s) whose remainder is not a parser id: {}",
+            plan.invalid.len(),
+            plan.invalid.join(", ")
+        );
+    }
+
+    if !plan.unmanaged.is_empty() {
+        eprintln!(
+            "note: {} routed label(s) are not managed by abmx; run `abmx setup` to review",
+            plan.unmanaged.len()
+        );
+    }
+
+    if plan.managed.is_empty() {
+        bail!(
+            "no routed Gmail label is mapped in [labels.accounts]\n  \
+             run `abmx setup` to choose a label and an account"
+        );
+    }
+
+    Ok(plan.managed_names())
 }
 
 fn build_fetcher(
@@ -408,7 +426,7 @@ fn build_fetcher(
     }
 
     let gmail = config.build_gmail(base)?;
-    let labels = validate_label_inventory(&gmail, config)?;
+    let labels = resolve_label_inventory(&gmail, config)?;
     Ok((Box::new(gmail), labels))
 }
 
@@ -441,15 +459,34 @@ fn init(path: Option<PathBuf>, force: bool) -> Result<i32> {
     println!("wrote {}", path.display());
     println!();
     println!("next:");
+    println!("  abmx setup                   interactive config, Gmail, labels, accounts");
+    println!();
+    println!("or by hand:");
     println!(
         "  1. edit {} and set [fetch.gmail] + [sink.actual]",
         path.display()
     );
     println!("  2. abmx auth gmail            (headless: --manual)");
-    println!("  3. abmx doctor --online");
+    println!("  3. abmx status --online");
     println!("  4. abmx sync --dry-run");
 
     Ok(EXIT_OK)
+}
+
+fn setup(
+    settings: &Settings,
+    manual: bool,
+    no_browser: bool,
+    review: bool,
+    remap: bool,
+) -> Result<i32> {
+    abmx::setup::run(&abmx::setup::Options {
+        config: settings.config.clone(),
+        no_browser,
+        manual,
+        review,
+        remap,
+    })
 }
 
 fn auth_gmail(
@@ -460,28 +497,17 @@ fn auth_gmail(
 ) -> Result<i32> {
     let (config, base, _) = load_config(settings)?;
 
-    let Some(gmail) = &config.fetch.gmail else {
-        bail!("no [fetch.gmail] section in the config");
-    };
+    let path = abmx::gmail_auth::authorize_gmail(
+        &config,
+        &base,
+        &abmx::gmail_auth::Options {
+            no_browser,
+            port,
+            manual,
+        },
+    )?;
 
-    let client_secret = config.gmail_client_secret(&base)?;
-    let mut oauth = OAuthConfig::new(&gmail.client_id);
-    oauth.client_secret = client_secret;
-    oauth.port = port.unwrap_or_else(|| config.gmail_oauth_port());
-    oauth.open_browser = !no_browser && !manual;
-
-    let credentials = if manual {
-        authorize_manual(&oauth)?
-    } else {
-        authorize(&oauth)?
-    };
-    let store = TokenStore::new(config.gmail_token_path(&base));
-    store.save(&credentials)?;
-
-    println!(
-        "authorized; refresh token stored at {}",
-        store.path().display()
-    );
+    println!("authorized; refresh token stored at {}", path.display());
     Ok(EXIT_OK)
 }
 
@@ -643,7 +669,7 @@ fn status(settings: &Settings, online: bool, strict: bool, check: bool, json: bo
         labels_section.hint(
             Status::Fail,
             "no [labels.accounts] entries",
-            "route tracked mail with `Receipt/abmx:<parser-id>` (gmailctl) and map it to an Actual account",
+            "run `abmx setup` to choose which labels to import and where they go",
         );
     }
     for (parser_id, account) in &config.labels.accounts {
@@ -667,6 +693,12 @@ fn status(settings: &Settings, online: bool, strict: bool, check: bool, json: bo
             }
         }
         labels_section.push(Status::Ok, format!("{label} -> {account}"));
+    }
+    for parser_id in &config.labels.ignore {
+        labels_section.push(
+            Status::Skip,
+            format!("{}{} (ignored)", config.labels.prefix, parser_id),
+        );
     }
     sections.push(labels_section);
 
@@ -702,7 +734,11 @@ fn status(settings: &Settings, online: bool, strict: bool, check: bool, json: bo
     let mut sink_section = Section::new("sink");
     let mut sink_accounts: Option<Vec<abmx_core::SinkAccount>> = None;
     match config.build_sink(&base) {
-        Err(error) => sink_section.push(Status::Fail, error.to_string()),
+        Err(error) => sink_section.hint(
+            Status::Fail,
+            error.to_string(),
+            "run `abmx setup` to configure Actual or a file sink",
+        ),
         Ok(sink) => {
             if !online {
                 let location = config
@@ -765,7 +801,7 @@ fn status(settings: &Settings, online: bool, strict: bool, check: bool, json: bo
         None => auth_section.hint(
             Status::Warn,
             "no [fetch.gmail] section",
-            "add [fetch.gmail], or use `--from-dir` to sync saved .eml files",
+            "run `abmx setup`, or use `--from-dir` to sync saved .eml files",
         ),
         Some(gmail) => {
             let store = TokenStore::new(config.gmail_token_path(&base));
@@ -787,16 +823,18 @@ fn status(settings: &Settings, online: bool, strict: bool, check: bool, json: bo
                     Err(error) => auth_section.hint(
                         Status::Fail,
                         error.to_string(),
-                        "run `abmx auth gmail` to store credentials",
+                        "run `abmx setup` (or `abmx auth gmail`) to store credentials",
                     ),
                 },
-                Ok(None) => {
-                    auth_section.push(Status::Fail, "gmail: no token; run `abmx auth gmail`")
-                }
+                Ok(None) => auth_section.hint(
+                    Status::Fail,
+                    "gmail: no token",
+                    "run `abmx setup` (or `abmx auth gmail`)",
+                ),
                 Err(error) => auth_section.hint(
                     Status::Fail,
                     error.to_string(),
-                    "run `abmx auth gmail` to store credentials",
+                    "run `abmx setup` (or `abmx auth gmail`) to store credentials",
                 ),
             }
             let _ = gmail;
@@ -810,19 +848,64 @@ fn status(settings: &Settings, online: bool, strict: bool, check: bool, json: bo
             Err(error) => gmail_section.hint(
                 Status::Fail,
                 error.to_string(),
-                "run `abmx auth gmail` and check [fetch.gmail]",
+                "run `abmx setup` or `abmx auth gmail`, then check [fetch.gmail]",
             ),
-            Ok(fetcher) => match validate_label_inventory(&fetcher, &config) {
-                Ok(names) => {
-                    for name in names {
-                        gmail_section.push(Status::Ok, name);
-                    }
-                }
+            Ok(fetcher) => match fetcher.routed_labels() {
                 Err(error) => gmail_section.hint(
                     Status::Fail,
                     error.to_string(),
-                    "fix the gmailctl rule or [labels.accounts]",
+                    "run `abmx setup` or `abmx auth gmail`",
                 ),
+                Ok(found) => {
+                    let discovered: Vec<String> =
+                        found.into_iter().map(|label| label.name).collect();
+                    let plan = labels::plan(&discovered, &config.labels);
+
+                    for label in &plan.managed {
+                        gmail_section
+                            .push(Status::Ok, format!("{} -> {}", label.label, label.account));
+                    }
+                    for label in &plan.unmanaged {
+                        gmail_section.hint(
+                            Status::Skip,
+                            format!("{} is not managed", label.label),
+                            "run `abmx setup` to import it or decline it",
+                        );
+                    }
+                    for label in &plan.ignored {
+                        gmail_section.push(Status::Skip, format!("{} (ignored)", label.label));
+                    }
+                    for label in &plan.invalid {
+                        gmail_section.hint(
+                            Status::Warn,
+                            format!("{label}: not a parser id after the prefix"),
+                            "rename the gmailctl label",
+                        );
+                    }
+                    for parser_id in &plan.orphans {
+                        gmail_section.hint(
+                            Status::Fail,
+                            format!(
+                                "`{parser_id}` is in [labels.accounts] but no Gmail label routes to it"
+                            ),
+                            "add the gmailctl rule or remove the mapping",
+                        );
+                    }
+
+                    if discovered.is_empty() {
+                        gmail_section.hint(
+                            Status::Fail,
+                            format!("no `{}*` labels found", config.labels.prefix),
+                            "create a gmailctl rule, then run `abmx setup`",
+                        );
+                    } else if plan.managed.is_empty() {
+                        gmail_section.hint(
+                            Status::Fail,
+                            "no routed label is managed",
+                            "run `abmx setup` to choose a label and an account",
+                        );
+                    }
+                }
             },
         }
         sections.push(gmail_section);
@@ -852,6 +935,14 @@ fn status(settings: &Settings, online: bool, strict: bool, check: bool, json: bo
                     for report in inventory.labels.iter().chain(inventory.orphans.iter()) {
                         if report.status == author::LabelStatus::Ok {
                             strict_section.push(Status::Ok, report.label.clone());
+                        } else if report.status == author::LabelStatus::Ignored {
+                            strict_section.push(Status::Skip, format!("{}: ignored", report.label));
+                        } else if report.status == author::LabelStatus::MissingAccount {
+                            strict_section.hint(
+                                Status::Skip,
+                                format!("{}: not managed", report.label),
+                                "run `abmx setup` to import it or decline it",
+                            );
                         } else {
                             strict_section.hint(
                                 Status::Fail,

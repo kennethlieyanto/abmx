@@ -15,9 +15,14 @@
 
 pub mod authoring;
 pub mod config;
+pub mod config_edit;
+pub mod credentials;
 pub mod fetchers;
+pub mod gmail_auth;
+pub mod labels;
 pub mod paths;
 pub mod runner;
+pub mod setup;
 pub mod state;
 
 pub use config::Config;

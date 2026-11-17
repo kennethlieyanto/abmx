@@ -8,7 +8,7 @@
 code; the extraction engine is fixed. The hard part is deciding what the
 template's constant labels are and where each value lives between them.
 
-Routing is explicit: a Gmail label `abmx:<id>` is mapped in `abmx.toml` to a
+Routing is explicit: a Gmail label `receipt/<id>` is mapped in `abmx.toml` to a
 parser and a ledger account. The parser never inspects the sender or subject.
 
 ## Workflow
@@ -18,7 +18,7 @@ parser and a ledger account. The parser never inspects the sender or subject.
 2. **Confirm one template per label.** The last three samples under a label must
    share a label skeleton. If they do not, stop: the user or a Gmail filter has
    mislabeled mail. Do not split the label into several parsers.
-3. **Choose the parser id.** It must match the label suffix: `Receipt/abmx:example-qris`
+3. **Choose the parser id.** It must match the label suffix: `receipt/example-qris`
    → `example-qris`. The directory name is the id.
 4. **Write `[labels].list`.** Include every constant label block in document
    order, including labels you do not extract. A missing label merges two

@@ -66,7 +66,7 @@ fn files() -> Vec<SkillFile> {
             content: format!(
                 r#"---
 name: abmx parser authoring
-description: Author or repair abmx-parser specs for `abmx:*` Gmail labels. Use when a label has no parser, or when the last three messages under a label fail verification.
+description: Author or repair abmx-parser specs for `receipt/*` Gmail labels. Use when a label has no parser, or when the last three messages under a label fail verification.
 ---
 
 {marker}
@@ -74,10 +74,11 @@ description: Author or repair abmx-parser specs for `abmx:*` Gmail labels. Use w
 # abmx parser authoring
 
 Read `references/spec-reference.md` before writing a spec. Read
-`references/verification.md` before interpreting `abmx verify` output.
+`references/verification.md` before interpreting `abmx parser check` output.
 
-Routing is label-driven: a Gmail label `abmx:<id>` is mapped in `abmx.toml` to a
-parser and a ledger account. The parser never inspects sender or subject.
+Routing is label-driven: a Gmail label `receipt/<id>` is mapped in
+`abmx.toml` to a parser and a ledger account. The parser never inspects sender
+or subject.
 
 {workflow}
 
@@ -140,7 +141,7 @@ Gmail label/filter; do not teach one parser to guess.
             content: format!(
                 r#"---
 name: abmx parser install
-description: Install a verified parser and map an `abmx:*` Gmail label to a ledger account. Use after a parser verifies, or when a label reports missing_mapping.
+description: Install a verified parser and map a `receipt/*` Gmail label to a ledger account. Use after a parser verifies, or when a label reports missing_account.
 ---
 
 {marker}
@@ -155,24 +156,25 @@ Use this only after `abmx parser check --parser <id>` reports every sample `stri
 2. **Install the parser directory.** Copy `parsers/<id>/` — both `config.toml`
    and `fixtures/` — into one of the directories listed in `[general].parsers`,
    or into `~/.config/abmx/parsers/`. The directory name **is** the parser id.
-3. **Map the label.** Add one entry to `[labels]`:
+3. **Map the label.** Add one entry to `[labels.accounts]`:
    ```toml
-   "abmx:<id>" = {{ parser = "<parser-id>", account = "<actual-account-uuid>" }}
+   [labels.accounts]
+   "<parser-id>" = "<actual-account-uuid>"
    ```
    Run `abmx accounts --json` and ask the user which account to use. Never
-   invent a UUID.
+   invent a UUID. `abmx setup` asks this question interactively.
 4. **Confirm the label exists in Gmail.** abmx is read-only and cannot create
-   labels. The user creates `abmx:<id>` and applies it, usually with a Gmail
-   filter. `abmx author` reports a missing Gmail label as `orphan_config`.
+   labels. The user creates `receipt/<parser-id>` and applies it, usually
+   with a gmailctl rule. `abmx author` reports a mapped id with no Gmail label as
+   `orphan_account`.
 5. **Validate end to end.**
    ```sh
-   abmx labels --check
-   abmx author --label abmx:<id>
-   abmx doctor
+   abmx status --online
+   abmx author --label receipt/<parser-id>
    abmx sync --dry-run
    ```
-   `abmx sync` refuses to run when a Gmail `abmx:*` label has no parser or
-   mapping, or when a labeled message does not parse `strict`.
+   `abmx sync` fetches only mapped labels and refuses to write when a mapped
+   label's message does not parse `strict`.
 6. **Report** the installed path, the label mapping, and the verification
    result. Do not delete or rewrite an existing parser without asking.
 
@@ -191,26 +193,31 @@ One label is the whole contract:
 
 ```toml
 [labels]
-\"abmx:example-qris\" = {{ parser = \"example-qris\", account = \"<actual-account-uuid>\" }}
+prefix = \"receipt/\"
+
+[labels.accounts]
+\"<parser-id>\" = \"<actual-account-uuid>\"
 ```
 
 | Layer | Field | Example | Meaning |
 | --- | --- | --- | --- |
-| Gmail | label | `abmx:example-qris` | the user's explicit routing decision |
-| abmx config | `[labels].parser` | `example-qris` | the parser directory |
-| abmx config | `[labels].account` | `<uuid>` | the sink's account id |
+| Gmail | label | `receipt/example-qris` | the user's explicit routing decision |
+| abmx config | `[labels.accounts]` key | `example-qris` | the parser directory |
+| abmx config | `[labels.accounts]` value | `<uuid>` | the sink's account id |
 
 Rules:
 
-- Apply exactly one `abmx:*` label per tracked message.
-- A message with two `abmx:*` labels aborts the run: the routing is ambiguous.
-- A labeled message with no `[labels]` entry aborts the run.
-- A `[labels]` entry with no Gmail label is `orphan_config`; fix the label or the
-  entry.
+- Apply exactly one `receipt/<parser-id>` label per tracked message.
+- A message with two abmx labels aborts the run: the routing is ambiguous.
+- A label with no `[labels.accounts]` entry is unmanaged and is not fetched.
+- `[labels].ignore` records labels the user declined; `abmx setup --review`
+  asks again.
+- A `[labels.accounts]` entry with no Gmail label is `orphan_account`; fix the
+  label or the entry.
 - The sink UUID comes from `abmx accounts`; never guess it.
 - There is no `[accounts]` table and no `[defaults].account` in the parser.
 - A label whose last three samples are different templates is mislabeled. Fix
-  the Gmail label/filter; do not split it in the parser.
+  the gmailctl rule; do not split it in the parser.
 "
             ),
         },

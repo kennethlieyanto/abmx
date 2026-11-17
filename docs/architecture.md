@@ -70,7 +70,7 @@ pub trait Fetcher {
   per source.
 - **Bytes, not transactions.** A fetcher produces RFC 5322 bytes. Parsing is
   always the parser's job.
-- **Label-tagged messages.** Each `RawMessage` carries the `abmx:*` label that
+- **Label-tagged messages.** Each `RawMessage` carries the `receipt/*` label that
   selected it, so the caller chooses the parser from the label and the account from `[labels.accounts]` without guessing.
 
 ### Classification
@@ -143,14 +143,15 @@ are checked before applying.
 
 ## Label discipline
 
-There is no cursor. Every run lists the account's `abmx:*` labels, paginates the
+There is no cursor. Every run lists the account's labels, keeps the
+`receipt/*` ones that are mapped in `[labels.accounts]`, paginates the
 messages under each one, and lets the state database skip what was already
 delivered.
 
 ```
-list labels ──► validate [labels.accounts] ──► list messages per label
+list labels ──► keep [labels.accounts] ────────► list messages per label
       │                                      │
-      │ missing parser/account               ▼
+      │ mapped id has no Gmail label         ▼
       └──────────── abort ─────────── fetch raw + tag label
                                              │
                                              ▼
@@ -166,7 +167,8 @@ Why this is safer than a cursor:
 
 - Mail labeled late is picked up on the next run; a cursor would have skipped it.
 - A partial failure leaves the failed message unseen, so it is retried.
-- An unmapped Gmail label, a missing parser, or a message carrying two labels
+- An unmapped Gmail label is ignored, not a sync failure. A *mapped* id with no
+  Gmail label, a missing parser, or a message carrying two managed labels
   aborts the run instead of silently importing noise or skipping it.
 - A cap is a hard error, never a silent truncation.
 
@@ -177,7 +179,7 @@ bodies are fetched only for messages the state has not seen.
 
 1. New crate, `abmx-<name>`, depend on `abmx-core`.
 2. Implement `Fetcher`. Return `RawMessage`s with a stable key prefixed by the
-   transport (`imap:<uid>`, `dir:<name>`) and the `abmx:*` label that selected
+   transport (`imap:<uid>`, `dir:<name>`) and the `receipt/*` label that selected
    them, so keys never collide in shared state.
 3. Add a builder in `abmx/src/config.rs` and one arm in `build_fetcher`.
 

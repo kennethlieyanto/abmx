@@ -55,7 +55,7 @@ pub struct UnmatchedMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrokenMessage {
     pub message: MessageKey,
-    /// The routing label, e.g. `Receipt/abmx:example.card_debit`.
+    /// The routing label, e.g. `receipt/example.card_debit`.
     pub label: String,
     /// The parser id, when the label named one that exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]

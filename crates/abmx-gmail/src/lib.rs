@@ -1,6 +1,6 @@
 //! Gmail as a [`abmx_core::Fetcher`].
 //!
-//! Routing is label-driven: the user applies one `abmx:<id>` label to a message,
+//! Routing is label-driven: the user applies one `receipt/<id>` label to a message,
 //! and the configured `[labels]` table chooses the parser and ledger account.
 //! The fetcher never guesses from sender or subject.
 
@@ -50,7 +50,7 @@ impl GmailConfig {
             client_id: client_id.into(),
             client_secret: None,
             token_path: token_path.into(),
-            prefix: "Receipt/abmx:".to_owned(),
+            prefix: "receipt/".to_owned(),
             since: None,
             max_messages: 10_000,
         }
@@ -99,8 +99,7 @@ impl GmailFetcher {
     /// Every label under the configured prefix, sorted by name.
     ///
     /// The prefix is matched case-insensitively: Gmail preserves the case the
-    /// user typed, and `Receipt/abmx:` vs `receipt/abmx:` must not split the
-    /// corpus.
+    /// user typed, and `Receipt/` vs `receipt/` must not split the corpus.
     pub fn routed_labels(&self) -> Result<Vec<GmailLabel>, GmailError> {
         let prefix = self.prefix.to_ascii_lowercase();
         let mut labels: Vec<GmailLabel> = self

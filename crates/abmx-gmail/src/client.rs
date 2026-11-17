@@ -1,6 +1,6 @@
 //! Read-only Gmail API calls.
 //!
-//! Four endpoints: `users.labels.list` to discover `abmx:*` labels,
+//! Four endpoints: `users.labels.list` to discover `receipt/*` labels,
 //! `messages.list` filtered by label id, `messages.get?format=raw` to hand RFC
 //! 5322 bytes to `abmx-parser`, and `profile` for diagnostics.
 

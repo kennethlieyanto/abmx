@@ -35,6 +35,11 @@ Three variables matter:
 | `ACTUAL_SERVER_PASSWORD` | your Actual server password |
 | `ABMX_ACTUAL_API_KEY` | the wrapper's own key; `abmx` sends it as `x-api-key` |
 
+`abmx setup` can fill in `[sink.actual]` for an existing wrapper: it asks for the
+URL and sync id, stores the API key in `<config dir>/actual-api-key` (0600)
+unless `ABMX_ACTUAL_API_KEY` is set, and validates the connection with
+`abmx accounts`. See [setup.md](setup.md).
+
 `ACTUAL_SERVER_URL` is the one people get wrong. The container's `localhost` is
 not your host's `localhost`:
 
@@ -85,7 +90,7 @@ budget_sync_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 # budget_password_file = "/run/credentials/abmx.service/actual-budget-password"
 
 [labels]
-prefix = "Receipt/abmx:"
+prefix = "receipt/"
 
 [labels.accounts]
 "example-card" = "00000000-0000-0000-0000-000000000000"

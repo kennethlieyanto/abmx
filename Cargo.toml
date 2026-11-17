@@ -24,6 +24,7 @@ anyhow = "1"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 clap = { version = "4", features = ["derive"] }
+cliclack = "0.5"
 html5ever = "0.27"
 libc = "0.2"
 mail-parser = "0.11"
@@ -39,6 +40,7 @@ sha2 = "0.10"
 tempfile = "3"
 thiserror = "2"
 toml = "0.8"
+toml_edit = "0.22"
 url = "2"
 
 [profile.release]

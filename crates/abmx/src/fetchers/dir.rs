@@ -5,7 +5,7 @@ use abmx_core::{Error, FetchBatch, FetchRequest, Fetcher, RawMessage, Result};
 /// Read `.eml` files from a directory (or a single file).
 ///
 /// This is the offline path: export messages, put them in a directory, and give
-/// them the same `abmx:*` label they would carry in Gmail. Re-scanning is cheap
+/// them the same `receipt/*` label they would carry in Gmail. Re-scanning is cheap
 /// and the state database filters what has already been delivered.
 pub struct DirFetcher {
     root: PathBuf,

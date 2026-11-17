@@ -13,9 +13,9 @@ contract.
 ## The labels
 
 ```
-Receipt                      merchant receipt (Grab, Pluxee, Google Play, ...)
-Receipt/abmx:example.card_debit  a ledger movement; the suffix is the parser id
-Receipt/abmx:example.journal_va  another parser, another template
+receipt                      merchant receipt (Grab, Pluxee, Google Play, ...)
+receipt/example.card_debit  a ledger movement; the suffix is the parser id
+receipt/example.journal_va  another parser, another template
 Financial Statements         statements, not imported (yet)
 Notifications                OTP, security alerts
 ```
@@ -28,7 +28,7 @@ parser id (dots are conventional, not required: `example-qris` and
 
 ```toml
 [labels]
-prefix = "Receipt/abmx:"
+prefix = "receipt/"
 since  = 2026-11-10          # ignore mail received before this date
 
 [labels.accounts]            # parser id -> Actual account uuid
@@ -69,11 +69,12 @@ bundle, and `--out FILE` writes the prompt instead of stdout.
 | --- | --- | --- |
 | `ok` | parser exists, account mapped, newest samples strict | — |
 | `missing_parser` | no parser directory for the id | author it |
-| `missing_account` | no `[labels.accounts]` entry | map it |
+| `missing_account` | no `[labels.accounts]` entry, so the label is unmanaged | run `abmx setup` or add the entry |
 | `parse_failed` | at least one sample is not strict, non-zero, or is `failed` | update the parser (or the gmailctl rule for `failed`) |
 | `mixed_shapes` | the samples are different templates | fix the gmailctl rule; do **not** write a parser |
 | `insufficient_samples` | fewer than three messages | wait for more mail or lower `--samples` |
 | `empty` | the label has no mail | — |
+| `ignored` | declined in `abmx setup` | `abmx setup --review` to reconsider |
 | `bad_label` | the suffix is not a parser id | fix the gmailctl rule |
 | `orphan_account` | an account entry has no routed label | add a gmailctl rule or remove the entry |
 
@@ -83,8 +84,9 @@ bundle, and `--out FILE` writes the prompt instead of stdout.
 fixtures. A spec is done when every sample is `strict`, non-zero, and not
 `failed`.
 
-`abmx status --strict` samples the live newest three under every routed label and
-reports the same statuses, so a template change is visible without reading logs.
+`abmx status --strict` samples the live newest three under every managed label
+and reports the same statuses, so a template change is visible without reading
+logs.
 
 ## Reusable skill
 

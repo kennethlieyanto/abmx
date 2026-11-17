@@ -18,16 +18,26 @@ request instead of a mailbox scan.
      the consent screen will show an "unverified app" warning.
 4. **Create credentials** — APIs & Services → Credentials → Create credentials →
    OAuth client ID → **Desktop app**.
-5. Copy the **client ID** and **client secret** into `abmx.toml`:
+5. Point abmx at the downloaded JSON:
+
+```bash
+abmx setup
+```
+
+`abmx setup` asks for the JSON path, copies it to
+`~/.config/abmx/gmail-client.json` (mode `0600`), and sets
+`[fetch.gmail].credentials_file`. By hand, the config looks like this:
 
 ```toml
 [fetch.gmail]
-client_id = "1234567890-abcdef.apps.googleusercontent.com"
-client_secret_file = "/run/credentials/abmx.service/gmail-client-secret"
+credentials_file = "gmail-client.json"
 ```
 
-Prefer `ABMX_GMAIL_CLIENT_SECRET` or `client_secret_file` over pasting the
-secret into the file.
+`credentials_file` is authoritative for `client_id`; an explicit `client_id`
+still wins if both are present. The secret follows the usual precedence:
+`ABMX_GMAIL_CLIENT_SECRET` → `client_secret` → `client_secret_file` →
+the JSON file. Prefer the environment or a `client_secret_file` over pasting a
+secret into `abmx.toml`.
 
 ## Authorize
 
@@ -102,7 +112,7 @@ Scope: `https://www.googleapis.com/auth/gmail.readonly`. Nothing else.
 | --- | --- |
 | `users.getProfile` | full sync, to read `historyId` before listing |
 | `users.messages.list?q=…` | full sync |
-| `users.labels.list` | discover `abmx:*` labels |
+| `users.labels.list` | discover `receipt/*` labels |
 | `users.messages.list?labelIds=…` | every message under a configured label |
 | `users.messages.get?id=…&format=raw` | each new message |
 
@@ -112,16 +122,18 @@ consumes — no re-encoding, no body extraction in `abmx`.
 ## The query
 
 There is no sender query and no history cursor. `abmx` lists the account's
-labels, keeps those starting with `abmx:`, and asks for every message under each
+labels, keeps those starting with `receipt/`, and asks for every message under each
 one:
 
 ```
 labelIds=<label id>  q=-in:spam -in:trash
 ```
 
-- Every label under `[labels].prefix` must have an entry in `[labels.accounts]`; an unrouted label is an
-  error, not a silent skip.
-- A message carrying two `abmx:*` labels is an error; the routing is ambiguous.
+- Only labels with an entry in `[labels.accounts]` are fetched. A label under
+  the prefix with no entry is unmanaged and is left alone; `[labels].ignore`
+  records an explicit "no" from `abmx setup`.
+- A message carrying two managed `receipt/*` labels is an error; the
+  routing is ambiguous.
 - Full pagination is used. If `max_messages` is exceeded, the run fails rather
   than truncating.
 - The state database skips messages already delivered, so a re-scan is cheap and
@@ -130,11 +142,11 @@ labelIds=<label id>  q=-in:spam -in:trash
 ## Labels for parser authoring
 
 Labels are the routing identity, not a hint. The user applies exactly one
-`abmx:<id>` label to tracked mail (a Gmail filter is the usual way), and
+`receipt/<id>` label to tracked mail (a Gmail filter is the usual way), and
 `[labels.accounts]` maps the parser id to a ledger account.
 
 ```bash
-abmx author --label Receipt/abmx:example-qris
+abmx author --label receipt/example-qris
 ```
 
 `abmx author` takes the newest three messages under the label, writes them under
@@ -183,7 +195,7 @@ so the next sync continues where it left off. Use
 You do not need OAuth to test the pipeline:
 
 ```bash
-abmx sync --dry-run --from-dir ./saved-emails --label "Receipt/abmx:<id>"
+abmx sync --dry-run --from-dir ./saved-emails --label "receipt/<id>"
 ```
 
 Save a few real `.eml` files (or export them) and run against those. Same parser,

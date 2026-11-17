@@ -9,12 +9,15 @@ parser id; there is no `id` field. `spec_version` must be the version below.
 Changes to behaviour bump `version`; they never change a transaction's stable
 `id`.
 
-Routing is **not** in the spec. A Gmail label (`abmx:<id>`) is mapped to a
-parser and a ledger account in the main `abmx.toml`:
+Routing is **not** in the spec. A Gmail label (`receipt/<id>`) is mapped to
+a parser and a ledger account in the main `abmx.toml`:
 
 ```toml
 [labels]
-"abmx:example-qris" = { parser = "example-qris", account = "<actual-account-uuid>" }
+prefix = "receipt/"
+
+[labels.accounts]
+"example-qris" = "<actual-account-uuid>"
 ```
 
 ```toml
@@ -144,7 +147,8 @@ label's configured ledger account, not a parser field.
 - One label owns one template. If the three samples for a label are different
   shapes, the label is wrong; fix the Gmail label/filter instead of writing a
   parser that guesses between them.
-- Every `abmx:*` label with mail must have a `[labels]` entry and a parser.
+- Every `receipt/*` label with mail must have a `[labels.accounts]` entry
+  and a parser.
 
 ## Versioning rules
 

@@ -7,12 +7,12 @@ parser id; there is no `id` field. `spec_version` must be the version below.
 Changes to behaviour bump `version`; they never change a transaction's stable
 `id`.
 
-Routing is **not** in the spec. gmailctl applies `Receipt/abmx:<id>`; the main
+Routing is **not** in the spec. gmailctl applies `receipt/<id>`; the main
 `abmx.toml` maps that parser id to a ledger account:
 
 ```toml
 [labels]
-prefix = "Receipt/abmx:"
+prefix = "receipt/"
 
 [labels.accounts]
 "example-qris" = "<actual-account-uuid>"

@@ -17,13 +17,13 @@ $ abmx sync
 fetched 15, parsed 15 — import 13, broken 2, unmatched 0, failed 0
 
 date                 amount label                        counterparty
-2026-11-12     -128,000 IDR Receipt/abmx:example.card_debit  EXAMPLE PAYEE
-2026-11-11     -124,300 IDR Receipt/abmx:example.card_debit  EXAMPLE MERCHANT
+2026-11-12     -128,000 IDR receipt/example.card_debit  EXAMPLE PAYEE
+2026-11-11     -124,300 IDR receipt/example.card_debit  EXAMPLE MERCHANT
 ...
 
 broken (2), not imported:
-  Receipt/abmx:example.journal_va   parse_failed   amount: no value matched
-  next: abmx author --label Receipt/abmx:example.journal_va
+  receipt/example.journal_va   parse_failed   amount: no value matched
+  next: abmx author --label receipt/example.journal_va
   nothing was written to the ledger
 
 applied: added 0, updated 0, skipped 0, errors 0
@@ -62,33 +62,49 @@ never reads the working directory.
 ## Quickstart
 
 ```bash
-abmx init                       # writes ~/.config/abmx/config.toml
-$EDITOR ~/.config/abmx/config.toml   # Gmail client id + Actual endpoint
-abmx auth gmail                 # OAuth2 + PKCE, stores a refresh token (0600)
+abmx setup                      # config + Gmail + labels + accounts, interactively
 abmx status                     # config, corpus, labels, accounts, auth
 abmx sync --dry-run             # see the plan, write nothing
-abmx sync                       # import everything routed
+abmx sync                       # import everything mapped
+```
+
+`abmx setup` is idempotent: rerun it whenever you add a label, change accounts,
+or move to a new machine. Every step it has already completed is skipped. See
+[docs/setup.md](docs/setup.md) for the details.
+
+Prefer doing it by hand?
+
+```bash
+abmx init                            # writes ~/.config/abmx/config.toml
+$EDITOR ~/.config/abmx/config.toml   # Gmail client file + Actual endpoint
+abmx auth gmail                      # OAuth2 + PKCE, stores a refresh token (0600)
+abmx status --online
 ```
 
 Routing is explicit and lives in two places:
 
 - **gmailctl** labels the mail. A tracked message carries exactly one
-  `Receipt/abmx:<parser-id>` label; merchant receipts keep the plain `Receipt`
+  `receipt/<parser-id>` label; merchant receipts keep the plain `receipt`
   label and are never imported.
-- **`[labels.accounts]`** maps that parser id to an Actual account:
+- **`[labels.accounts]`** maps that parser id to an Actual account. That table is
+  the *only* definition of what abmx manages: labels without an entry are not
+  fetched at all, so a half-configured mailbox is never a sync failure.
 
 ```toml
 [labels]
-prefix = "Receipt/abmx:"
+prefix = "receipt/"
 since  = 2026-11-10          # ignore mail received before this date
+ignore = ["merchant.promo"]  # declined in `abmx setup`; asked about again with --review
 
 [labels.accounts]
 "example.card_debit" = "<actual account uuid>"
 ```
 
 gmailctl owns classification: OTP and security mail go to `Notifications`,
-promos to `Newsletter`, merchant receipts to plain `Receipt`, statements to
-`Financial Statements`. `abmx` only sees what was explicitly routed to it.
+promos to `Newsletter`, merchant receipts to plain `receipt`, statements to
+`Financial Statements`. `abmx` discovers labels under `[labels].prefix`
+(`receipt/` by default), ignores the plain `receipt` label, and imports only the
+parser ids mapped in `[labels.accounts]`.
 
 `abmx status` says what is missing. When a routed label has no parser,
 `abmx author` packages the newest three messages into a prompt:
@@ -99,17 +115,17 @@ opencode run --auto "$(abmx author)"
 
 ```
 1 label(s), 3 sample(s); 1 need work
-  Receipt/abmx:example-qris      missing_parser      3  -
+  receipt/example-qris      missing_parser      3  -
 ```
 
 The agent writes the parser straight into `~/.config/abmx/parsers/<id>/` with
 its fixtures, verifies it with `abmx parser check --parser <id>`, and updates
 `[labels.accounts]` after asking which account it belongs to.
 
-Already have `.eml` files? `abmx author --input <dir> --label Receipt/abmx:<id>`
+Already have `.eml` files? `abmx author --input <dir> --label receipt/<id>`
 does the same offline. Then put `abmx sync` on a timer (see the NixOS module
-below): `sync` refuses to run when a routed label has no parser or account, so
-nothing is silently skipped.
+below): `sync` only fetches mapped labels, so unmanaged ones are left alone
+rather than aborting the run.
 
 ### You need
 
@@ -155,7 +171,7 @@ id in the label. gmailctl routes; `abmx` parses. The spec format is in
 
 - inventories every label under `[labels].prefix` and reports
   `missing_parser`, `missing_account`, `parse_failed`, `mixed_shapes`,
-  `insufficient_samples`, `empty`, or `orphan_account`;
+  `insufficient_samples`, `empty`, `ignored`, or `orphan_account`;
 - samples the newest three messages per label, honouring `[labels].since`;
 - writes one representative `.eml` per label under
   `~/.local/state/abmx/author/<timestamp>/`;
@@ -214,8 +230,8 @@ Three independent layers, because they fail in different ways:
 2. **State** — a delivered message is recorded so the next run doesn't even
    re-parse it. This is an optimisation for idempotent sinks and a requirement
    for sinks that have no idempotency key.
-3. **Label scan + state** — every run scans the labels under `[labels].prefix`
-   and lets the state database skip messages already delivered. Mail labeled late
+3. **Label scan + state** — every run scans the mapped labels under
+   `[labels].prefix` and lets the state database skip messages already delivered. Mail labeled late
    is picked up on the next run; a broken row is never marked delivered, so it is
    retried after the parser is fixed.
 
@@ -241,7 +257,7 @@ cleared = "never"
 # notes_fields = ["description", "reference_id", "channel", "parser"]
 
 [labels]
-prefix = "Receipt/abmx:"          # literal, case-insensitive
+prefix = "receipt/"          # literal, case-insensitive
 since  = 2026-11-10               # ignore mail received before this date
 
 [labels.accounts]                 # parser id -> Actual account uuid
@@ -267,16 +283,18 @@ $EDITOR .env
 `.envrc` runs `dotenv_if_exists .env`, so every `abmx` invocation in this
 directory sees the secrets without exporting them by hand.
 
-| Secret                 | Environment                   | Config field                               |
-| ---------------------- | ----------------------------- | ------------------------------------------ |
-| Gmail client secret    | `ABMX_GMAIL_CLIENT_SECRET`    | `client_secret` / `client_secret_file`     |
-| Actual API key         | `ABMX_ACTUAL_API_KEY`         | `api_key` / `api_key_file`                 |
-| Actual budget password | `ABMX_ACTUAL_BUDGET_PASSWORD` | `budget_password` / `budget_password_file` |
+| Secret                 | Environment                   | Config field                                      |
+| ---------------------- | ----------------------------- | ------------------------------------------------- |
+| Gmail client secret    | `ABMX_GMAIL_CLIENT_SECRET`    | `client_secret` / `client_secret_file` / `credentials_file` |
+| Actual API key         | `ABMX_ACTUAL_API_KEY`         | `api_key` / `api_key_file`                        |
+| Actual budget password | `ABMX_ACTUAL_BUDGET_PASSWORD` | `budget_password` / `budget_password_file`        |
 
 ## CLI
 
 ```
 abmx init [--path FILE] [--force]   write a starter config
+abmx setup [--manual] [--review] [--remap]
+                                      interactive config, Gmail, labels, accounts
 abmx auth gmail [--manual]          OAuth2 + PKCE; --manual for a headless box
 abmx auth logout [--no-revoke]      revoke the refresh token, then remove it locally
 abmx status [--online] [--strict] [--check] [--json]

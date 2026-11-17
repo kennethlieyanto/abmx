@@ -1,6 +1,6 @@
 //! AI-assisted parser authoring.
 //!
-//! These are the pieces that turn `abmx:*` labels into an inspectable task for an
+//! These are the pieces that turn `receipt/*` labels into an inspectable task for an
 //! agent: normalized block dumps, a prompt, reusable skills, and a verification
 //! loop. Nothing here calls a model or changes a ledger; the output is text and
 //! files the user chooses to hand to an agent.

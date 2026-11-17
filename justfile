@@ -46,13 +46,13 @@ demo dir parser="example.journal_transfer" parsers="parsers":
     path = "$work/ledger.jsonl"
 
     [labels]
-    prefix = "Receipt/abmx:"
+    prefix = "receipt/"
 
     [labels.accounts]
     "{{parser}}" = "demo"
     EOF
-    cargo run -q -p abmx -- --config "$work/abmx.toml" sync --dry-run --from-dir "$work/mail" --label "Receipt/abmx:{{parser}}"
-    cargo run -q -p abmx -- --config "$work/abmx.toml" sync --from-dir "$work/mail" --label "Receipt/abmx:{{parser}}"
+    cargo run -q -p abmx -- --config "$work/abmx.toml" sync --dry-run --from-dir "$work/mail" --label "receipt/{{parser}}"
+    cargo run -q -p abmx -- --config "$work/abmx.toml" sync --from-dir "$work/mail" --label "receipt/{{parser}}"
     echo "ledger: $work/ledger.jsonl"
     cat "$work/ledger.jsonl"
 

@@ -2,24 +2,23 @@
 
 # Verifying a candidate parser
 
-Run a candidate parser directory (or its `config.toml`) against the samples
-before installing it:
+Run a candidate parser directory against the samples before installing it:
 
 ```sh
-abmx verify parser <parser-dir> --id <parser-id> --input <samples>
-abmx verify parser <parser-dir> --id <parser-id> --input <samples> --json
+abmx parser check --parser <parser-id> --parsers <parser-dir>
+abmx parser check --parser <parser-id> --parsers <parser-dir> -v
+abmx parser parse <samples-dir> --parser <parser-id> --parsers <parser-dir> --format table
 ```
 
-The directory holds `config.toml`. When `--input` is omitted, verify uses
-`<parser-dir>/fixtures/`.
+The directory holds `config.toml` and `fixtures/`. `parser check` verifies the
+fixtures; `parser parse` runs the parser over any `.eml` file or directory.
 
 `abmx author` takes the **last three** messages under a label. A parser is not
 done until all three are `strict`:
 
 ```sh
-abmx verify parser <parser-dir> --id <parser-id>
-abmx verify parser --id <parser-id> --label abmx:<id>
-abmx parser check --parser <parser-id>
+abmx parser check --parser <parser-id> --parsers <parser-dir>
+abmx author --label receipt/<id>
 abmx parser explain <one.eml> --parser <parser-id>
 abmx parser lint --parser <parser-id>
 ```

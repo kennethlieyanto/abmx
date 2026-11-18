@@ -96,6 +96,11 @@ pub struct FetchRequest<'a> {
     /// The Gmail labels to scan. Each message is tagged with the label it came
     /// from, so the caller can choose the parser without guessing.
     pub labels: &'a [String],
+    /// Upper bound requested by the caller.
+    ///
+    /// Sources that cannot paginate incrementally may ignore it: the Gmail
+    /// fetcher currently scans everything under the configured labels, so
+    /// `[labels].since` is the real bound there.
     pub limit: usize,
 }
 

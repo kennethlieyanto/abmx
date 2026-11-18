@@ -477,8 +477,9 @@ max_messages = 10000
 # Run `abmx accounts` to see what Actual calls the accounts.
 [labels]
 prefix = "receipt/"
-# Ignore mail received before this date.
-# since = 2026-11-10
+# Recommended. Without it, sync scans every labelled message in the mailbox,
+# which is slow and may include templates the parser has not seen.
+# since = 2026-11-01
 # Labels you declined in `abmx setup`; they are not fetched and are not asked
 # about again.
 # ignore = ["merchant.promo"]

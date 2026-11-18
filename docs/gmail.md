@@ -134,6 +134,10 @@ labelIds=<label id>  q=-in:spam -in:trash
   records an explicit "no" from `abmx setup`.
 - A message carrying two managed `receipt/*` labels is an error; the
   routing is ambiguous.
+- `[labels].since` adds Gmail's `after:` filter. Without it there is no date
+  bound, so every labelled message is fetched and parsed.
+- `--limit` applies only to `--from-dir`; for Gmail, narrow the history window
+  instead.
 - Full pagination is used. If `max_messages` is exceeded, the run fails rather
   than truncating.
 - The state database skips messages already delivered, so a re-scan is cheap and

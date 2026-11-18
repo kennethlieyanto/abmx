@@ -93,12 +93,16 @@ Routing is explicit and lives in two places:
 ```toml
 [labels]
 prefix = "receipt/"
-since  = 2026-11-10          # ignore mail received before this date
+since  = 2026-11-01          # history window; omitting it scans all labelled mail
 ignore = ["merchant.promo"]  # declined in `abmx setup`; asked about again with --review
 
 [labels.accounts]
 "example.card_debit" = "<actual account uuid>"
 ```
+
+`since` is strongly recommended. Without it, every run scans every message under
+the mapped labels; a recent window also keeps the parser focused on templates it
+was authored against.
 
 gmailctl owns classification: OTP and security mail go to `Notifications`,
 promos to `Newsletter`, merchant receipts to plain `receipt`, statements to
@@ -266,7 +270,7 @@ cleared = "never"
 
 [labels]
 prefix = "receipt/"          # literal, case-insensitive
-since  = 2026-11-10               # ignore mail received before this date
+since  = 2026-11-01               # history window; omit to scan everything
 
 [labels.accounts]                 # parser id -> Actual account uuid
 "example.card_debit"       = "<actual account uuid>"
@@ -309,7 +313,8 @@ abmx status [--online] [--strict] [--check] [--json]
                                       config, corpus, labels, accounts, state, sink, auth
 abmx samples [--label L|PARSER] [--samples N] [--out DIR] [--json]
                                       download sample emails for parser authoring
-abmx sync [--dry-run] [--json] [--diff] [--from-dir DIR] [--label L] [--limit N]
+abmx sync [--dry-run] [--json] [--diff]
+abmx sync --from-dir DIR [--label L] [--limit N]
                                       fetch, parse, and write the ledger
 abmx reset [--purge] [--yes]        forget delivered messages
 abmx accounts [--json]              sink accounts and how [labels.accounts] maps onto them

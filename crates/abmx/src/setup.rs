@@ -78,13 +78,16 @@ fn setup(options: &Options) -> Result<()> {
     // 2. Discovery rule ----------------------------------------------------
     step_discovery(&path, &mut doc)?;
 
-    // 3. Gmail -------------------------------------------------------------
+    // 3. History window ----------------------------------------------------
+    step_history(&path, &mut doc)?;
+
+    // 4. Gmail -------------------------------------------------------------
     let gmail_ready = step_gmail(&path, &mut doc, options)?;
 
-    // 4. Labels ------------------------------------------------------------
+    // 5. Labels ------------------------------------------------------------
     let discovered = step_labels(&path, &mut doc, options, gmail_ready)?;
 
-    // 5. Accounts ----------------------------------------------------------
+    // 6. Accounts ----------------------------------------------------------
     step_accounts(&path, &mut doc, options, discovered.as_deref())?;
 
     // Done -----------------------------------------------------------------
@@ -153,6 +156,98 @@ fn step_discovery(path: &Path, doc: &mut ConfigDocument) -> Result<()> {
         doc.set_string(&["labels", "prefix"], &prefix)?;
         doc.save()?;
         log::success(format!("prefix set to `{prefix}`"))?;
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------- History window
+
+fn step_history(path: &Path, doc: &mut ConfigDocument) -> Result<()> {
+    log::step("History window")?;
+    let (config, _) = reload(path)?;
+    let current = config.labels.since;
+    let today = chrono::Local::now().date_naive();
+    let days_ago = |days: i64| (today - chrono::Duration::days(days)).to_string();
+
+    log::info(
+        "only mail on/after this date is fetched; a narrow window is faster and \
+         avoids old templates the parser has not seen",
+    )?;
+
+    let mut prompt = select("History window");
+    if let Some(date) = current {
+        prompt = prompt.item(
+            "keep".to_owned(),
+            format!("Keep current ({date})"),
+            "no change",
+        );
+    }
+    prompt = prompt
+        .item(
+            "7".to_owned(),
+            "Last 7 days",
+            format!("since {}", days_ago(7)),
+        )
+        .item(
+            "30".to_owned(),
+            "Last 30 days",
+            format!("since {}", days_ago(30)),
+        )
+        .item(
+            "90".to_owned(),
+            "Last 90 days",
+            format!("since {}", days_ago(90)),
+        )
+        .item(
+            "all".to_owned(),
+            "All history",
+            "not recommended: scans every labelled message",
+        )
+        .item("custom".to_owned(), "Custom date", "YYYY-MM-DD");
+
+    prompt = prompt.initial_value(if current.is_some() {
+        "keep".to_owned()
+    } else {
+        "30".to_owned()
+    });
+
+    let choice: String = prompt.interact()?;
+    let selected = match choice.as_str() {
+        "keep" => current,
+        "7" => Some(today - chrono::Duration::days(7)),
+        "30" => Some(today - chrono::Duration::days(30)),
+        "90" => Some(today - chrono::Duration::days(90)),
+        "all" => None,
+        "custom" => {
+            let value: String = input("Since (YYYY-MM-DD)")
+                .placeholder("2026-11-01")
+                .validate(|value: &String| {
+                    chrono::NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d")
+                        .map(|_| ())
+                        .map_err(|_| "expected a date like 2026-11-01".to_owned())
+                })
+                .interact()?;
+            chrono::NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d").ok()
+        }
+        _ => unreachable!("the select only returns declared choices"),
+    };
+
+    if selected == current {
+        return Ok(());
+    }
+
+    match selected {
+        Some(date) => {
+            doc.set_string(&["labels", "since"], &date.to_string())?;
+            doc.save()?;
+            log::success(format!("fetching mail since {date}"))?;
+        }
+        None => {
+            doc.remove(&["labels", "since"])?;
+            doc.save()?;
+            log::warning("history window cleared; every labelled message will be fetched")?;
+        }
     }
 
     Ok(())
@@ -663,6 +758,14 @@ fn summary(path: &Path, config: &Config) -> Result<()> {
         config.labels.accounts.len(),
         config.labels.ignore.len(),
         config.labels.prefix
+    ));
+    lines.push(format!(
+        "window: {}",
+        config
+            .labels
+            .since
+            .map(|date| format!("since {date}"))
+            .unwrap_or_else(|| "all history".to_owned())
     ));
     if config.labels.accounts.is_empty() {
         lines.push("        nothing is imported until a label is mapped".to_owned());

@@ -3,7 +3,7 @@
 `abmx setup` is the attended quickstart. It walks through the pieces that must be
 true before `abmx sync` can import anything:
 
-1. a config file exists and has a discovery prefix;
+1. a config file exists and has a discovery prefix and history window;
 2. Gmail is authorized;
 3. the labels under that prefix have an explicit yes/no decision;
 4. every accepted label maps to a ledger account.
@@ -48,7 +48,28 @@ Gmail label prefix › receipt/
   `example.card_debit`. Nested labels such as `receipt/2026/example` are not parser ids.
 - The value is saved to `[labels].prefix`.
 
-### 3. Gmail
+### 3. History window
+
+Setup asks how far back to fetch:
+
+```
+History window
+› Keep current (2026-11-01)
+  Last 7 days
+  Last 30 days
+  Last 90 days
+  All history
+  Custom date
+```
+
+- New configs default to the last 30 days. Existing configs default to keeping
+  their current `since`.
+- `All history` is available but warns: it scans every labelled message and is
+  slow, and old templates may not match the parser.
+- The date is saved to `[labels].since`. It bounds both `abmx samples` and
+  `abmx sync`.
+
+### 4. Gmail
 
 If a stored refresh token works, this step is skipped. Otherwise it prints the
 Google Cloud checklist and asks for the path to the downloaded OAuth client JSON
@@ -62,7 +83,7 @@ is written to `~/.local/state/abmx/gmail-credentials.json`.
 The client JSON and the token are deliberately separate, just like gws and
 gmailctl: the client identifies the app, the token identifies the user.
 
-### 4. Labels
+### 5. Labels
 
 Setup lists every Gmail label under `[labels].prefix`. For each label that is
 neither mapped nor declined, it asks:
@@ -85,7 +106,7 @@ Existing `[labels.accounts]` entries with no Gmail label under the new prefix ar
 reported as warnings, so a prefix change is visible before `sync` hard-fails on
 them.
 
-### 5. Ledger accounts
+### 6. Ledger accounts
 
 If the ledger is not configured, setup asks for the `actual-http-api` URL, the
 budget sync id, and the API key (unless `ABMX_ACTUAL_API_KEY` is already

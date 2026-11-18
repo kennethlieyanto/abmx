@@ -88,6 +88,51 @@ fn fetch_is_driven_by_the_configured_label() {
 }
 
 #[test]
+fn since_adds_an_after_filter_to_the_query() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start();
+    token_route(&server);
+    labels_route(&server);
+    server.route(
+        "GET",
+        "/gmail/v1/users/me/messages",
+        vec![Response::json(r#"{"messages":[]}"#)],
+    );
+
+    let store = TokenStore::new(dir.path().join("credentials.json"));
+    store
+        .save(&Credentials {
+            client_id: "client".into(),
+            refresh_token: "refresh".into(),
+            scopes: vec![],
+        })
+        .unwrap();
+
+    let mut config = GmailConfig::new("client", store.path());
+    config.base_url = format!("{}/gmail/v1", server.url());
+    config.token_url = format!("{}/token", server.url());
+    config.prefix = "abmx:".to_owned();
+    config.since = Some(chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap());
+    let fetcher = GmailFetcher::new(config).unwrap();
+
+    fetcher
+        .fetch(FetchRequest::new(&["abmx:test".to_owned()]))
+        .unwrap();
+
+    let list = server
+        .requests()
+        .into_iter()
+        .find(|request| request.path_only() == "/gmail/v1/users/me/messages")
+        .expect("messages.list was called");
+    // Gmail's `after:` is exclusive, so the fetcher subtracts a day.
+    assert!(
+        list.query.contains("after%3A2026%2F10%2F31"),
+        "query was {}",
+        list.query
+    );
+}
+
+#[test]
 fn a_message_under_two_routed_labels_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let server = MockServer::start();

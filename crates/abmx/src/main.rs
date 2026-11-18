@@ -130,8 +130,8 @@ enum Command {
         /// With --dry-run, also compare against the ledger.
         #[arg(long, requires = "dry_run")]
         diff: bool,
-        /// Maximum messages to fetch in this run.
-        #[arg(long, value_name = "N")]
+        /// With --from-dir, the maximum files to read.
+        #[arg(long, value_name = "N", requires = "from_dir")]
         limit: Option<usize>,
     },
 
@@ -688,6 +688,13 @@ fn status(settings: &Settings, online: bool, strict: bool, check: bool, json: bo
             format!("{}{} (ignored)", config.labels.prefix, parser_id),
         );
     }
+    if !config.labels.accounts.is_empty() && config.labels.since.is_none() {
+        labels_section.hint(
+            Status::Warn,
+            "no [labels].since; sync scans every labelled message",
+            "set a date or run `abmx setup`",
+        );
+    }
     sections.push(labels_section);
 
     let mut state_section = Section::new("state");
@@ -1042,6 +1049,12 @@ fn sync(
             prefix = config.labels.prefix
         );
     }
+    if from_dir.is_none() && config.labels.since.is_none() {
+        eprintln!(
+            "warning: [labels].since is not set; every labelled message in the mailbox \
+             will be scanned. Set a date or run `abmx setup`."
+        );
+    }
 
     let runner = build_runner(&config, &base)?;
     require_parsers(&runner)?;
@@ -1301,6 +1314,12 @@ fn run_samples(
     config.validate_labels()?;
     if config.labels.accounts.is_empty() {
         bail!("no [labels.accounts] entries; run `abmx setup` to choose which labels to import");
+    }
+    if config.labels.since.is_none() {
+        eprintln!(
+            "warning: [labels].since is not set; sync will scan every labelled message. \
+             Set a date or run `abmx setup`."
+        );
     }
 
     let fetcher = config

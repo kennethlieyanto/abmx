@@ -10,9 +10,12 @@ result
 # direnv / nix-direnv cache
 .direnv/
 
-# actual-http-api compose data
+# legacy actual-http-api compose cache (safe to delete)
 /var
 
 # Real bank samples and their redaction rules (contributor-only inputs)
 /sample/
 redact.toml
+
+# Node helper dependencies (bundled by Nix and the container, never committed)
+crates/abmx-actual/helper/node_modules/

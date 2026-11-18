@@ -15,7 +15,7 @@ pub struct ImportRow {
     pub transaction: abmx_tx::Transaction,
 }
 
-/// An account as the sink sees it, used by `doctor` and `abmx accounts`.
+/// An account as the sink sees it, used by `status` and `abmx accounts`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SinkAccount {
     pub id: String,
@@ -97,7 +97,7 @@ pub trait Sink {
         false
     }
 
-    /// Enumerate the sink's accounts. Used by `doctor` and `accounts`; should be
+    /// Enumerate the sink's accounts. Used by `status` and `accounts`; should be
     /// cheap and side-effect free.
     fn accounts(&self) -> Result<Vec<SinkAccount>>;
 

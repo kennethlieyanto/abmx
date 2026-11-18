@@ -1,16 +1,18 @@
-//! The whole path, with only the two third-party services faked:
-//! Gmail over HTTP → `abmx-parser` (real library, real spec) → policy → Actual over HTTP.
+//! The whole path, with the third-party boundaries faked: Gmail over HTTP and
+//! the Actual helper over its JSON protocol.
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use abmx::state::State;
 use abmx::Runner;
-use abmx_actual::{ActualConfig, ActualSink, NotesConfig};
-use abmx_core::{AccountMap, ApplyOptions, FetchRequest};
+use abmx_actual::{ActualConfig, ActualSink, Helper, NotesConfig};
+use abmx_core::{AccountMap, ApplyOptions, Error, FetchRequest};
 use abmx_gmail::auth::{Credentials, TokenStore};
 use abmx_gmail::{GmailConfig, GmailFetcher};
 use abmx_testkit::{MockServer, Response};
 use base64::Engine;
+use serde_json::{json, Value};
 
 const LABEL: &str = "Receipt/abmx:test.bank";
 
@@ -91,6 +93,29 @@ fn accounts() -> AccountMap {
     accounts
 }
 
+/// Records the request abmx would hand to the Node helper. `import` reports one
+/// added row, matching what Actual's reconciling import answers.
+#[derive(Clone, Default)]
+struct FakeActual {
+    calls: Arc<Mutex<Vec<(String, Value)>>>,
+}
+
+impl FakeActual {
+    fn calls(&self) -> Vec<(String, Value)> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl Helper for FakeActual {
+    fn call(&self, method: &str, params: Value) -> Result<Value, Error> {
+        self.calls.lock().unwrap().push((method.to_owned(), params));
+        match method {
+            "import" => Ok(json!({ "added": 1, "updated": 0 })),
+            other => Err(Error::Sink(format!("unexpected helper call: {other}"))),
+        }
+    }
+}
+
 #[test]
 fn gmail_to_parser_to_actual() {
     let dir = tempfile::tempdir().unwrap();
@@ -123,12 +148,7 @@ fn gmail_to_parser_to_actual() {
         vec![Response::json(r#"{"messages":[{"id":"m1"}]}"#)],
     );
 
-    let actual = MockServer::start();
-    actual.route(
-        "POST",
-        "/v1/budgets/sync-id/accounts/acc-1/transactions/import",
-        vec![Response::json(r#"{"data":{"added":["t1"],"updated":[]}}"#)],
-    );
+    let actual = FakeActual::default();
 
     let (parser, _) = abmx_parser::Parser::load(&abmx_parser::Options {
         parsers: vec![parsers],
@@ -143,11 +163,11 @@ fn gmail_to_parser_to_actual() {
     );
 
     let fetcher = gmail_fetcher(&gmail, dir.path());
-    let sink = ActualSink::new(
-        ActualConfig::new(actual.url(), "key", "sync-id"),
+    let sink = ActualSink::with_helper(
+        ActualConfig::new("http://actual.invalid", "key", "sync-id"),
         NotesConfig::default(),
-    )
-    .unwrap();
+        Box::new(actual.clone()),
+    );
 
     let labels = vec![LABEL.to_owned()];
     let plan = runner.plan(&fetcher, FetchRequest::new(&labels)).unwrap();
@@ -161,13 +181,13 @@ fn gmail_to_parser_to_actual() {
     assert!(report.is_clean());
 
     let request = actual
-        .requests()
+        .calls()
         .into_iter()
-        .find(|request| request.path_only().contains("transactions/import"))
-        .expect("the sink called Actual");
+        .find(|(method, _)| method == "import")
+        .expect("the sink called Actual")
+        .1;
 
-    let body = request.json();
-    let transaction = &body["transactions"][0];
+    let transaction = &request["transactions"][0];
     assert_eq!(transaction["amount"], -2_750_000);
     assert_eq!(transaction["imported_id"], plan.rows[0].id);
     assert_eq!(transaction["payee_name"], "ExamplePay");

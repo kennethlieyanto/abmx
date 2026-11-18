@@ -162,73 +162,31 @@ nuke yes="no":
     echo "removed $dir"
 
 # ---------------------------------------------------------------------------
-# actual-http-api
+# actual helper
 # ---------------------------------------------------------------------------
 
-# Start the actual-http-api wrapper on :5007. Needs docker and a .env.
-actual-api:
+# Install the helper's pinned npm dependencies. Development only: the Nix
+# package and the container bundle the helper for you.
+helper-install:
+    npm --prefix crates/abmx-actual/helper ci
+
+# Exercise the helper's protocol without an Actual server.
+helper-test:
+    node --test crates/abmx-actual/helper/test/*.test.js
+
+# Move the bundled @actual-app/api to a released Actual version, then refresh
+# the Nix dependency hash and rerun the Rust tests.
+helper-bump version:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [[ ! -f .env ]]; then
-      echo "no .env: cp .env.example .env, then fill in ACTUAL_SERVER_PASSWORD and ABMX_ACTUAL_API_KEY" >&2
-      exit 1
-    fi
-    missing=()
-    grep -qE '^ACTUAL_SERVER_PASSWORD=.+' .env || missing+=("ACTUAL_SERVER_PASSWORD")
-    grep -qE '^ABMX_ACTUAL_API_KEY=.+' .env || missing+=("ABMX_ACTUAL_API_KEY")
-    if (( ${#missing[@]} )); then
-      printf 'fill in .env first: %s\n' "${missing[*]}" >&2
-      exit 1
-    fi
-    # Owned by the caller, and the container runs as the caller, so the budget
-    # cache is never root-owned.
-    mkdir -p var/actual-http-api
-    export ACTUAL_HTTP_API_UID="$(id -u)"
-    export ACTUAL_HTTP_API_GID="$(id -g)"
-    docker compose up -d --pull missing
-    port="${ACTUAL_HTTP_API_PORT:-5007}"
-    for _ in $(seq 1 40); do
-      curl -fsS -o /dev/null "http://localhost:${port}/api-docs/" && break
-      sleep 0.25
-    done
-    printf '\nactual-http-api: http://localhost:%s\n' "$port"
-    printf 'swagger:         http://localhost:%s/api-docs/\n\n' "$port"
-    printf 'In abmx.toml:\n\n'
-    printf '  [sink.actual]\n'
-    printf '  url = "http://localhost:%s"\n' "$port"
-    printf '  budget_sync_id = "<Settings -> Show advanced settings -> Sync ID>"\n\n'
-    printf 'Then: abmx accounts   # prints the account UUIDs to map\n'
-
-# Follow the wrapper's logs.
-actual-api-logs:
-    docker compose logs -f actual-http-api
-
-# Stop the wrapper. The budget cache in ./var is kept.
-actual-api-down:
-    docker compose down
-
-# Is the wrapper up and serving its docs?
-actual-api-status:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    docker compose ps
-    port="${ACTUAL_HTTP_API_PORT:-5007}"
-    printf '\n'
-    ready=""
-    for _ in $(seq 1 20); do
-      if curl -fsS -o /dev/null "http://localhost:${port}/api-docs/"; then
-        ready=1
-        break
-      fi
-      sleep 0.25
-    done
-    if [[ -n "$ready" ]]; then
-      echo "swagger reachable on :${port}"
-    else
-      echo "swagger not reachable on :${port}; start it with: just actual-api" >&2
-      docker compose logs --tail=20 actual-http-api >&2 || true
-      exit 1
-    fi
+    cd crates/abmx-actual/helper
+    npm install --save-exact --package-lock-only --ignore-scripts "@actual-app/api@{{version}}"
+    npm ci
+    node --test test
+    cd -
+    echo "refresh npmDepsHash in flake.nix with:"
+    echo "  nix run nixpkgs#prefetch-npm-deps -- crates/abmx-actual/helper/package-lock.json"
+    cargo test -p abmx-actual
 
 # Nix build.
 nix-build:

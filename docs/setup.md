@@ -109,9 +109,9 @@ them.
 
 ### 6. Ledger accounts
 
-If the ledger is not configured, setup asks for the `actual-http-api` URL, the
-budget sync id, and the API key (unless `ABMX_ACTUAL_API_KEY` is already
-exported). It then validates the connection by listing accounts.
+If the ledger is not configured, setup asks for the Actual server URL, the budget
+sync id, and an Actual API key (if your Actual build offers Settings → Security → API keys). Leave the key blank to use the
+server password instead. It then validates the connection by listing accounts.
 
 For every accepted label it offers the open accounts and writes:
 
@@ -146,6 +146,7 @@ Fewer than three samples is a warning; the agent should stay conservative.
 | --- | --- |
 | Gmail OAuth client | `<config dir>/gmail-client.json` (0600) |
 | Actual API key | `<config dir>/actual-api-key` (0600), unless `ABMX_ACTUAL_API_KEY` is set |
+| Actual server password | `<config dir>/actual-server-password` (0600), when no API key is entered |
 | Actual budget password | `<config dir>/actual-budget-password` (0600), only when you enter one |
 
 Environment variables always win over files, which keeps systemd
@@ -154,6 +155,7 @@ Environment variables always win over files, which keeps systemd
 ```
 ABMX_GMAIL_CLIENT_SECRET
 ABMX_ACTUAL_API_KEY
+ABMX_ACTUAL_SERVER_PASSWORD
 ABMX_ACTUAL_BUDGET_PASSWORD
 ```
 

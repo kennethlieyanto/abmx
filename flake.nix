@@ -26,8 +26,46 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+
+          # The official Actual client is a Node library, so the sink ships a
+          # tiny helper that abmx spawns per operation. Bundling it here keeps
+          # `abmx` a single installable closure.
+          actual-helper = pkgs.buildNpmPackage {
+            pname = "abmx-actual-helper";
+            version = (builtins.fromJSON (
+              builtins.readFile ./crates/abmx-actual/helper/package.json
+            )).version;
+
+            src = ./crates/abmx-actual/helper;
+            npmDepsHash = "sha256-p337IRxa7bZIXNES2cY7ZfKJMklAouJZI2tyfp9jgCo=";
+            # better-sqlite3 is a native addon: build it with the same Node the
+            # wrapper puts on PATH, or the ABI will not match at runtime.
+            nodejs = pkgs.nodejs_22;
+
+            # better-sqlite3's install script would try to download a prebuilt
+            # binary; the sandbox has no network, so compile it from source.
+            env.npm_config_build_from_source = "true";
+            nativeBuildInputs = [ pkgs.python3 ];
+
+            dontNpmBuild = true;
+
+            installPhase = ''
+              runHook preInstall
+              mkdir -p $out/share/abmx/actual-helper
+              cp -r . $out/share/abmx/actual-helper
+              chmod +x $out/share/abmx/actual-helper/helper.js
+              runHook postInstall
+            '';
+
+            meta = {
+              description = "Node bridge from abmx to the official @actual-app/api client";
+              license = pkgs.lib.licenses.mit;
+            };
+          };
         in
         {
+          abmx-actual-helper = actual-helper;
+
           default = pkgs.rustPlatform.buildRustPackage {
             pname = "abmx";
             inherit version;
@@ -54,8 +92,11 @@
             postInstall = ''
               mkdir -p $out/share/abmx
               cp -r parsers $out/share/abmx/parsers
+              cp -r ${actual-helper}/share/abmx/actual-helper $out/share/abmx/actual-helper
               wrapProgram $out/bin/abmx \
-                --set-default ABMX_PARSERS "$out/share/abmx/parsers"
+                --set-default ABMX_PARSERS "$out/share/abmx/parsers" \
+                --set-default ABMX_ACTUAL_HELPER "$out/share/abmx/actual-helper/helper.js" \
+                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.nodejs_22 ]}
             '';
 
             # `cargo` needs a C compiler for the bundled SQLite, which stdenv
@@ -83,6 +124,7 @@
               cargo
               clippy
               just
+              nodejs_22
               rustc
               rustfmt
               sqlite
@@ -185,6 +227,10 @@
                 User = cfg.user;
                 Group = cfg.user;
                 StateDirectory = "abmx";
+                # `@actual-app/api` keeps its local copy of the budget here.
+                # ProtectHome hides ~/.cache, so point it at the unit's cache.
+                CacheDirectory = "abmx";
+                Environment = [ "ABMX_ACTUAL_DATA_DIR=/var/cache/abmx/actual" ];
                 WorkingDirectory = "/var/lib/abmx";
 
                 # Two runs must never write to the same budget concurrently.

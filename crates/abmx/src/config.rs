@@ -155,22 +155,46 @@ pub struct SinkSection {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ActualSection {
-    /// Base URL of `actual-http-api` — the wrapper, not the Actual server.
-    /// Actual has no REST API of its own.
-    pub url: String,
-    /// The wrapper's own API key (not the Actual server password).
+    /// Base URL of the Actual server itself, e.g. `http://localhost:5006`.
+    /// Actual has no HTTP API: `abmx` drives the official Node client through a
+    /// bundled helper, which talks to this URL.
+    #[serde(default)]
+    pub server_url: Option<String>,
+    /// Deprecated: the `actual-http-api` wrapper URL. Rejected with migration
+    /// guidance instead of being silently ignored.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// A budget-scoped Actual API key (Settings → General → Security → API keys).
     #[serde(default)]
     pub api_key: Option<String>,
     #[serde(default)]
     pub api_key_file: Option<PathBuf>,
+    /// The Actual server password, for servers too old to have API keys.
+    #[serde(default)]
+    pub server_password: Option<String>,
+    #[serde(default)]
+    pub server_password_file: Option<PathBuf>,
     /// Actual's Sync ID.
     pub budget_sync_id: String,
-    /// The Actual server password, only for end-to-end encrypted budgets.
-    /// This is not the wrapper's API key.
+    /// The budget's end-to-end encryption password, if it has one.
     #[serde(default)]
     pub budget_password: Option<String>,
     #[serde(default)]
     pub budget_password_file: Option<PathBuf>,
+    /// Where `@actual-app/api` keeps its local copy of the budget. Defaults to
+    /// `$XDG_CACHE_HOME/abmx/actual`; keep it persistent or every run
+    /// re-downloads the budget.
+    #[serde(default)]
+    pub data_dir: Option<PathBuf>,
+    /// The Node helper script. Defaults to the copy installed next to `abmx`.
+    #[serde(default)]
+    pub helper: Option<PathBuf>,
+    /// Node executable. Defaults to `node` on `PATH`.
+    #[serde(default)]
+    pub node: Option<PathBuf>,
+    /// How long a single helper call may take. Defaults to 120 seconds.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
     #[serde(default)]
     pub chunk_size: Option<usize>,
     /// Parser fields copied into Actual's notes, in order. Defaults to
@@ -325,50 +349,149 @@ impl Config {
         })
     }
 
-    /// Build the configured sink. `[sink.actual]` wins over `[sink.file]` when
-    /// both are present.
-    pub fn build_sink(&self, base: &Path) -> Result<Box<dyn Sink>> {
-        if let Some(actual) = &self.sink.actual {
-            let api_key = paths::resolve_secret(
-                "ABMX_ACTUAL_API_KEY",
-                actual.api_key.as_deref(),
+    /// Resolve `[sink.actual]` into the sink's own config.
+    ///
+    /// Secrets follow the usual env → literal → file precedence. The helper and
+    /// Node paths are resolved early so `abmx status` can report a broken
+    /// install instead of failing halfway through a sync.
+    pub fn actual_sink_config(&self, base: &Path) -> Result<Option<ActualConfig>> {
+        let Some(actual) = &self.sink.actual else {
+            return Ok(None);
+        };
+
+        let has_server_url = actual
+            .server_url
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+        if !has_server_url
+            && actual
+                .url
+                .as_deref()
+                .is_some_and(|url| !url.trim().is_empty())
+        {
+            bail!(
+                "[sink.actual].url pointed at actual-http-api, which abmx no longer uses.\n\
+                 Replace it with your Actual server:\n\n  \
+                 server_url = \"http://localhost:5006\"\n\n\
+                 The API key now comes from Actual itself \
+                 (Settings → General → Security → API keys). Run `abmx setup` to rewrite \
+                 the section."
+            );
+        }
+
+        let server_url = non_empty_env("ABMX_ACTUAL_SERVER_URL")
+            .or_else(|| {
                 actual
-                    .api_key_file
-                    .as_ref()
-                    .map(|path| paths::resolve_path(base, path))
-                    .as_deref(),
-            )?
+                    .server_url
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+            })
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "[sink.actual] needs `api_key`, `api_key_file`, or ABMX_ACTUAL_API_KEY"
+                    "[sink.actual] needs `server_url`, the Actual server itself \
+                     (for example http://localhost:5006)"
                 )
             })?;
 
-            let budget_password = paths::resolve_secret(
-                "ABMX_ACTUAL_BUDGET_PASSWORD",
-                actual.budget_password.as_deref(),
+        let api_key = paths::resolve_secret(
+            "ABMX_ACTUAL_API_KEY",
+            actual.api_key.as_deref(),
+            actual
+                .api_key_file
+                .as_ref()
+                .map(|path| paths::resolve_path(base, path))
+                .as_deref(),
+        )?;
+        let server_password = paths::resolve_secret(
+            "ABMX_ACTUAL_SERVER_PASSWORD",
+            actual.server_password.as_deref(),
+            actual
+                .server_password_file
+                .as_ref()
+                .map(|path| paths::resolve_path(base, path))
+                .as_deref(),
+        )?;
+
+        let mut config = match (api_key, server_password) {
+            (Some(key), _) => ActualConfig::new(server_url, key, actual.budget_sync_id.as_str()),
+            (None, Some(password)) => {
+                ActualConfig::with_password(server_url, password, actual.budget_sync_id.as_str())
+            }
+            (None, None) => bail!(
+                "[sink.actual] needs actual credentials: an Actual API key \
+                 (`api_key`, `api_key_file`, or ABMX_ACTUAL_API_KEY), or the server \
+                 password (`server_password`, `server_password_file`, or \
+                 ABMX_ACTUAL_SERVER_PASSWORD)"
+            ),
+        };
+
+        config.data_dir = non_empty_env("ABMX_ACTUAL_DATA_DIR")
+            .map(PathBuf::from)
+            .or_else(|| {
                 actual
-                    .budget_password_file
+                    .data_dir
                     .as_ref()
                     .map(|path| paths::resolve_path(base, path))
-                    .as_deref(),
-            )?;
+            })
+            .unwrap_or_else(paths::default_actual_data_dir);
 
-            let notes = actual
-                .notes_fields
-                .clone()
+        config.helper = non_empty_env("ABMX_ACTUAL_HELPER")
+            .map(PathBuf::from)
+            .or_else(|| {
+                actual
+                    .helper
+                    .as_ref()
+                    .map(|path| paths::resolve_path(base, path))
+            })
+            .or_else(paths::default_actual_helper)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "the Actual helper script was not found. Install abmx with its \
+                     helper (the Nix package and container include it), set \
+                     `[sink.actual].helper`, or export ABMX_ACTUAL_HELPER"
+                )
+            })?;
+
+        config.node = non_empty_env("ABMX_NODE")
+            .map(PathBuf::from)
+            .or_else(|| actual.node.clone())
+            .unwrap_or_else(|| PathBuf::from("node"));
+
+        config.timeout = std::time::Duration::from_secs(actual.timeout_secs.unwrap_or(120).max(1));
+
+        config.budget_password = paths::resolve_secret(
+            "ABMX_ACTUAL_BUDGET_PASSWORD",
+            actual.budget_password.as_deref(),
+            actual
+                .budget_password_file
+                .as_ref()
+                .map(|path| paths::resolve_path(base, path))
+                .as_deref(),
+        )?;
+
+        if let Some(cleared) = actual.cleared {
+            config.cleared = cleared;
+        }
+        if let Some(reimport_deleted) = actual.reimport_deleted {
+            config.reimport_deleted = reimport_deleted;
+        }
+
+        Ok(Some(config))
+    }
+
+    /// Build the configured sink. `[sink.actual]` wins over `[sink.file]` when
+    /// both are present.
+    pub fn build_sink(&self, base: &Path) -> Result<Box<dyn Sink>> {
+        if let Some(config) = self.actual_sink_config(base)? {
+            let notes = self
+                .sink
+                .actual
+                .as_ref()
+                .and_then(|actual| actual.notes_fields.clone())
                 .map(|fields| NotesConfig { fields })
                 .unwrap_or_default();
-
-            let mut config =
-                ActualConfig::new(actual.url.as_str(), api_key, actual.budget_sync_id.as_str());
-            config.budget_password = budget_password;
-            if let Some(cleared) = actual.cleared {
-                config.cleared = cleared;
-            }
-            if let Some(reimport_deleted) = actual.reimport_deleted {
-                config.reimport_deleted = reimport_deleted;
-            }
 
             let sink = ActualSink::new(config, notes)?;
             return Ok(Box::new(sink));
@@ -429,6 +552,7 @@ pub const INIT_TEMPLATE: &str = r#"# abmx configuration
 # this file:
 #   ABMX_GMAIL_CLIENT_SECRET
 #   ABMX_ACTUAL_API_KEY
+#   ABMX_ACTUAL_SERVER_PASSWORD
 #   ABMX_ACTUAL_BUDGET_PASSWORD
 
 [general]
@@ -449,17 +573,29 @@ parsers = []
 # Hard cap. Exceeding it is an error, not a silent truncation.
 max_messages = 10000
 
-# Actual Budget has no REST API. `url` is the **actual-http-api** wrapper, NOT
-# your Actual server (:5006). The wrapper drives the official client over HTTP:
-#   abmx  ──►  actual-http-api  ──►  @actual-app/api  ──►  actual-server
-# https://github.com/jhonderson/actual-http-api
-# `api_key` is the wrapper's key; `budget_password` is the Actual server's.
+# Actual Budget has no HTTP API. abmx drives the official Node client
+# (`@actual-app/api`) through a bundled helper, which talks to your Actual
+# server directly:
+#   abmx  ──►  actual-helper (Node)  ──►  @actual-app/api  ──►  actual-server
+#
+# `server_url` is the Actual server itself, not a wrapper. `api_key` is a
+# budget-scoped key from Actual: Settings → General → Security → API keys.
+# Servers too old to have API keys can use `server_password` instead.
 #
 # [sink.actual]
-# url = "http://localhost:5007"   # actual-http-api, not the Actual server
+# server_url = "http://localhost:5006"
 # budget_sync_id = "00000000-0000-0000-0000-000000000000"
 # api_key_file = "/run/credentials/abmx.service/actual-api-key"
+# server_password_file = "/run/credentials/abmx.service/actual-server-password"
 # budget_password_file = "/run/credentials/abmx.service/actual-budget-password"
+# The local copy of the budget. Keep it persistent; otherwise every run
+# downloads the whole budget again.
+# data_dir = "~/.cache/abmx/actual"
+# The helper and Node binary are found automatically; override them when
+# running from a custom prefix.
+# helper = "/usr/share/abmx/actual-helper/helper.js"
+# node = "node"
+# timeout_secs = 120
 # chunk_size = 50
 # never | settled | always. `never` leaves imported rows uncleared so clearing
 # stays your reconciliation step.
@@ -493,3 +629,10 @@ prefix = "receipt/"
 # "example.card_debit"       = "00000000-0000-0000-0000-000000000000"
 # "example.journal_transfer" = "00000000-0000-0000-0000-000000000000"
 "#;
+
+fn non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}

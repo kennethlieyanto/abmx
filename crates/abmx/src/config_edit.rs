@@ -101,15 +101,22 @@ impl ConfigDocument {
     /// Set the Actual Budget endpoint and where its secrets live.
     pub fn set_actual(
         &mut self,
-        url: &str,
+        server_url: &str,
         budget_sync_id: &str,
         api_key_file: Option<&str>,
+        server_password_file: Option<&str>,
         budget_password_file: Option<&str>,
     ) -> Result<()> {
-        self.set_string(&["sink", "actual", "url"], url)?;
+        self.set_string(&["sink", "actual", "server_url"], server_url)?;
+        // A config carried over from actual-http-api still has `url`; drop it
+        // so the deprecated field cannot shadow the real server later.
+        self.remove(&["sink", "actual", "url"])?;
         self.set_string(&["sink", "actual", "budget_sync_id"], budget_sync_id)?;
         if let Some(path) = api_key_file {
             self.set_string(&["sink", "actual", "api_key_file"], path)?;
+        }
+        if let Some(path) = server_password_file {
+            self.set_string(&["sink", "actual", "server_password_file"], path)?;
         }
         if let Some(path) = budget_password_file {
             self.set_string(&["sink", "actual", "budget_password_file"], path)?;

@@ -1,39 +1,57 @@
 //! Actual Budget as a [`abmx_core::Sink`].
 //!
-//! Actual has no REST API of its own — the official client is a Node library
-//! that mutates a local copy of the budget and syncs it back. Rather than shell
-//! out to Node, this talks to
-//! [`actual-http-api`](https://github.com/jhonderson/actual-http-api), which
-//! wraps that library and exposes the one endpoint that matters:
-//! `POST /v1/budgets/{syncId}/accounts/{accountId}/transactions/import`.
+//! Actual has no HTTP API: the official client is [`@actual-app/api`], a Node
+//! library that downloads a copy of the budget, applies changes locally, and
+//! syncs them back. This crate therefore drives the official client through a
+//! bundled helper script (`helper/helper.js`) that `abmx` spawns for one
+//! operation at a time. Nothing stays running between operations.
 //!
-//! That endpoint calls `importTransactions`, which is the *reconciling* import:
-//! it honours `imported_id`, so re-running `abmx` can never double-post.
+//! [`@actual-app/api`]: https://actualbudget.org/docs/api/
 
 pub mod convert;
+pub mod helper;
+pub mod version;
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::NaiveDate;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 use abmx_core::{
     ApplyOptions, Error, ImportRow, LedgerRow, Report, Result, RowError, Sink, SinkAccount,
 };
 
 pub use convert::{to_actual, to_cents, ClearedPolicy, NotesConfig};
+pub use helper::{Helper, ProcessHelper};
+pub use version::{Concern, VersionReport};
+
+/// How `abmx` authenticates to the Actual server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActualAuth {
+    /// A budget-scoped API key, preferred: revocable and limited to one budget.
+    ApiKey(String),
+    /// The server password, for servers too old to have API keys.
+    ServerPassword(String),
+}
 
 #[derive(Debug, Clone)]
 pub struct ActualConfig {
-    /// Base URL of `actual-http-api`, e.g. `http://localhost:5007`.
-    pub base_url: String,
-    /// The wrapper's own API key (not the Actual server password).
-    pub api_key: String,
+    /// Base URL of the Actual server itself, e.g. `http://localhost:5006`.
+    pub server_url: String,
+    pub auth: ActualAuth,
     /// Actual's Sync ID: Settings → Show advanced settings → Sync ID.
     pub budget_sync_id: String,
     /// Only for end-to-end encrypted budgets.
     pub budget_password: Option<String>,
+    /// Where `@actual-app/api` caches its copy of the budget. Persistent, or
+    /// every run downloads the whole file.
+    pub data_dir: PathBuf,
+    /// Node executable. `node` resolves through `PATH`.
+    pub node: PathBuf,
+    /// The helper script (`helper/helper.js`).
+    pub helper: PathBuf,
     /// Whether imported rows are marked cleared in Actual.
     pub cleared: ClearedPolicy,
     /// Re-import rows that were previously imported and then deleted.
@@ -47,63 +65,79 @@ pub struct ActualConfig {
 
 impl ActualConfig {
     pub fn new(
-        base_url: impl Into<String>,
+        server_url: impl Into<String>,
         api_key: impl Into<String>,
         budget_sync_id: impl Into<String>,
     ) -> Self {
         Self {
-            base_url: base_url.into(),
-            api_key: api_key.into(),
+            server_url: server_url.into(),
+            auth: ActualAuth::ApiKey(api_key.into()),
             budget_sync_id: budget_sync_id.into(),
             budget_password: None,
+            data_dir: std::env::temp_dir().join("abmx-actual"),
+            node: PathBuf::from("node"),
+            helper: PathBuf::from("abmx-actual-helper"),
             cleared: ClearedPolicy::Never,
             reimport_deleted: true,
             timeout: Duration::from_secs(120),
         }
     }
+
+    /// Authenticate with the Actual server password instead of an API key.
+    pub fn with_password(
+        server_url: impl Into<String>,
+        password: impl Into<String>,
+        budget_sync_id: impl Into<String>,
+    ) -> Self {
+        let mut config = Self::new(server_url, "", budget_sync_id);
+        config.auth = ActualAuth::ServerPassword(password.into());
+        config
+    }
 }
 
 pub struct ActualSink {
-    http: reqwest::blocking::Client,
+    helper: Box<dyn Helper>,
     config: ActualConfig,
     notes: NotesConfig,
 }
 
 impl ActualSink {
     pub fn new(config: ActualConfig, notes: NotesConfig) -> Result<Self> {
-        let http = reqwest::blocking::Client::builder()
-            .timeout(config.timeout)
-            .build()
-            .map_err(|error| Error::Sink(format!("building http client: {error}")))?;
-
+        if config.server_url.trim().is_empty() {
+            return Err(Error::Sink(
+                "[sink.actual].server_url must not be empty".to_owned(),
+            ));
+        }
+        if config.budget_sync_id.trim().is_empty() {
+            return Err(Error::Sink(
+                "[sink.actual].budget_sync_id must not be empty".to_owned(),
+            ));
+        }
+        let helper = Box::new(ProcessHelper::new(config.clone()));
         Ok(Self {
-            http,
+            helper,
             config,
             notes,
         })
     }
 
-    fn url(&self, path: &str) -> String {
-        format!(
-            "{}/v1/budgets/{}{}",
-            self.config.base_url.trim_end_matches('/'),
-            self.config.budget_sync_id,
-            path
-        )
+    /// Build a sink around a different transport. Used by tests.
+    #[doc(hidden)]
+    pub fn with_helper(config: ActualConfig, notes: NotesConfig, helper: Box<dyn Helper>) -> Self {
+        Self {
+            helper,
+            config,
+            notes,
+        }
     }
 
-    fn request(&self, method: reqwest::Method, url: &str) -> reqwest::blocking::RequestBuilder {
-        let mut builder = self
-            .http
-            .request(method, url)
-            .header("x-api-key", &self.config.api_key)
-            .header("accept", "application/json");
-
+    fn params(&self, extra: Map<String, Value>) -> Value {
+        let mut params = extra;
+        params.insert("budgetSyncId".to_owned(), json!(self.config.budget_sync_id));
         if let Some(password) = &self.config.budget_password {
-            builder = builder.header("budget-encryption-password", password);
+            params.insert("budgetPassword".to_owned(), json!(password));
         }
-
-        builder
+        Value::Object(params)
     }
 
     fn import_chunk(
@@ -122,48 +156,31 @@ impl ActualSink {
             )?);
         }
 
-        let body = json!({
-            "transactions": transactions,
-            // Only used for rows that omit `cleared`, which we never do; keep it
-            // consistent with the policy instead of asserting the opposite.
-            "defaultCleared": self.config.cleared == ClearedPolicy::Always,
-            // The ledger is a projection of the mailbox: a rebuild recreates
-            // rows that were deleted. Set `reimport_deleted = false` to make
-            // ledger deletions permanent instead.
-            "reimportDeleted": self.config.reimport_deleted,
-            // Preserve `ExamplePay`, not `Examplepay`.
-            "payeeNameNormalization": "original",
-            "dryRun": dry_run,
-        });
+        let mut params = Map::new();
+        params.insert("account".to_owned(), json!(account));
+        params.insert("transactions".to_owned(), json!(transactions));
+        params.insert(
+            "options".to_owned(),
+            json!({
+                // Only used for rows that omit `cleared`, which we never do;
+                // keep it consistent instead of asserting the opposite.
+                "defaultCleared": self.config.cleared == ClearedPolicy::Always,
+                // The ledger is a projection of the mailbox: a rebuild
+                // recreates rows that were deleted.
+                "reimportDeleted": self.config.reimport_deleted,
+                // Preserve `ExamplePay`, not `Examplepay`.
+                "payeeNameNormalization": "original",
+                "dryRun": dry_run,
+            }),
+        );
 
-        let url = self.url(&format!("/accounts/{account}/transactions/import"));
-        let response = self
-            .request(reqwest::Method::POST, &url)
-            .json(&body)
-            .send()
+        let data = self
+            .helper
+            .call("import", self.params(params))
             .map_err(|error| error.to_string())?;
 
-        let status = response.status();
-        let text = response.text().map_err(|error| error.to_string())?;
-
-        if !status.is_success() {
-            return Err(format!("actual {status}: {}", error_message(&text)));
-        }
-
-        let value: Value = serde_json::from_str(&text)
-            .map_err(|error| format!("actual response: {error}: {text}"))?;
-
-        let data = value.get("data").cloned().unwrap_or(Value::Null);
-        let added = data
-            .get("added")
-            .and_then(Value::as_array)
-            .map(Vec::len)
-            .unwrap_or(0);
-        let updated = data
-            .get("updated")
-            .and_then(Value::as_array)
-            .map(Vec::len)
-            .unwrap_or(0);
+        let added = data.get("added").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let updated = data.get("updated").and_then(Value::as_u64).unwrap_or(0) as usize;
 
         Ok((added, updated))
     }
@@ -184,29 +201,13 @@ impl Sink for ActualSink {
     }
 
     fn accounts(&self) -> Result<Vec<SinkAccount>> {
-        let url = self.url("/accounts");
-        let response = self
-            .request(reqwest::Method::GET, &url)
-            .send()
-            .map_err(|error| Error::Sink(format!("actual: {error}")))?;
-
-        let status = response.status();
-        let text = response
-            .text()
-            .map_err(|error| Error::Sink(format!("actual: {error}")))?;
-
-        if !status.is_success() {
-            return Err(Error::Sink(format!(
-                "actual {status}: {}",
-                error_message(&text)
-            )));
-        }
-
-        let value: Value = serde_json::from_str(&text)?;
-        let accounts = value
-            .get("data")
-            .and_then(Value::as_array)
-            .ok_or_else(|| Error::Sink(format!("actual: accounts response had no data: {text}")))?;
+        let data = self.helper.call("accounts", self.params(Map::new()))?;
+        let accounts = data.as_array().ok_or_else(|| {
+            Error::Sink(format!(
+                "actual: accounts response was not a list: {}",
+                version::truncate(&data.to_string(), 300)
+            ))
+        })?;
 
         Ok(accounts
             .iter()
@@ -241,63 +242,49 @@ impl Sink for ActualSink {
         since: NaiveDate,
         until: NaiveDate,
     ) -> Result<Vec<LedgerRow>> {
+        let mut params = Map::new();
+        params.insert("accounts".to_owned(), json!(accounts));
+        params.insert("since".to_owned(), json!(since.to_string()));
+        params.insert("until".to_owned(), json!(until.to_string()));
+
+        let data = self.helper.call("snapshot", self.params(params))?;
+        let transactions = data.as_array().ok_or_else(|| {
+            Error::Sink(format!(
+                "actual: transactions response was not a list: {}",
+                version::truncate(&data.to_string(), 300)
+            ))
+        })?;
+
         let mut rows = Vec::new();
+        for transaction in transactions {
+            let Some(date) = transaction
+                .get("date")
+                .and_then(Value::as_str)
+                .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
+            else {
+                continue;
+            };
+            let Some(account) = transaction.get("account").and_then(Value::as_str) else {
+                continue;
+            };
 
-        for account in accounts {
-            let url = format!(
-                "{}?since_date={since}&until_date={until}",
-                self.url(&format!("/accounts/{account}/transactions"))
-            );
-
-            let response = self
-                .request(reqwest::Method::GET, &url)
-                .send()
-                .map_err(|error| Error::Sink(format!("actual: {error}")))?;
-
-            let status = response.status();
-            let text = response
-                .text()
-                .map_err(|error| Error::Sink(format!("actual: {error}")))?;
-
-            if !status.is_success() {
-                return Err(Error::Sink(format!(
-                    "actual {status}: {}",
-                    error_message(&text)
-                )));
-            }
-
-            let value: Value = serde_json::from_str(&text)?;
-            let transactions = value.get("data").and_then(Value::as_array).ok_or_else(|| {
-                Error::Sink(format!("actual: transactions response had no data: {text}"))
-            })?;
-
-            for transaction in transactions {
-                let Some(date) = transaction
-                    .get("date")
+            rows.push(LedgerRow {
+                account: account.to_owned(),
+                date,
+                amount_minor: transaction
+                    .get("amount")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+                currency_exponent: 2,
+                payee: transaction
+                    .get("imported_payee")
                     .and_then(Value::as_str)
-                    .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
-                else {
-                    continue;
-                };
-
-                rows.push(LedgerRow {
-                    account: account.clone(),
-                    date,
-                    amount_minor: transaction
-                        .get("amount")
-                        .and_then(Value::as_i64)
-                        .unwrap_or(0),
-                    currency_exponent: 2,
-                    payee: transaction
-                        .get("imported_payee")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    imported_id: transaction
-                        .get("imported_id")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                });
-            }
+                    .map(str::to_owned),
+                imported_id: transaction
+                    .get("imported_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+            });
         }
 
         Ok(rows)
@@ -360,23 +347,5 @@ impl Sink for ActualSink {
         }
 
         Ok(report)
-    }
-}
-
-fn error_message(body: &str) -> String {
-    if let Ok(value) = serde_json::from_str::<Value>(body) {
-        if let Some(error) = value.get("error").and_then(Value::as_str) {
-            return error.to_owned();
-        }
-    }
-
-    let trimmed = body.trim();
-    if trimmed.chars().count() > 300 {
-        let shortened: String = trimmed.chars().take(300).collect();
-        format!("{shortened}…")
-    } else if trimmed.is_empty() {
-        "(empty response)".to_owned()
-    } else {
-        trimmed.to_owned()
     }
 }

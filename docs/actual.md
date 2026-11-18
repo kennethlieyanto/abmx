@@ -1,145 +1,131 @@
 # Actual Budget
 
-Actual has **no REST API**. The official client (`@actual-app/api`) is a Node
-library that downloads a copy of the budget database, mutates it, and syncs it
-back. A Rust process cannot speak that protocol without reimplementing it.
+Actual has **no HTTP API**. The official client is [`@actual-app/api`], a Node
+library that downloads a copy of the budget database, mutates it locally, and
+syncs it back. There is no REST endpoint to call and no server-side budget
+engine.
 
-`abmx` therefore talks to
-[`actual-http-api`](https://github.com/jhonderson/actual-http-api), a small
-wrapper that exposes the parts of the official client over HTTP. Everything
-stays in Rust; nothing shells out to Node.
+`abmx` therefore ships a **one-shot helper** around that library. For each
+operation it spawns `node helper.js`, writes one JSON request to stdin, reads one
+JSON response from stdout, and waits for it to exit. Nothing stays running: no
+port, no service, no shared secret on the wire.
 
 ```
-abmx ──HTTP──► actual-http-api ──► @actual-app/api ──► actual-server
+abmx ──spawn──► actual-helper (Node) ──► @actual-app/api ──► actual-server
+     ◄─JSON───                              (local copy)          :5006
 ```
 
-## Quick start (docker compose)
+[`@actual-app/api`]: https://actualbudget.org/docs/api/
 
-The repo ships a compose file for the wrapper. It is meant to sit next to an
-Actual server you already run.
+## Quick start
 
-```bash
-cp .env.example .env
-$EDITOR .env          # ACTUAL_SERVER_PASSWORD, ABMX_ACTUAL_API_KEY, ACTUAL_SERVER_URL
-just actual-api       # docker compose up, waits until it serves /api-docs/
-just actual-api-status
-just actual-api-logs
-just actual-api-down
-```
-
-Three variables matter:
-
-| Variable | Meaning |
-| --- | --- |
-| `ACTUAL_SERVER_URL` | Actual as seen **from inside the container** |
-| `ACTUAL_SERVER_PASSWORD` | your Actual server password |
-| `ABMX_ACTUAL_API_KEY` | the wrapper's own key; `abmx` sends it as `x-api-key` |
-
-`abmx setup` can fill in `[sink.actual]` for an existing wrapper: it asks for the
-URL and sync id, stores the API key in `<config dir>/actual-api-key` (0600)
-unless `ABMX_ACTUAL_API_KEY` is set, and validates the connection with
-`abmx accounts`. See [setup.md](setup.md).
-
-`ACTUAL_SERVER_URL` is the one people get wrong. The container's `localhost` is
-not your host's `localhost`:
-
-| Where Actual runs | `ACTUAL_SERVER_URL` |
-| --- | --- |
-| on this host | `http://host.docker.internal:5006` |
-| on another machine | `http://192.168.1.10:5006` |
-| in this compose file | `http://actual-server:5006` |
-
-The image tag must match your Actual server's version. Set
-`ACTUAL_HTTP_API_TAG` in `.env` to your Actual version.
-
-### A throwaway Actual instead
-
-`docker-compose.yml` has a commented-out `actual-server` service. Uncomment it,
-run `just actual-api`, open <http://localhost:5006>, set a password and create a
-budget, then set `ACTUAL_SERVER_URL=http://actual-server:5006`. Nothing touches
-your real budget.
-
-## Manual `docker run`
-
-If you would rather not use compose:
-
-```bash
-docker run -d --name actualhttpapi \
-  -v "$PWD/var/actual-http-api:/data:rw" \
-  -p 5007:5007 \
-  --user "$(id -u):$(id -g)" \
-  --add-host host.docker.internal:host-gateway \
-  -e ACTUAL_SERVER_URL="http://host.docker.internal:5006" \
-  -e ACTUAL_SERVER_PASSWORD="your-actual-server-password" \
-  -e API_KEY="$(openssl rand -hex 24)" \
-  jhonderson/actual-http-api:26.10.0
-```
-
-`API_KEY` is the wrapper's own credential. It is **not** your Actual password;
-keep them separate so a leaked ledger API key does not expose the server.
-
-## Configure `abmx`
+You need Node 22+ and the helper only if you install with plain
+`cargo install`; the Nix package and the container bundle both.
 
 ```toml
-# `url` is actual-http-api, the wrapper. It is not your Actual server (:5006):
-# Actual has no REST API of its own.
 [sink.actual]
-url = "http://localhost:5007"   # actual-http-api, not the Actual server
+server_url = "http://localhost:5006"   # the Actual server itself
 budget_sync_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-# api_key_file = "/run/credentials/abmx.service/actual-api-key"
-# budget_password_file = "/run/credentials/abmx.service/actual-budget-password"
-
-[labels]
-prefix = "receipt/"
-
-[labels.accounts]
-"example-card" = "00000000-0000-0000-0000-000000000000"
+api_key_file = "/run/credentials/abmx.service/actual-api-key"
+# or, for servers without API keys:
+# server_password_file = "/run/credentials/abmx.service/actual-server-password"
+# data_dir = "~/.cache/abmx/actual"
 ```
 
 Find the **Sync ID** in Actual: Settings → Show advanced settings → Sync ID.
-Find account UUIDs with:
+
+`abmx setup` writes this section interactively, stores the credential in the
+config directory with `0600`, and verifies it by reading the account list.
+Afterwards:
 
 ```bash
-abmx accounts
+abmx status    # helper version, server version, account map
+abmx accounts  # account UUIDs, and which parsers are mapped
 ```
 
-That prints every account with its id and whether `[labels.accounts]` maps onto it. The
-mapping is never inferred: the label is the routing identity, the account UUID is
-the ledger destination, and guessing would be how transactions end up in the
-wrong account.
+`data_dir` is `@actual-app/api`'s local copy of the budget. Keep it persistent
+(the default is `$XDG_CACHE_HOME/abmx/actual`), otherwise every run downloads the
+whole budget. It is disposable: delete it and the next run downloads a fresh
+copy.
 
-If the budget is end-to-end encrypted, set `budget_password` (or
-`ABMX_ACTUAL_BUDGET_PASSWORD`). The wrapper needs it on the first request after
-a restart.
+### Container
+
+The repository's `Dockerfile` contains the Rust binary and the helper, so the
+image needs nothing else at runtime:
+
+```bash
+docker build -t abmx .
+mkdir -p var/abmx
+docker run --rm --user "$(id -u):$(id -g)" \
+  -v "$PWD/var/abmx:/data" \
+  -v "$PWD/abmx.toml:/config/abmx.toml:ro" \
+  -e ABMX_ACTUAL_SERVER_PASSWORD \
+  abmx --config /config/abmx.toml sync
+```
+
+`/data` holds the config-adjacent state, the Gmail token, and the budget cache.
+Pass secrets as environment variables or mount a credentials file; the helper
+and Node come from the image.
+
+## Credentials
+
+An **Actual API key** is the preferred credential: it is scoped to one budget and
+revocable in Settings → General → Security → API keys. If your Actual build does
+not show that section, use the **server password** instead.
+
+| Config | Environment | Meaning |
+| --- | --- | --- |
+| `api_key` / `api_key_file` | `ABMX_ACTUAL_API_KEY` | Actual budget-scoped API key |
+| `server_password` / `server_password_file` | `ABMX_ACTUAL_SERVER_PASSWORD` | Actual server password |
+| `budget_password` / `budget_password_file` | `ABMX_ACTUAL_BUDGET_PASSWORD` | end-to-end encryption password, if the budget has one |
+
+If both credentials are present the API key wins. Secrets follow the usual
+precedence: environment → literal → file.
+
+> **Upgrading from `actual-http-api`:** `ABMX_ACTUAL_API_KEY` used to be the
+> wrapper's key. It now means Actual's own key. Remove the old value from `.env`
+> or you will get `invalid or expired session token`. Replace `url = "…:5007"`
+> with `server_url = "…:5006"`; `abmx` refuses the old key with a migration
+> message rather than silently ignoring it.
 
 ## What `abmx` sends
 
-`POST /v1/budgets/{syncId}/accounts/{accountId}/transactions/import`
+The helper calls `importTransactions`, Actual's reconciling import:
 
 ```json
 {
-  "transactions": [
-    {
-      "account": "<account uuid>",
-      "date": "2026-10-30",
-      "amount": -2750000,
-      "imported_id": "mail_a631e3d89a232b55",
-      "payee_name": "ExamplePay",
-      "imported_payee": "ExamplePay",
-      "cleared": false
+  "method": "import",
+  "params": {
+    "budgetSyncId": "…",
+    "account": "<account uuid>",
+    "transactions": [
+      {
+        "account": "<account uuid>",
+        "date": "2026-10-30",
+        "amount": -2750000,
+        "imported_id": "mail_a631e3d89a232b55",
+        "payee_name": "ExamplePay",
+        "imported_payee": "ExamplePay",
+        "cleared": false
+      }
+    ],
+    "options": {
+      "defaultCleared": false,
+      "reimportDeleted": true,
+      "payeeNameNormalization": "original",
+      "dryRun": false
     }
-  ],
-  "defaultCleared": false,
-  "reimportDeleted": true,
-  "payeeNameNormalization": "original",
-  "dryRun": false
+  }
 }
 ```
+
+All four options are documented `@actual-app/api` options; the helper is a
+pass-through, not a second implementation.
 
 `notes` is omitted when there is nothing to write. The default
 `[sink.actual].notes_fields` is just `["description"]`; set it to `[]` to
 disable notes entirely, or add fields such as `reference_id`, `channel`, or
-`parser` if you want them.
+`parser`.
 
 `abmx sync --dry-run` previews the notes in its table (a `-` means the import
 will omit the `notes` key).
@@ -197,8 +183,8 @@ similarity is Actual's judgement, not ours.
 
 ### `reimportDeleted: true` — the ledger is a projection
 
-`abmx` treats the mailbox as the source of truth and the ledger as a
-projection of it:
+`abmx` treats the mailbox as the source of truth and the ledger as a projection
+of it:
 
 | What you delete | What happens |
 | --- | --- |
@@ -234,7 +220,7 @@ Two consequences:
 
 ### `payeeNameNormalization: "original"`
 
-The wrapper's default title-cases payee names, turning `ExamplePay` into `Examplepay`.
+Actual's default title-cases payee names, turning `ExamplePay` into `Examplepay`.
 `original` keeps what the bank printed.
 
 ### `cleared` — off by default
@@ -265,28 +251,57 @@ cleared until you un-clear them in Actual.
 
 ## `dryRun`
 
-`abmx sync --dry-run` sets `dryRun: true` in the request body rather than
-skipping the call. Actual tells you what it *would* have added, so a dry run
-still validates the account ids and the payload.
+`abmx sync --dry-run` sets `dryRun: true` in the request rather than skipping the
+call. Actual tells you what it *would* have added, so a dry run still validates
+the account ids and the payload.
+
+## Version compatibility
+
+`abmx` bundles exactly one `@actual-app/api` version. Actual ships the server and
+the client together, so `abmx status` compares them:
+
+```
+sink
+  ok    actual: 2 accounts
+  ok    helper 26.11.0 (@actual-app/api)
+  ok    server 26.11.0
+```
+
+- A **minor mismatch** warns and continues. An older client usually still works.
+- A **year jump** (server 27, helper 26) refuses to write before touching the
+  budget. Update `abmx`.
+- If the server is unreachable, there is no version warning; the sync itself
+  reports the network error.
+
+Update by installing a new `abmx`: Nix `nix flake update`, container pull, or
+`cargo install` plus `just helper-install`. Maintainers bump the pin with
+`just helper-bump 26.12.0`.
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `401 invalid api key` | `API_KEY` mismatch | check `ABMX_ACTUAL_API_KEY` against the container env |
-| `404` on every request | wrong Sync ID | Settings → advanced → Sync ID |
-| `Unknown error while interacting with Actual Api` | wrapper cannot reach Actual | check `ACTUAL_SERVER_URL` from *inside* the container; `just actual-api-logs` |
+| `could not run 'node'` | Node is not on `PATH` | install Node 22+, or set `[sink.actual].node` / `ABMX_NODE` |
+| `the Actual helper script was not found` | helper not installed | use the Nix package/container, set `helper`, or `ABMX_ACTUAL_HELPER` |
+| `invalid or expired session token` | stale wrapper key in `.env`, or a wrong/lost API key | remove `ABMX_ACTUAL_API_KEY` or create a new key |
+| `invalid-password` | wrong server password | check `server_password` |
+| `budget-not-found` | wrong Sync ID | Settings → advanced → Sync ID |
+| `network-failure` | server unreachable | check `server_url` from the machine running abmx |
+| `missing-key` / `decrypt-failure` | end-to-end encrypted budget | set `budget_password` |
+| `the Actual helper timed out` | slow budget sync | raise `timeout_secs` |
 | amounts are 100× too big | you are not using `abmx`'s sink | do not hand-write the `amount` field |
-| rows appear twice | a sink other than `importTransactions` was used | `abmx` always uses the reconciling import endpoint |
+| rows appear twice | a sink other than `importTransactions` was used | `abmx` always uses the reconciling import |
 | `account not found` | mapping points at a deleted account | `abmx accounts`, then fix `[labels.accounts]` |
-| container exits immediately | `./var/actual-http-api` not writable | `just actual-api` creates it owned by you; if it is root-owned, remove it and retry |
+
+Set `ABMX_ACTUAL_DEBUG=1` to forward the library's own log (it is quiet by
+default) to stderr.
 
 ## Concurrency
 
-`actual-http-api` holds a local copy of the budget and syncs it back. Two
-concurrent writers can stomp each other. Run one `abmx` at a time — the NixOS
-module uses a oneshot service and a timer, which serialises naturally. If you run
-it from cron, wrap it:
+The helper holds a local copy of the budget and syncs it back. Two concurrent
+writers can stomp each other. Run one `abmx` at a time — the NixOS module uses a
+oneshot service and a timer, which serialises naturally. If you run it from
+cron, wrap it:
 
 ```bash
 flock -n /tmp/abmx.lock abmx sync
@@ -297,8 +312,7 @@ UI. Actual's own sync will merge, but the window for confusion is not worth it.
 
 ## Alternative: the JSONL sink
 
-If you would rather not run the wrapper, point `abmx` at a file and import it
-yourself:
+If you would rather not run Node, point `abmx` at a file and import it yourself:
 
 ```toml
 [sink.file]

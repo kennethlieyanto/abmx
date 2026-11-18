@@ -42,7 +42,7 @@ impl Sink for FileSink {
     }
 
     fn accounts(&self) -> Result<Vec<SinkAccount>> {
-        // A file has no accounts. Returning an empty list is honest; `doctor`
+        // A file has no accounts. Returning an empty list is honest; `status`
         // treats that as "nothing to verify" rather than an error.
         Ok(Vec::new())
     }

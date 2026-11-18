@@ -30,6 +30,7 @@ pub struct Options {
 
 const GMAIL_CLIENT_FILE: &str = "gmail-client.json";
 const ACTUAL_API_KEY_FILE: &str = "actual-api-key";
+const ACTUAL_SERVER_PASSWORD_FILE: &str = "actual-server-password";
 const ACTUAL_BUDGET_PASSWORD_FILE: &str = "actual-budget-password";
 
 pub fn run(options: &Options) -> Result<i32> {
@@ -509,12 +510,13 @@ fn step_accounts(
             log::warning(format!("the ledger is not configured: {error}"))?;
             note(
                 "Actual Budget",
-                "abmx talks to actual-http-api, not to the Actual server directly.\n\n\
-                 Run actual-http-api (:5007) and have its API key and the budget's\n\
-                 sync id ready. Details: docs/actual.md.",
+                "abmx drives Actual's official Node client through a bundled helper.\n\n\
+                 Have your Actual server URL, a budget-scoped API key (Settings →\n\
+                 General → Security → API keys), and the budget's sync id ready.\n\
+                 Details: docs/actual.md.",
             )?;
 
-            let configure = confirm("Configure actual-http-api now?")
+            let configure = confirm("Configure Actual now?")
                 .initial_value(true)
                 .interact()?;
             if !configure {
@@ -538,7 +540,7 @@ fn step_accounts(
     };
 
     let spinner = spinner();
-    spinner.start("Reading accounts from the sink");
+    spinner.start("Reading accounts from the actual helper");
     let accounts = match sink.accounts() {
         Ok(accounts) => {
             spinner.stop(format!("{} account(s)", accounts.len()));
@@ -547,8 +549,8 @@ fn step_accounts(
         Err(error) => {
             spinner.error(format!("could not read accounts: {error}"));
             log::info(
-                "is actual-http-api running? `just actual-api` starts it locally. \
-                 Rerun `abmx setup` when it is reachable.",
+                "is the Actual server reachable and the API key valid? \
+                 Run `abmx status` for details, then rerun `abmx setup`.",
             )?;
             return Ok(());
         }
@@ -639,16 +641,20 @@ fn configure_actual(
 ) -> Result<()> {
     let existing = config.sink.actual.as_ref();
 
-    let url: String = input("actual-http-api URL")
-        .placeholder("http://localhost:5007")
+    let server_url: String = input("Actual server URL")
+        .placeholder("http://localhost:5006")
         .default_input(
             existing
-                .map(|actual| actual.url.as_str())
-                .unwrap_or("http://localhost:5007"),
+                .and_then(|actual| actual.server_url.as_deref())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("http://localhost:5006"),
         )
         .validate(|value: &String| {
             if value.trim().is_empty() {
-                Err("the URL is required")
+                Err("the Actual server URL is required")
+            } else if !value.trim().starts_with("http://") && !value.trim().starts_with("https://")
+            {
+                Err("expected an http:// or https:// URL")
             } else {
                 Ok(())
             }
@@ -677,21 +683,45 @@ fn configure_actual(
             .and_then(|actual| actual.api_key_file.as_ref())
             .is_some_and(|path| paths::resolve_path(base, path).exists());
 
+    let env_password = std::env::var("ABMX_ACTUAL_SERVER_PASSWORD")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let has_server_password = env_password.is_some()
+        || existing
+            .and_then(|actual| actual.server_password.as_deref())
+            .is_some_and(|value| !value.trim().is_empty())
+        || existing
+            .and_then(|actual| actual.server_password_file.as_ref())
+            .is_some_and(|path| paths::resolve_path(base, path).exists());
+
     let mut api_key_file = None;
-    if !has_key {
-        let key: String = password("actual-http-api API key")
-            .validate(|value: &String| {
-                if value.trim().is_empty() {
-                    Err("an API key is required (or export ABMX_ACTUAL_API_KEY)")
-                } else {
-                    Ok(())
-                }
-            })
-            .interact()?;
-        let file = base.join(ACTUAL_API_KEY_FILE);
-        write_secret_file(&file, &key)?;
-        api_key_file = Some(ACTUAL_API_KEY_FILE);
-        log::success(format!("API key saved to {}", file.display()))?;
+    let mut server_password_file = None;
+    if !has_key && !has_server_password {
+        let key: String =
+            password("Actual API key (if available; blank to use the server password)")
+                .allow_empty()
+                .interact()?;
+
+        if !key.trim().is_empty() {
+            let file = base.join(ACTUAL_API_KEY_FILE);
+            write_secret_file(&file, &key)?;
+            api_key_file = Some(ACTUAL_API_KEY_FILE);
+            log::success(format!("API key saved to {}", file.display()))?;
+        } else {
+            let value: String = password("Actual server password")
+                .validate(|value: &String| {
+                    if value.trim().is_empty() {
+                        Err("an API key or the server password is required")
+                    } else {
+                        Ok(())
+                    }
+                })
+                .interact()?;
+            let file = base.join(ACTUAL_SERVER_PASSWORD_FILE);
+            write_secret_file(&file, &value)?;
+            server_password_file = Some(ACTUAL_SERVER_PASSWORD_FILE);
+            log::success(format!("server password saved to {}", file.display()))?;
+        }
     }
 
     let has_budget_password = std::env::var("ABMX_ACTUAL_BUDGET_PASSWORD")
@@ -718,9 +748,10 @@ fn configure_actual(
     }
 
     doc.set_actual(
-        url.trim(),
+        server_url.trim(),
         sync_id.trim(),
         api_key_file,
+        server_password_file,
         budget_password_file,
     )?;
     doc.save()?;
@@ -749,7 +780,16 @@ fn summary(path: &Path, config: &Config) -> Result<()> {
     }
 
     match config.build_sink(&Config::base_dir(path)) {
-        Ok(sink) => lines.push(format!("sink:   {}", sink.name())),
+        Ok(sink) => {
+            let target = config
+                .sink
+                .actual
+                .as_ref()
+                .and_then(|actual| actual.server_url.as_deref())
+                .map(|url| format!(" ({url})"))
+                .unwrap_or_default();
+            lines.push(format!("sink:   {}{target}", sink.name()));
+        }
         Err(_) => lines.push("sink:   not configured (`abmx setup`)".to_owned()),
     }
 

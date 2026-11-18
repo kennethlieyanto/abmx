@@ -63,6 +63,12 @@ pub fn xdg_state_dir() -> PathBuf {
         .unwrap_or_else(|| home_dir().join(".local/state"))
 }
 
+pub fn xdg_cache_dir() -> PathBuf {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_dir().join(".cache"))
+}
+
 pub fn home_dir() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -81,6 +87,32 @@ pub fn default_parsers_dir() -> PathBuf {
 
 pub fn default_token_path() -> PathBuf {
     xdg_state_dir().join("abmx/gmail-credentials.json")
+}
+
+/// `@actual-app/api`'s local copy of the budget. Persistent by design: without
+/// it, every run re-downloads the whole budget.
+pub fn default_actual_data_dir() -> PathBuf {
+    xdg_cache_dir().join("abmx/actual")
+}
+
+/// Find the Node helper shipped with `abmx`.
+///
+/// Order: next to the installed binary (`$prefix/share/abmx/actual-helper/`),
+/// then the development checkout. `ABMX_ACTUAL_HELPER` and
+/// `[sink.actual].helper` are handled by the caller and take precedence.
+pub fn default_actual_helper() -> Option<PathBuf> {
+    let installed = std::env::current_exe().ok().and_then(|exe| {
+        exe.parent()
+            .map(|bin| bin.join("../share/abmx/actual-helper/helper.js"))
+    });
+
+    let development =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../abmx-actual/helper/helper.js");
+
+    installed
+        .into_iter()
+        .chain(std::iter::once(development))
+        .find(|candidate| candidate.exists())
 }
 
 /// Expand a leading `~/` because TOML config files are written by humans.

@@ -1,0 +1,12 @@
+.git
+.github
+.direnv
+target
+result
+var
+.env
+sample
+sample-mail
+redact.toml
+crates/abmx-actual/helper/node_modules
+crates/abmx-actual/helper/test

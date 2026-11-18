@@ -18,7 +18,8 @@ them apart.
 └───────▲──────────────────────────────▲──────────┘
         │                              │
  abmx-gmail                      abmx-actual
- (Gmail API)                     (actual-http-api)
+ (Gmail API)                     (official @actual-app/api
+                                  via a one-shot Node helper)
         │                              │
 ┌───────┴──────────────────────────────┴──────────┐
 │  abmx: config · SQLite state · runner · CLI      │
@@ -108,6 +109,12 @@ pub trait Sink {
   already holds, and only the sink knows how to ask. The method is read-only by
   contract, and a sink that cannot answer returns an error rather than an empty
   list, so "no matches" is never confused with "I cannot see".
+
+Actual is the one non-Rust boundary: its official client is the Node package
+`@actual-app/api`, so `abmx-actual` spawns `helper/helper.js` for one operation
+at a time and exchanges one JSON request and response over stdio. The runner and
+the `Sink` trait stay synchronous Rust; only the transport knows that a child
+process exists.
 
 ### State
 

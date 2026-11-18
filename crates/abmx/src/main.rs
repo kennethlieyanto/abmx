@@ -889,6 +889,7 @@ fn status(
     sections.push(state_section);
 
     let mut sink_section = Section::new("sink");
+    let actual_config = config.actual_sink_config(&base).ok().flatten();
     if let Some(error) = &sink_build_error {
         sink_section.hint(
             Status::Fail,
@@ -897,11 +898,9 @@ fn status(
         );
     } else if let Some(value) = &sink {
         if offline {
-            let location = config
-                .sink
-                .actual
+            let location = actual_config
                 .as_ref()
-                .map(|actual| format!("actual-http-api at {}", actual.url))
+                .map(|actual| format!("Actual server {}", actual.server_url))
                 .or_else(|| {
                     config
                         .sink
@@ -915,7 +914,8 @@ fn status(
             sink_section.hint(
                 Status::Fail,
                 error.clone(),
-                "is actual-http-api reachable and budget_sync_id correct? `just actual-api` starts it locally",
+                "is the Actual server reachable, and are `server_url`, the API key, \
+                 and `budget_sync_id` correct?",
             );
         } else if let Some(accounts) = &sink_accounts {
             if config.sink.actual.is_some() {
@@ -925,6 +925,25 @@ fn status(
                 );
             } else {
                 sink_section.push(Status::Skip, format!("{} (no account list)", value.name()));
+            }
+        }
+
+        if !offline {
+            if let Some(actual) = &actual_config {
+                let versions = abmx_actual::version::report(actual);
+                for line in versions.describe() {
+                    sink_section.push(Status::Ok, line);
+                }
+                if let Some(concern) = versions.concern() {
+                    sink_section.push(
+                        if concern.fatal {
+                            Status::Fail
+                        } else {
+                            Status::Warn
+                        },
+                        concern.message,
+                    );
+                }
             }
         }
     }
@@ -1126,6 +1145,20 @@ fn sync(
             "warning: [labels].since is not set; every labelled message in the mailbox \
              will be scanned. Set a date or run `abmx setup`."
         );
+    }
+
+    // Refuse to write with a client a year behind the server. A minor skew is
+    // routine enough to warn about and continue.
+    if !dry_run {
+        if let Some(actual) = config.actual_sink_config(&base)? {
+            let versions = abmx_actual::version::report(&actual);
+            if let Some(concern) = versions.concern() {
+                if concern.fatal {
+                    bail!("{}", concern.message);
+                }
+                eprintln!("warning: {}", concern.message);
+            }
+        }
     }
 
     let runner = build_runner(&config, &base)?;

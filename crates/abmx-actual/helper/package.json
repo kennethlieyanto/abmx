@@ -1,0 +1,17 @@
+{
+  "name": "abmx-actual-helper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "One-shot bridge from abmx to the official @actual-app/api client",
+  "license": "MIT",
+  "main": "helper.js",
+  "bin": {
+    "abmx-actual-helper": "./helper.js"
+  },
+  "dependencies": {
+    "@actual-app/api": "26.11.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

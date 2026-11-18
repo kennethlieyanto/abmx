@@ -17,3 +17,23 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
       - run: cargo run -q --bin abmx -- parser check -v --parsers parsers
+
+  actual-helper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/abmx-actual/helper/package-lock.json
+      - name: Install the pinned Actual client
+        working-directory: crates/abmx-actual/helper
+        run: npm ci
+      - name: Helper protocol tests
+        working-directory: crates/abmx-actual/helper
+        run: node --test test/*.test.js
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Process transport against the real helper
+        run: cargo test -p abmx-actual --test process -- --ignored

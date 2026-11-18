@@ -1,19 +1,27 @@
 [package]
 name = "abmx-actual"
-description = "Actual Budget sink for abmx (via actual-http-api)"
+description = "Actual Budget sink for abmx (official @actual-app/api via a Node helper)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# The helper is part of the crate: `abmx` resolves it next to the binary or
+# through ABMX_ACTUAL_HELPER.
+include = [
+    "src/**/*.rs",
+    "helper/helper.js",
+    "helper/package.json",
+    "helper/package-lock.json",
+]
 
 [dependencies]
 abmx-core.workspace = true
+abmx-parser.workspace = true
 chrono.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-abmx-parser.workspace = true
 
 [dev-dependencies]
-abmx-testkit.workspace = true
+tempfile.workspace = true

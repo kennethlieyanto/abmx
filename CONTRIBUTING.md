@@ -50,11 +50,44 @@ checks it and copies the whole directory into `~/.config/abmx/parsers/`.
 ## Before pushing
 
 ```bash
-just ci
+just ci          # fmt, clippy, tests, parser fixtures
+just helper-test # the Node helper (run `just helper-install` once)
 ```
 
 That runs formatting, clippy with warnings denied, the whole test suite, and
-every parser against its fixtures.
+every parser against its fixtures. CI also runs the helper's Node tests and the
+real helper process.
+
+## The Actual helper
+
+`crates/abmx-actual/helper/` is a small CommonJS program around the official
+`@actual-app/api` package. It is not a service: `abmx` spawns it per operation
+and reads one JSON response from stdout.
+
+Rules:
+
+- **Pin the exact `@actual-app/api` version** in `package.json`; the lockfile is
+  committed. Actual ships the server and this client together.
+- **Keep it a pass-through.** If a behaviour needs code, prefer the official API
+  option over inventing one in the helper.
+- **stdout is protocol.** The helper redirects the library's own logging to
+  stderr; `ABMX_ACTUAL_DEBUG=1` shows it. Never add a `console.log`.
+- **No server, no port, no inbound secret.** Credentials go to the child through
+  its environment.
+
+To move to a new Actual release:
+
+```bash
+just helper-bump 26.12.0
+# then update npmDepsHash in flake.nix (the command prints the reminder)
+nix build .#abmx-actual-helper
+just helper-test
+cargo test --workspace
+```
+
+Mention the bundled client version in the release notes, e.g. "bundles
+`@actual-app/api` 26.12.0". `abmx status` compares it with the server: a minor
+skew warns, a year jump refuses to write.
 
 ## Releasing
 

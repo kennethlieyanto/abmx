@@ -41,18 +41,21 @@ thin. The parser corpus lives in this repository under `parsers/`.
 ## Install
 
 ```bash
-# from a checkout
-cargo install --path crates/abmx
-
-# Nix
-nix build .#          # ./result/bin/abmx, parser corpus bundled
-nix develop           # rust, cargo, clippy, rustfmt, just, sqlite
+# Nix: the turnkey path. Bundles the parser corpus, the Actual helper, and Node.
+nix build .#          # ./result/bin/abmx
+nix develop           # rust, cargo, clippy, rustfmt, just, node, sqlite
 
 # or just try it in place: .envrc adds target/debug to PATH
 direnv allow          # first time only
 cargo build
 abmx --version
 ```
+
+`cargo install --path crates/abmx` builds the Rust binary, but the Actual sink
+also needs **Node 22+** and the helper's `node_modules`. Nix and the container
+include both. For a plain cargo install, run `just helper-install` once and keep
+`crates/abmx-actual/helper/` where `abmx` can find it, or set
+`ABMX_ACTUAL_HELPER`. The JSONL file sink needs neither.
 
 The Nix package bundles the corpus and points `ABMX_PARSERS` at it. A source
 checkout does not: run `just install-parsers` to check the repo corpus and copy
@@ -140,10 +143,10 @@ run.
 
 1. **A Gmail OAuth client** — one Google Cloud project, `gmail.readonly`, desktop
    app client. See [docs/gmail.md](docs/gmail.md).
-2. **A ledger endpoint** — for Actual Budget that is
-   [`actual-http-api`](https://github.com/jhonderson/actual-http-api) on `:5007`.
-   From a checkout: `cp .env.example .env`, fill in the Actual password and API
-   key, then `just actual-api`. See [docs/actual.md](docs/actual.md).
+2. **An Actual server** — your existing Actual server (`:5006` by default), a
+   budget, and either a budget-scoped API key (if your Actual build offers Settings → Security → API keys) or the server
+   password. No wrapper container, no extra port. `abmx setup` configures it;
+   see [docs/actual.md](docs/actual.md).
 3. **Parsers** — nothing to install. `abmx samples` downloads evidence and an
    agent writes parsers under `~/.config/abmx/parsers/<id>/` (`config.toml`
    plus `fixtures/`). If you already have a corpus (this repository ships one),
@@ -261,11 +264,14 @@ state = "~/.local/state/abmx/state.db"
 client_id = "….apps.googleusercontent.com"
 max_messages = 10000               # hard cap; exceeding it is an error
 
-# Actual has no REST API: `url` is the actual-http-api wrapper, not the
-# Actual server (:5006). See docs/actual.md.
+# Actual has no HTTP API. abmx spawns a bundled helper that drives the official
+# Node client (@actual-app/api) against your actual server. See docs/actual.md.
 [sink.actual]
-url = "http://localhost:5007"   # actual-http-api, not the Actual server
+server_url = "http://localhost:5006"   # your Actual server, not a wrapper
 budget_sync_id = "…"
+api_key_file = "/run/credentials/abmx.service/actual-api-key"
+# Servers without API keys: use `server_password` / `server_password_file`.
+# data_dir = "~/.cache/abmx/actual"    # persistent copy of the budget
 chunk_size = 50
 # never (default) | settled | always — see docs/actual.md
 cleared = "never"
@@ -302,7 +308,13 @@ directory sees the secrets without exporting them by hand.
 | ---------------------- | ----------------------------- | ------------------------------------------------- |
 | Gmail client secret    | `ABMX_GMAIL_CLIENT_SECRET`    | `client_secret` / `client_secret_file` / `credentials_file` |
 | Actual API key         | `ABMX_ACTUAL_API_KEY`         | `api_key` / `api_key_file`                        |
+| Actual server password | `ABMX_ACTUAL_SERVER_PASSWORD` | `server_password` / `server_password_file`        |
 | Actual budget password | `ABMX_ACTUAL_BUDGET_PASSWORD` | `budget_password` / `budget_password_file`        |
+
+`ABMX_ACTUAL_API_KEY` now means **Actual's** budget-scoped key. If your `.env`
+still holds the old `actual-http-api` wrapper key, remove it: the helper will
+reject it as an invalid session token. On Actual builds without API keys, use
+`ABMX_ACTUAL_SERVER_PASSWORD` instead.
 
 ## CLI
 
@@ -369,10 +381,17 @@ label is broken: the summary names the label and the next command.
 
 ## Actual Budget specifics
 
-Actual has no REST API of its own — the official client is a Node library that
-mutates a local copy of the budget. `abmx` talks to `actual-http-api`, which
-wraps that library and exposes the reconciling import endpoint. Two details that
-matter:
+Actual has **no HTTP API**. The official client is `@actual-app/api`, a Node
+library that downloads a copy of the budget, applies changes locally, and syncs
+them back. `abmx` ships a one-shot helper around it and spawns that helper per
+operation, so there is no port and no service to keep running:
+
+```
+abmx ──spawn──► actual-helper (Node) ──► @actual-app/api ──► actual-server
+     ◄─JSON───
+```
+
+Three details that matter:
 
 - **`amount` is value × 100 for every currency.** Rp 27,500 is sent as
   `2_750_000`. `abmx` does this conversion in the sink, with tests.
@@ -383,6 +402,19 @@ matter:
   means the bank completed the transaction; Actual's `cleared` means you
   reconciled it against a statement. Set `cleared = "settled"` if you want the
   old behaviour.
+
+### When Actual updates
+
+`abmx` bundles one exact `@actual-app/api` version. Actual ships the server and
+that client together, so keep them in step:
+
+- `abmx status` prints `helper <version>` and `server <version>`.
+- A minor mismatch warns and continues. A year jump (26 → 27) refuses to write
+  until you update `abmx`.
+- Nix: `nix flake update abmx`. Container: pull the new tag. Cargo: reinstall
+  and `just helper-install`.
+- Maintainers: `just helper-bump 26.12.0` moves the pin, reruns the tests, and
+  prints the `npmDepsHash` reminder for `flake.nix`.
 
 ## Security
 
@@ -398,15 +430,19 @@ matter:
 ## Testing
 
 ```bash
-just test     # unit + integration + end-to-end, no network, no credentials
-just check    # fmt + clippy -D warnings
-just fixtures # every parser against its committed samples
-just ci       # all of the above
+just test          # unit + integration + end-to-end, no network, no credentials
+just check         # fmt + clippy -D warnings
+just fixtures      # every parser against its committed samples
+just helper-test   # the Node helper protocol (needs `just helper-install` once)
+just ci            # fmt, clippy, tests, fixtures
 ```
 
 The end-to-end test (`crates/abmx/tests/e2e.rs`) runs a real parse over a real
-`.eml`, against a fake Gmail API and a fake `actual-http-api`, and asserts the
-exact JSON body that reaches Actual — including the ×100 amount conversion.
+`.eml`, against a fake Gmail API and an in-memory fake helper, and asserts the
+exact JSON that reaches Actual — including the ×100 amount conversion. The Node
+side has its own tests (`crates/abmx-actual/helper/test/`), and
+`cargo test -p abmx-actual --test process -- --ignored` exercises the real helper
+process.
 
 ## NixOS
 
@@ -445,19 +481,19 @@ to them as `api_key_file = "/run/credentials/abmx.service/actual-api-key"`.
 ## Layout
 
 ```
-crates/abmx/         config, SQLite state, runner, CLI, AI authoring
-crates/abmx-core/    traits and types. No I/O, no network.
-crates/abmx-gmail/   Fetcher: Gmail API + OAuth2/PKCE
-crates/abmx-actual/  Sink: actual-http-api
-crates/abmx-file/    Sink: append-only JSONL (reference implementation)
-crates/abmx-testkit/ a blocking HTTP mock server for tests
-crates/abmx-tx/      the Transaction contract
-crates/abmx-mail/    MIME and HTML normalization
-crates/abmx-parse/   the declarative parser engine
-crates/abmx-parser/  corpus discovery, routing, schema
-parsers/             the bank corpus: <id>/config.toml + <id>/fixtures/
-xtask/               fixture redaction helper
-docker-compose.yml   actual-http-api wrapper for local testing
+crates/abmx/           config, SQLite state, runner, CLI, AI authoring
+crates/abmx-core/      traits and types. No I/O, no network.
+crates/abmx-gmail/     Fetcher: Gmail API + OAuth2/PKCE
+crates/abmx-actual/    Sink: official @actual-app/api via helper/helper.js
+crates/abmx-file/      Sink: append-only JSONL (reference implementation)
+crates/abmx-testkit/   a blocking HTTP mock server for tests
+crates/abmx-tx/        the Transaction contract
+crates/abmx-mail/      MIME and HTML normalization
+crates/abmx-parse/     the declarative parser engine
+crates/abmx-parser/    corpus discovery, routing, schema
+parsers/               the bank corpus: <id>/config.toml + <id>/fixtures/
+xtask/                 fixture redaction helper
+Dockerfile             abmx + the Node helper in one image
 ```
 
 MIT.

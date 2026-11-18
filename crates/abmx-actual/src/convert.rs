@@ -42,8 +42,10 @@ impl ClearedPolicy {
 
 /// Which `abmx-parser` fields end up in Actual's `notes`.
 ///
-/// Order is preserved and duplicates collapse, so a parser that sets both
-/// `description` and `reference_id` to the same string does not repeat itself.
+/// The default is just `description`; set an empty list to disable notes
+/// entirely. Order is preserved and duplicates collapse, so a parser that sets
+/// both `description` and `reference_id` to the same string does not repeat
+/// itself.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NotesConfig {
     pub fields: Vec<String>,
@@ -52,12 +54,7 @@ pub struct NotesConfig {
 impl Default for NotesConfig {
     fn default() -> Self {
         Self {
-            fields: vec![
-                "description".to_owned(),
-                "reference_id".to_owned(),
-                "channel".to_owned(),
-                "parser".to_owned(),
-            ],
+            fields: vec!["description".to_owned()],
         }
     }
 }
@@ -245,10 +242,9 @@ mod tests {
         assert_eq!(value["account"], "uuid-example");
         assert_eq!(value["payee_name"], "ExamplePay");
         assert_eq!(value["cleared"], true);
-        assert!(value["notes"]
-            .as_str()
-            .unwrap()
-            .contains("DEBIT ONLINE | example.card_debit"));
+        // The default notes config is just `description`, which this fixture
+        // does not set, so notes is omitted entirely.
+        assert!(value.get("notes").is_none());
     }
 
     #[test]
@@ -311,9 +307,10 @@ mod tests {
     }
 
     #[test]
-    fn notes_skip_empty_and_duplicate_parts() {
+    fn default_notes_are_just_the_description() {
         let mut transaction = tx(-1000, "IDR", 0);
-        transaction.description = Some("DEBIT ONLINE".into());
+        transaction.description = Some("QRIS payment".into());
+
         let value = to_actual(
             &transaction,
             "uuid",
@@ -321,6 +318,32 @@ mod tests {
             ClearedPolicy::Never,
         )
         .unwrap();
+        assert_eq!(value["notes"], "QRIS payment");
+
+        // No description means no notes at all.
+        transaction.description = None;
+        let value = to_actual(
+            &transaction,
+            "uuid",
+            &NotesConfig::default(),
+            ClearedPolicy::Never,
+        )
+        .unwrap();
+        assert!(value.get("notes").is_none());
+    }
+
+    #[test]
+    fn notes_skip_empty_and_duplicate_parts() {
+        let mut transaction = tx(-1000, "IDR", 0);
+        transaction.description = Some("DEBIT ONLINE".into());
+        let config = NotesConfig {
+            fields: vec![
+                "description".to_owned(),
+                "channel".to_owned(),
+                "parser".to_owned(),
+            ],
+        };
+        let value = to_actual(&transaction, "uuid", &config, ClearedPolicy::Never).unwrap();
         // `description` duplicates `channel`, so it appears once.
         assert_eq!(value["notes"], "DEBIT ONLINE | example.card_debit");
     }

@@ -173,6 +173,8 @@ pub struct ActualSection {
     pub budget_password_file: Option<PathBuf>,
     #[serde(default)]
     pub chunk_size: Option<usize>,
+    /// Parser fields copied into Actual's notes, in order. Defaults to
+    /// `["description"]`; an empty list disables notes.
     #[serde(default)]
     pub notes_fields: Option<Vec<String>>,
     /// never | settled | always. Defaults to `never`.
@@ -465,6 +467,9 @@ max_messages = 10000
 # true (default): the ledger is a projection of the mailbox, so a rebuild
 # recreates rows you deleted. false makes ledger deletions permanent.
 # reimport_deleted = true
+# Notes come from parser fields. The default is just `description`; set an
+# empty list to disable notes entirely.
+# notes_fields = ["description"]
 #
 # A file sink is useful for tests:
 # [sink.file]

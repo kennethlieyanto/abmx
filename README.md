@@ -269,7 +269,7 @@ budget_sync_id = "…"
 chunk_size = 50
 # never (default) | settled | always — see docs/actual.md
 cleared = "never"
-# notes_fields = ["description", "reference_id", "channel", "parser"]
+# notes_fields = ["description"]  # default; [] disables notes entirely
 
 [labels]
 prefix = "receipt/"          # literal, case-insensitive

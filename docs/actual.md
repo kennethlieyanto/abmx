@@ -126,7 +126,6 @@ a restart.
       "imported_id": "mail_a631e3d89a232b55",
       "payee_name": "ExamplePay",
       "imported_payee": "ExamplePay",
-      "notes": "DEBIT ONLINE | example.card_debit",
       "cleared": false
     }
   ],
@@ -136,6 +135,11 @@ a restart.
   "dryRun": false
 }
 ```
+
+`notes` is omitted when there is nothing to write. The default
+`[sink.actual].notes_fields` is just `["description"]`; set it to `[]` to
+disable notes entirely, or add fields such as `reference_id`, `channel`, or
+`parser` if you want them.
 
 Five decisions worth knowing:
 

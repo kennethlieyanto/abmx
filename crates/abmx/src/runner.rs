@@ -48,18 +48,20 @@ impl Runner {
     pub fn plan(&self, fetcher: &dyn Fetcher, request: FetchRequest<'_>) -> Result<Plan> {
         self.state.check_schema()?;
 
-        let batch = fetcher.fetch(request)?;
+        let seen = self.state.seen_keys()?;
+        let batch = fetcher.fetch(request.with_skip(&seen))?;
 
         let mut plan = Plan::new();
         plan.stats.fetched = batch.messages.len();
 
-        let mut skipped = batch.skipped;
+        let mut already_delivered = batch.already_seen;
         let mut seen_transactions: HashSet<String> = HashSet::new();
 
         for message in &batch.messages {
-            // Already delivered on a previous run.
-            if self.state.is_seen(message.key.as_str())? {
-                skipped += 1;
+            // Already delivered on a previous run. Fetchers normally drop these
+            // before downloading, but a custom fetcher may ignore the skip set.
+            if seen.contains(message.key.as_str()) {
+                already_delivered += 1;
                 continue;
             }
 
@@ -146,8 +148,9 @@ impl Runner {
         plan.sources.push(SourceReport {
             fetcher: fetcher.name().to_owned(),
             fetched: batch.messages.len(),
-            skipped,
+            skipped: batch.skipped + already_delivered,
         });
+        plan.stats.skipped = already_delivered;
 
         Ok(plan)
     }

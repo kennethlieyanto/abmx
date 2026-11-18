@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use abmx_core::{Error, Result, ABMX_SCHEMA_VERSION};
@@ -108,6 +109,27 @@ impl State {
         Ok(found.is_some())
     }
 
+    /// Every message key already delivered.
+    ///
+    /// The fetcher uses this to drop seen messages before downloading raw
+    /// bodies; the runner checks it again as a safety net for fetchers that
+    /// cannot filter incrementally.
+    pub fn seen_keys(&self) -> Result<HashSet<String>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT key FROM messages")
+            .map_err(state_error)?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(state_error)?;
+
+        let mut keys = HashSet::new();
+        for row in rows {
+            keys.insert(row.map_err(state_error)?);
+        }
+        Ok(keys)
+    }
+
     pub fn mark_seen(&self, key: &str, sink: &str, tx_id: &str, disposition: &str) -> Result<()> {
         self.conn
             .execute(
@@ -152,6 +174,23 @@ fn state_error(error: rusqlite::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seen_keys_are_loaded_as_a_set() {
+        let state = State::open_in_memory().unwrap();
+        state.check_schema().unwrap();
+        state
+            .mark_seen("gmail:1", "actual", "mail_1", "imported")
+            .unwrap();
+        state
+            .mark_seen("gmail:2", "actual", "mail_2", "imported")
+            .unwrap();
+
+        let keys = state.seen_keys().unwrap();
+        assert_eq!(keys.len(), 2);
+        assert!(keys.contains("gmail:1"));
+        assert!(keys.contains("gmail:2"));
+    }
 
     #[test]
     fn reset_clears_progress_but_keeps_the_schema_marker() {

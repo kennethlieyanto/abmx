@@ -23,7 +23,7 @@ pub mod sink;
 
 pub use diff::{classify, LedgerMatch, LedgerRow};
 pub use error::{Error, Result};
-pub use fetcher::{FetchBatch, FetchRequest, Fetcher, MessageKey, RawMessage, DEFAULT_LIMIT};
+pub use fetcher::{FetchBatch, FetchRequest, Fetcher, MessageKey, RawMessage};
 pub use money::cents;
 pub use plan::{
     BrokenMessage, Plan, PlannedRow, SourceReport, Stats, UnmatchedMessage, PLAN_VERSION,

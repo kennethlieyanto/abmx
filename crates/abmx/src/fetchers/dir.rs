@@ -5,8 +5,8 @@ use abmx_core::{Error, FetchBatch, FetchRequest, Fetcher, RawMessage, Result};
 /// Read `.eml` files from a directory (or a single file).
 ///
 /// This is the offline path: export messages, put them in a directory, and give
-/// them the same `receipt/*` label they would carry in Gmail. Re-scanning is cheap
-/// and the state database filters what has already been delivered.
+/// them the same `receipt/*` label they would carry in Gmail. Re-scanning still
+/// drops messages already recorded in the state database before reading them.
 pub struct DirFetcher {
     root: PathBuf,
     label: String,
@@ -69,17 +69,32 @@ impl Fetcher for DirFetcher {
 
     fn fetch(&self, request: FetchRequest<'_>) -> Result<FetchBatch> {
         let files = self.files()?;
-        let mut messages = Vec::with_capacity(files.len());
+        let mut messages = Vec::new();
+        let mut skipped = 0usize;
+        let mut already_seen = 0usize;
 
-        for path in files.iter().take(request.limit) {
-            let bytes = std::fs::read(path).map_err(|error| Error::io(path, error))?;
+        for path in &files {
             let name = path
                 .file_name()
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_else(|| path.display().to_string());
+            let key = format!("dir:{name}");
 
+            if request.skip.is_some_and(|skip| skip.contains(&key)) {
+                already_seen += 1;
+                continue;
+            }
+
+            if let Some(limit) = request.limit {
+                if messages.len() >= limit {
+                    skipped += 1;
+                    continue;
+                }
+            }
+
+            let bytes = std::fs::read(path).map_err(|error| Error::io(path, error))?;
             messages.push(RawMessage::new(
-                format!("dir:{name}"),
+                key,
                 self.label.clone(),
                 path.display().to_string(),
                 bytes,
@@ -87,8 +102,9 @@ impl Fetcher for DirFetcher {
         }
 
         Ok(FetchBatch {
-            skipped: files.len().saturating_sub(messages.len()),
             messages,
+            skipped,
+            already_seen,
         })
     }
 }

@@ -241,13 +241,14 @@ Three independent layers, because they fail in different ways:
 1. **`imported_id`** — every row carries the parser's stable id (a hash of the
    email's `Message-ID`). Actual's `importTransactions` never adds the same
    `imported_id` twice, so replaying a plan is safe.
-2. **State** — a delivered message is recorded so the next run doesn't even
-   re-parse it. This is an optimisation for idempotent sinks and a requirement
-   for sinks that have no idempotency key.
-3. **Label scan + state** — every run scans the mapped labels under
-   `[labels].prefix` and lets the state database skip messages already delivered. Mail labeled late
-   is picked up on the next run; a broken row is never marked delivered, so it is
-   retried after the parser is fixed.
+2. **State** — a delivered message is recorded so the next run does not
+   re-download or re-parse it. This is an optimisation for idempotent sinks and
+   a requirement for sinks that have no idempotency key.
+3. **Label scan + state** — every run lists the mapped labels under
+   `[labels].prefix`, drops messages already recorded as delivered, then
+   downloads and parses only the remaining ones. Mail labeled late is picked up
+   on the next run; a broken row is never marked delivered, so it is retried
+   after the parser is fixed.
 
 ## Config
 
@@ -315,9 +316,9 @@ abmx status [--offline] [--strict] [--check] [--json]
                                       full health check; --offline skips network
 abmx samples [--label L|PARSER] [--samples N] [--out DIR] [--json]
                                       download sample emails for parser authoring
-abmx sync [--dry-run] [--json] [--diff]
-abmx sync --from-dir DIR [--label L] [--limit N]
+abmx sync [--dry-run] [--json] [--diff] [--limit N]
                                       fetch, parse, and write the ledger
+abmx sync --from-dir DIR [--label L]  offline sync from saved .eml files
 abmx reset [--purge] [--yes]        forget delivered messages
 abmx accounts [--json]              sink accounts and how [labels.accounts] maps onto them
 abmx skill                          print the parser-authoring skill to stdout

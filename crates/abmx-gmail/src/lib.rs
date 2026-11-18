@@ -8,7 +8,7 @@ pub mod auth;
 pub mod client;
 pub mod sample;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 use abmx_core::{FetchBatch, FetchRequest, Fetcher, MessageKey, RawMessage};
@@ -193,24 +193,45 @@ impl Fetcher for GmailFetcher {
             .map(|label| (label.name.as_str(), label.id.as_str()))
             .collect();
 
-        // id → label. A message carrying two abmx labels is ambiguous and must
-        // fail rather than pick one.
-        let mut tagged: BTreeMap<String, String> = BTreeMap::new();
-        for name in request.labels {
+        // Keep newest-first order: Gmail lists messages newest first, and a
+        // `--limit` should take the newest unseen messages, not an arbitrary id
+        // order. `tagged_by_id` detects a message carrying two labels.
+        let mut tagged: Vec<(String, String)> = Vec::new();
+        let mut tagged_by_id: BTreeMap<String, String> = BTreeMap::new();
+        let mut already_seen = 0usize;
+        let mut counted_seen: HashSet<String> = HashSet::new();
+
+        'labels: for name in request.labels {
             let Some(id) = by_name.get(name.as_str()) else {
                 return Err(abmx_core::Error::Fetch(format!(
                     "gmail label `{name}` does not exist"
                 )));
             };
             for message_id in self.message_ids(id)? {
-                if let Some(existing) = tagged.get(&message_id) {
+                let key = format!("gmail:{message_id}");
+                if request.skip.is_some_and(|skip| skip.contains(&key)) {
+                    if counted_seen.insert(message_id) {
+                        already_seen += 1;
+                    }
+                    continue;
+                }
+
+                if let Some(existing) = tagged_by_id.get(&message_id) {
                     if existing != name {
                         return Err(abmx_core::Error::Fetch(format!(
                             "gmail message {message_id} carries two abmx labels (`{existing}` and `{name}`)"
                         )));
                     }
-                } else {
-                    tagged.insert(message_id, name.clone());
+                    continue;
+                }
+
+                tagged_by_id.insert(message_id.clone(), name.clone());
+                tagged.push((message_id, name.clone()));
+
+                if let Some(limit) = request.limit {
+                    if tagged.len() >= limit {
+                        break 'labels;
+                    }
                 }
             }
         }
@@ -239,7 +260,11 @@ impl Fetcher for GmailFetcher {
             }
         }
 
-        Ok(FetchBatch { messages, skipped })
+        Ok(FetchBatch {
+            messages,
+            skipped,
+            already_seen,
+        })
     }
 }
 

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use abmx_core::{FetchRequest, Fetcher};
 use abmx_gmail::auth::{Credentials, TokenStore};
 use abmx_gmail::{GmailConfig, GmailFetcher};
@@ -185,6 +187,60 @@ fn a_message_deleted_between_list_and_fetch_is_skipped() {
 
     assert!(batch.messages.is_empty());
     assert_eq!(batch.skipped, 1);
+}
+
+#[test]
+fn seen_messages_are_not_downloaded() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start();
+    token_route(&server);
+    labels_route(&server);
+    for id in ["m1", "m2"] {
+        server.route(
+            "GET",
+            &format!("/gmail/v1/users/me/messages/{id}"),
+            vec![Response::json(raw_json(id, EMAIL))],
+        );
+    }
+    server.route(
+        "GET",
+        "/gmail/v1/users/me/messages",
+        vec![Response::json(r#"{"messages":[{"id":"m1"},{"id":"m2"}]}"#)],
+    );
+
+    let fetcher = fetcher(&server, dir.path());
+    let mut skip = HashSet::new();
+    skip.insert("gmail:m1".to_owned());
+    let labels = vec!["abmx:test".to_owned()];
+
+    let batch = fetcher
+        .fetch(FetchRequest::new(&labels).with_skip(&skip))
+        .unwrap();
+    assert_eq!(batch.messages.len(), 1);
+    assert_eq!(batch.messages[0].key.as_str(), "gmail:m2");
+    assert_eq!(batch.already_seen, 1);
+
+    let requests = server.requests();
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.path_only() == "/gmail/v1/users/me/messages/m1"),
+        "a seen message must not be downloaded"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.path_only() == "/gmail/v1/users/me/messages/m2"),
+        "the unseen message must be downloaded"
+    );
+
+    // A limit applies to the unseen set, not the full labelled history.
+    let batch = fetcher
+        .fetch(FetchRequest::new(&labels).with_skip(&skip).with_limit(1))
+        .unwrap();
+    assert_eq!(batch.messages.len(), 1);
+    assert_eq!(batch.messages[0].key.as_str(), "gmail:m2");
+    assert_eq!(batch.already_seen, 1);
 }
 
 #[test]

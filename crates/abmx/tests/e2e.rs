@@ -176,7 +176,8 @@ fn gmail_to_parser_to_actual() {
     // A second run must be a no-op: the message is already recorded as
     // delivered, even though the label is scanned again.
     let second = runner.plan(&fetcher, FetchRequest::new(&labels)).unwrap();
-    assert_eq!(second.stats.fetched, 1);
+    assert_eq!(second.stats.fetched, 0);
     assert_eq!(second.stats.parsed, 0);
+    assert_eq!(second.stats.skipped, 1);
     assert!(second.import_rows().is_empty());
 }

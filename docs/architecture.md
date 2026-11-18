@@ -144,15 +144,15 @@ are checked before applying.
 ## Label discipline
 
 There is no cursor. Every run lists the account's labels, keeps the
-`receipt/*` ones that are mapped in `[labels.accounts]`, paginates the
-messages under each one, and lets the state database skip what was already
-delivered.
+`receipt/*` ones that are mapped in `[labels.accounts]`, paginates the message
+ids under each one, and drops ids already recorded in state before downloading
+raw bodies.
 
 ```
 list labels ──► keep [labels.accounts] ────────► list messages per label
       │                                      │
       │ mapped id has no Gmail label         ▼
-      └──────────── abort ─────────── fetch raw + tag label
+      └──────────── abort ─────────── drop seen ids, fetch raw
                                              │
                                              ▼
                                parse with the label's parser

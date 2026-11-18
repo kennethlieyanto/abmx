@@ -130,8 +130,8 @@ enum Command {
         /// With --dry-run, also compare against the ledger.
         #[arg(long, requires = "dry_run")]
         diff: bool,
-        /// With --from-dir, the maximum files to read.
-        #[arg(long, value_name = "N", requires = "from_dir")]
+        /// Maximum unseen messages to fetch in this run.
+        #[arg(long, value_name = "N")]
         limit: Option<usize>,
     },
 
@@ -1132,7 +1132,10 @@ fn sync(
     require_parsers(&runner)?;
     let (fetcher, labels) = build_fetcher(&config, &base, from_dir, label)?;
 
-    let request = FetchRequest::new(&labels).with_limit(limit.unwrap_or(abmx_core::DEFAULT_LIMIT));
+    let request = match limit {
+        Some(limit) => FetchRequest::new(&labels).with_limit(limit),
+        None => FetchRequest::new(&labels),
+    };
     let plan = runner.plan(fetcher.as_ref(), request)?;
 
     if json {
@@ -1453,8 +1456,13 @@ fn dump(path: &Path, json: bool) -> Result<i32> {
 const UNMATCHED_PREVIEW: usize = 10;
 
 fn summarize_plan(plan: &Plan, quiet: bool, verbose: bool, persisted: bool) {
+    let delivered = if plan.stats.skipped > 0 {
+        format!(" ({} already delivered)", plan.stats.skipped)
+    } else {
+        String::new()
+    };
     eprintln!(
-        "fetched {}, parsed {} — import {}, broken {}, unmatched {}, failed {}",
+        "fetched {}{delivered}, parsed {} — import {}, broken {}, unmatched {}, failed {}",
         plan.stats.fetched,
         plan.stats.parsed,
         plan.stats.import,

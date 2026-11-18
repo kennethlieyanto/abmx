@@ -148,8 +148,10 @@ fn imports_a_row_once_and_then_skips_the_message() {
     assert!(report.is_clean());
 
     let second = runner.plan(&fetcher, FetchRequest::new(&labels())).unwrap();
+    assert_eq!(second.stats.fetched, 0);
     assert_eq!(second.stats.parsed, 0);
     assert_eq!(second.stats.import, 0);
+    assert_eq!(second.stats.skipped, 1);
     assert_eq!(second.sources[0].skipped, 1);
 
     let written = std::fs::read_to_string(fixture.out_path()).unwrap();

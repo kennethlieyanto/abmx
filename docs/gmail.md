@@ -138,12 +138,13 @@ labelIds=<label id>  q=-in:spam -in:trash
   there is no date bound, so every labelled message is fetched and parsed.
   `abmx samples` is the exception: it uses a label search without the window,
   so authoring evidence is unaffected.
-- `--limit` applies only to `--from-dir`; for Gmail, narrow the history window
-  instead.
-- Full pagination is used. If `max_messages` is exceeded, the run fails rather
-  than truncating.
-- The state database skips messages already delivered, so a re-scan is cheap and
-  mail labeled late is picked up on the next run.
+- `--limit N` caps the number of **unseen** messages fetched in one run; it is
+  useful for a smoke test, not as a long-term window.
+- Full pagination is used. If `max_messages` is exceeded by the unseen set, the
+  run fails rather than truncating.
+- The state database filters already-delivered messages before raw bodies are
+  downloaded, so mail labeled late is still picked up but old mail is not
+  re-fetched.
 
 ## Labels for parser authoring
 

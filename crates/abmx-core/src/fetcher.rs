@@ -1,14 +1,9 @@
+use std::collections::HashSet;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
-
-/// Default number of messages one `fetch` may return.
-///
-/// A batch is the unit of work. A large default is fine and a small one is a
-/// knob for debugging, not a memory bound.
-pub const DEFAULT_LIMIT: usize = 200;
 
 /// Stable identity of a message *at the source*.
 ///
@@ -79,9 +74,12 @@ impl RawMessage {
 #[derive(Debug, Clone, Default)]
 pub struct FetchBatch {
     pub messages: Vec<RawMessage>,
-    /// Messages the fetcher filtered out without returning (already labelled,
-    /// outside the window, and so on).
+    /// Messages the fetcher filtered out without returning (deleted, over the
+    /// caller's limit, and so on).
     pub skipped: usize,
+    /// Messages the fetcher recognised as already delivered and did not
+    /// download or return.
+    pub already_seen: usize,
 }
 
 impl FetchBatch {
@@ -96,24 +94,30 @@ pub struct FetchRequest<'a> {
     /// The Gmail labels to scan. Each message is tagged with the label it came
     /// from, so the caller can choose the parser without guessing.
     pub labels: &'a [String],
-    /// Upper bound requested by the caller.
-    ///
-    /// Sources that cannot paginate incrementally may ignore it: the Gmail
-    /// fetcher currently scans everything under the configured labels, so
-    /// `[labels].since` is the real bound there.
-    pub limit: usize,
+    /// Upper bound on messages this fetch should return, after skip filtering.
+    /// `None` means unlimited.
+    pub limit: Option<usize>,
+    /// Message keys already delivered. Sources should filter these before
+    /// downloading raw bodies; the runner also checks them as a safety net.
+    pub skip: Option<&'a HashSet<String>>,
 }
 
 impl<'a> FetchRequest<'a> {
     pub fn new(labels: &'a [String]) -> Self {
         Self {
             labels,
-            limit: DEFAULT_LIMIT,
+            limit: None,
+            skip: None,
         }
     }
 
     pub fn with_limit(mut self, limit: usize) -> Self {
-        self.limit = limit.max(1);
+        self.limit = Some(limit.max(1));
+        self
+    }
+
+    pub fn with_skip(mut self, skip: &'a HashSet<String>) -> Self {
+        self.skip = Some(skip);
         self
     }
 }

@@ -86,7 +86,7 @@ parser and a ledger account. The parser never inspects the sender or subject.
 2. Confirm the `[labels.accounts]` entry already maps this parser id to the
    ledger account. Do not change it unless the user asks.
 3. Run `abmx parser check --parser <parser-id> --parsers <corpus>`.
-4. Run `abmx status --online` and `abmx sync --dry-run`.
+4. Run `abmx status` and `abmx sync --dry-run`.
 
 
 ## Verifying a parser

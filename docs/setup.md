@@ -172,6 +172,7 @@ still an error — that is drift, not an absence of a decision.
 ```bash
 abmx samples                    # download evidence for the mapped labels
 abmx sync --dry-run             # inspect the plan once parsers exist
-abmx status --online            # config, labels, accounts, auth, Gmail inventory
+abmx status                     # full health check (Gmail, labels, accounts, sink)
+abmx status --offline           # skip network checks
 abmx sync                       # import
 ```

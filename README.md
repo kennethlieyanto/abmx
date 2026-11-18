@@ -78,7 +78,7 @@ Prefer doing it by hand?
 abmx init                            # writes ~/.config/abmx/config.toml
 $EDITOR ~/.config/abmx/config.toml   # Gmail client file + Actual endpoint
 abmx auth gmail                      # OAuth2 + PKCE, stores a refresh token (0600)
-abmx status --online
+abmx status
 ```
 
 Routing is explicit and lives in two places:
@@ -311,8 +311,8 @@ abmx setup [--manual] [--review] [--remap]
                                       interactive config, Gmail, labels, accounts
 abmx auth gmail [--manual]          OAuth2 + PKCE; --manual for a headless box
 abmx auth logout [--no-revoke]      revoke the refresh token, then remove it locally
-abmx status [--online] [--strict] [--check] [--json]
-                                      config, corpus, labels, accounts, state, sink, auth
+abmx status [--offline] [--strict] [--check] [--json]
+                                      full health check; --offline skips network
 abmx samples [--label L|PARSER] [--samples N] [--out DIR] [--json]
                                       download sample emails for parser authoring
 abmx sync [--dry-run] [--json] [--diff]

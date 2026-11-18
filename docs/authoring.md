@@ -41,8 +41,8 @@ There is no `[policy]`: a labeled row is either imported or the label is broken.
 ## The loop
 
 ```bash
-abmx status          # config, corpus, labels, accounts, auth (offline)
-abmx status --online # + Gmail label inventory + sink accounts
+abmx status          # config, corpus, labels, accounts, auth, Gmail, sink
+abmx status --offline # skip the Gmail and sink network checks
 abmx samples         # download up to 3 messages per managed label
 ```
 

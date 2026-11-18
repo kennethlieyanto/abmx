@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use abmx::authoring::{self, author};
@@ -83,11 +83,11 @@ enum Command {
 
     /// Show config, corpus, labels, accounts, state, sink, and auth health.
     Status {
-        /// Make network calls (Gmail label inventory, sink accounts).
+        /// Skip network checks (Gmail and sink accounts).
         #[arg(long)]
-        online: bool,
+        offline: bool,
         /// Verify the newest messages under every routed label.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "offline")]
         strict: bool,
         /// Exit nonzero when anything needs attention.
         #[arg(long)]
@@ -250,11 +250,11 @@ fn run(cli: Cli) -> Result<i32> {
             AuthCommand::Logout { no_revoke } => auth_logout(&settings, no_revoke),
         },
         Command::Status {
-            online,
+            offline,
             strict,
             check,
             json,
-        } => status(&settings, online, strict, check, json),
+        } => status(&settings, offline, strict, check, json),
         Command::Samples {
             label,
             samples,
@@ -455,7 +455,7 @@ fn init(path: Option<PathBuf>, force: bool) -> Result<i32> {
         path.display()
     );
     println!("  2. abmx auth gmail            (headless: --manual)");
-    println!("  3. abmx status --online");
+    println!("  3. abmx status");
     println!("  4. abmx sync --dry-run");
 
     Ok(EXIT_OK)
@@ -607,22 +607,82 @@ fn render_sections(sections: &[Section]) -> (usize, usize, usize) {
     (failures, warnings, skipped)
 }
 
-fn status(settings: &Settings, online: bool, strict: bool, check: bool, json: bool) -> Result<i32> {
+fn status(
+    settings: &Settings,
+    offline: bool,
+    strict: bool,
+    check: bool,
+    json: bool,
+) -> Result<i32> {
     let (config, base, config_path) = load_config(settings)?;
     config.validate_labels()?;
+
+    // Fetch network data once; the sections only present the result.
+    let mut gmail: Option<abmx_gmail::GmailFetcher> = None;
+    let mut gmail_build_error: Option<String> = None;
+    if !offline && config.fetch.gmail.is_some() {
+        match config.build_gmail(&base) {
+            Ok(fetcher) => gmail = Some(fetcher),
+            Err(error) => gmail_build_error = Some(format!("{error:#}")),
+        }
+    }
+
+    let mut gmail_labels: Option<Vec<String>> = None;
+    let mut gmail_labels_error: Option<String> = None;
+    if let Some(fetcher) = &gmail {
+        match fetcher.routed_labels() {
+            Ok(found) => {
+                gmail_labels = Some(found.into_iter().map(|label| label.name).collect());
+            }
+            Err(error) => gmail_labels_error = Some(error.to_string()),
+        }
+    }
+
+    let mut sink: Option<Box<dyn abmx_core::Sink>> = None;
+    let mut sink_build_error: Option<String> = None;
+    match config.build_sink(&base) {
+        Ok(value) => sink = Some(value),
+        Err(error) => sink_build_error = Some(format!("{error:#}")),
+    }
+
+    let mut sink_accounts: Option<Vec<abmx_core::SinkAccount>> = None;
+    let mut sink_accounts_error: Option<String> = None;
+    if !offline {
+        if let Some(value) = &sink {
+            match value.accounts() {
+                Ok(accounts) => sink_accounts = Some(accounts),
+                Err(error) => sink_accounts_error = Some(error.to_string()),
+            }
+        }
+    }
+
+    let plan = gmail_labels
+        .as_deref()
+        .map(|found| labels::plan(found, &config.labels));
+    let accounts_by_id: Option<BTreeMap<&str, &abmx_core::SinkAccount>> =
+        sink_accounts.as_ref().map(|accounts| {
+            accounts
+                .iter()
+                .map(|account| (account.id.as_str(), account))
+                .collect()
+        });
+    let validate_accounts = config.sink.actual.is_some() && accounts_by_id.is_some();
 
     let mut sections: Vec<Section> = Vec::new();
 
     let mut config_section = Section::new("config");
     config_section.push(Status::Ok, config_path.display().to_string());
-    let since = config
-        .labels
-        .since
-        .map(|date| format!(", since {date}"))
-        .unwrap_or_default();
     config_section.push(
         Status::Ok,
-        format!("labels `{}`{since}", config.labels.prefix),
+        format!(
+            "labels `{}`{}",
+            config.labels.prefix,
+            config
+                .labels
+                .since
+                .map(|date| format!(", since {date}"))
+                .unwrap_or_else(|| ", all history".to_owned())
+        ),
     );
     sections.push(config_section);
 
@@ -661,33 +721,135 @@ fn status(settings: &Settings, online: bool, strict: bool, check: bool, json: bo
         );
     }
     for (parser_id, account) in &config.labels.accounts {
-        let label = format!("{}{}", config.labels.prefix, parser_id);
+        let managed = plan.as_ref().and_then(|plan| {
+            plan.managed
+                .iter()
+                .find(|label| label.parser_id == *parser_id)
+        });
+        let label = managed
+            .map(|managed| managed.label.clone())
+            .unwrap_or_else(|| format!("{}{}", config.labels.prefix, parser_id));
+
+        let parser_missing = parser
+            .as_ref()
+            .is_some_and(|parser| parser.registry().find(parser_id).is_none());
+        let account_missing = validate_accounts
+            && !account.trim().is_empty()
+            && accounts_by_id
+                .as_ref()
+                .is_some_and(|accounts| !accounts.contains_key(account.as_str()));
+        let label_missing = plan
+            .as_ref()
+            .is_some_and(|plan| plan.orphans.iter().any(|orphan| orphan == parser_id));
+
+        let account_display = accounts_by_id
+            .as_ref()
+            .and_then(|accounts| accounts.get(account.as_str()))
+            .map(|found| format!("{} ({account})", found.name))
+            .unwrap_or_else(|| account.clone());
+
+        let mut problems = Vec::new();
         if account.trim().is_empty() {
+            problems.push("no account id".to_owned());
+        }
+        if parser_missing {
+            problems.push(format!("parser `{parser_id}` is missing"));
+        }
+        if account_missing {
+            problems.push(format!("account `{account}` is not in the sink"));
+        }
+        if label_missing {
+            problems.push("no Gmail label routes to it".to_owned());
+        }
+
+        if problems.is_empty() {
+            labels_section.push(Status::Ok, format!("{label} -> {account_display}"));
+        } else {
+            let mut hints = Vec::new();
+            if parser_missing {
+                hints.push(format!("author it: `abmx samples --label {label}`"));
+            }
+            if account_missing {
+                hints.push("run `abmx accounts` to list valid ids".to_owned());
+            }
+            if label_missing {
+                hints.push("fix the gmailctl rule or remove the mapping".to_owned());
+            }
             labels_section.hint(
                 Status::Fail,
-                format!("{label}: no account"),
-                "set the Actual account UUID in [labels.accounts]",
+                format!("{label} -> {account_display}: {}", problems.join("; ")),
+                hints.join(" · "),
             );
-            continue;
         }
-        if let Some(parser) = &parser {
-            if parser.registry().find(parser_id).is_none() {
+    }
+
+    if settings.verbose {
+        for parser_id in &config.labels.ignore {
+            labels_section.push(
+                Status::Skip,
+                format!("{}{} (ignored)", config.labels.prefix, parser_id),
+            );
+        }
+        if let Some(plan) = &plan {
+            for label in &plan.unmanaged {
                 labels_section.hint(
-                    Status::Fail,
-                    format!("{label}: parser `{parser_id}` is missing"),
-                    "install the parser or fix the account key",
+                    Status::Skip,
+                    format!("{} is not managed", label.label),
+                    "run `abmx setup` to import it or decline it",
                 );
-                continue;
+            }
+            for label in &plan.invalid {
+                labels_section.hint(
+                    Status::Warn,
+                    format!("{label}: not a parser id after the prefix"),
+                    "rename the gmailctl label",
+                );
             }
         }
-        labels_section.push(Status::Ok, format!("{label} -> {account}"));
+    } else {
+        if !config.labels.ignore.is_empty() {
+            labels_section.push(
+                Status::Skip,
+                format!(
+                    "{} ignored label(s) (use -v to list)",
+                    config.labels.ignore.len()
+                ),
+            );
+        }
+        if let Some(plan) = &plan {
+            if !plan.unmanaged.is_empty() {
+                labels_section.push(
+                    Status::Skip,
+                    format!(
+                        "{} unmanaged Gmail label(s) (use -v to list)",
+                        plan.unmanaged.len()
+                    ),
+                );
+            }
+            if !plan.invalid.is_empty() {
+                labels_section.push(
+                    Status::Warn,
+                    format!(
+                        "{} Gmail label(s) with an invalid parser id (use -v to list)",
+                        plan.invalid.len()
+                    ),
+                );
+            }
+        }
     }
-    for parser_id in &config.labels.ignore {
-        labels_section.push(
-            Status::Skip,
-            format!("{}{} (ignored)", config.labels.prefix, parser_id),
-        );
+
+    if plan.is_none() {
+        if offline {
+            labels_section.push(Status::Skip, "Gmail label inventory skipped (offline)");
+        } else if config.fetch.gmail.is_some() {
+            if let Some(error) = &gmail_labels_error {
+                labels_section.hint(Status::Warn, "could not verify Gmail labels", error.clone());
+            } else {
+                labels_section.push(Status::Skip, "Gmail label inventory unavailable (see auth)");
+            }
+        }
     }
+
     if !config.labels.accounts.is_empty() && config.labels.since.is_none() {
         labels_section.hint(
             Status::Warn,
@@ -727,69 +889,46 @@ fn status(settings: &Settings, online: bool, strict: bool, check: bool, json: bo
     sections.push(state_section);
 
     let mut sink_section = Section::new("sink");
-    let mut sink_accounts: Option<Vec<abmx_core::SinkAccount>> = None;
-    match config.build_sink(&base) {
-        Err(error) => sink_section.hint(
+    if let Some(error) = &sink_build_error {
+        sink_section.hint(
             Status::Fail,
-            error.to_string(),
+            error.clone(),
             "run `abmx setup` to configure Actual or a file sink",
-        ),
-        Ok(sink) => {
-            if !online {
-                let location = config
-                    .sink
-                    .actual
-                    .as_ref()
-                    .map(|actual| format!("actual-http-api at {}", actual.url))
-                    .or_else(|| {
-                        config
-                            .sink
-                            .file
-                            .as_ref()
-                            .map(|file| format!("file at {}", file.path.display()))
-                    });
-                let message = match location {
-                    Some(location) => format!("{location} (offline; use --online)"),
-                    None => format!("{} (offline; use --online)", sink.name()),
-                };
-                sink_section.push(Status::Skip, message);
+        );
+    } else if let Some(value) = &sink {
+        if offline {
+            let location = config
+                .sink
+                .actual
+                .as_ref()
+                .map(|actual| format!("actual-http-api at {}", actual.url))
+                .or_else(|| {
+                    config
+                        .sink
+                        .file
+                        .as_ref()
+                        .map(|file| format!("file at {}", file.path.display()))
+                })
+                .unwrap_or_else(|| value.name().to_owned());
+            sink_section.push(Status::Skip, format!("{location} (offline)"));
+        } else if let Some(error) = &sink_accounts_error {
+            sink_section.hint(
+                Status::Fail,
+                error.clone(),
+                "is actual-http-api reachable and budget_sync_id correct? `just actual-api` starts it locally",
+            );
+        } else if let Some(accounts) = &sink_accounts {
+            if config.sink.actual.is_some() {
+                sink_section.push(
+                    Status::Ok,
+                    format!("{}: {} accounts", value.name(), accounts.len()),
+                );
             } else {
-                match sink.accounts() {
-                    Ok(accounts) => {
-                        sink_section.push(
-                            Status::Ok,
-                            format!("{}: {} accounts", sink.name(), accounts.len()),
-                        );
-                        sink_accounts = Some(accounts);
-                    }
-                    Err(error) => sink_section.hint(
-                        Status::Fail,
-                        error.to_string(),
-                        "is actual-http-api reachable and budget_sync_id correct? `just actual-api` starts it locally",
-                    ),
-                }
+                sink_section.push(Status::Skip, format!("{} (no account list)", value.name()));
             }
         }
     }
     sections.push(sink_section);
-
-    if let Some(accounts) = &sink_accounts {
-        let mut mapping = Section::new("account mapping");
-        for (parser_id, account) in &config.labels.accounts {
-            match accounts.iter().find(|candidate| candidate.id == *account) {
-                Some(found) => mapping.push(
-                    Status::Ok,
-                    format!("{parser_id} -> {} ({account})", found.name),
-                ),
-                None => mapping.hint(
-                    Status::Fail,
-                    format!("{parser_id} -> {account} is not an account in the sink"),
-                    "run `abmx accounts` to list valid ids",
-                ),
-            }
-        }
-        sections.push(mapping);
-    }
 
     let mut auth_section = Section::new("auth");
     match &config.fetch.gmail {
@@ -798,29 +937,34 @@ fn status(settings: &Settings, online: bool, strict: bool, check: bool, json: bo
             "no [fetch.gmail] section",
             "run `abmx setup`, or use `--from-dir` to sync saved .eml files",
         ),
-        Some(gmail) => {
+        Some(_) => {
             let store = TokenStore::new(config.gmail_token_path(&base));
             match store.load() {
-                Ok(Some(_)) if !online => auth_section.push(
+                Ok(Some(_)) if offline => auth_section.push(
                     Status::Ok,
                     format!("gmail token at {}", store.path().display()),
                 ),
-                Ok(Some(_)) => match config.build_gmail(&base) {
-                    Ok(fetcher) => match fetcher.client().profile() {
-                        Ok(profile) => auth_section
-                            .push(Status::Ok, format!("gmail: {}", profile.email_address)),
-                        Err(error) => auth_section.hint(
+                Ok(Some(_)) => {
+                    if let Some(fetcher) = &gmail {
+                        match fetcher.client().profile() {
+                            Ok(profile) => auth_section
+                                .push(Status::Ok, format!("gmail: {}", profile.email_address)),
+                            Err(error) => auth_section.hint(
+                                Status::Fail,
+                                error.to_string(),
+                                "the refresh token may be revoked or expired; run `abmx auth gmail`",
+                            ),
+                        }
+                    } else {
+                        auth_section.hint(
                             Status::Fail,
-                            error.to_string(),
-                            "the refresh token may be revoked or expired; run `abmx auth gmail`",
-                        ),
-                    },
-                    Err(error) => auth_section.hint(
-                        Status::Fail,
-                        error.to_string(),
-                        "run `abmx setup` (or `abmx auth gmail`) to store credentials",
-                    ),
-                },
+                            gmail_build_error
+                                .clone()
+                                .unwrap_or_else(|| "could not build the Gmail fetcher".to_owned()),
+                            "run `abmx setup` (or `abmx auth gmail`) to store credentials",
+                        );
+                    }
+                }
                 Ok(None) => auth_section.hint(
                     Status::Fail,
                     "gmail: no token",
@@ -832,128 +976,56 @@ fn status(settings: &Settings, online: bool, strict: bool, check: bool, json: bo
                     "run `abmx setup` (or `abmx auth gmail`) to store credentials",
                 ),
             }
-            let _ = gmail;
         }
     }
     sections.push(auth_section);
 
-    if online {
-        let mut gmail_section = Section::new("gmail labels");
-        match config.build_gmail(&base) {
-            Err(error) => gmail_section.hint(
-                Status::Fail,
-                error.to_string(),
-                "run `abmx setup` or `abmx auth gmail`, then check [fetch.gmail]",
-            ),
-            Ok(fetcher) => match fetcher.routed_labels() {
-                Err(error) => gmail_section.hint(
-                    Status::Fail,
-                    error.to_string(),
-                    "run `abmx setup` or `abmx auth gmail`",
-                ),
-                Ok(found) => {
-                    let discovered: Vec<String> =
-                        found.into_iter().map(|label| label.name).collect();
-                    let plan = labels::plan(&discovered, &config.labels);
-
-                    for label in &plan.managed {
-                        gmail_section
-                            .push(Status::Ok, format!("{} -> {}", label.label, label.account));
-                    }
-                    for label in &plan.unmanaged {
-                        gmail_section.hint(
-                            Status::Skip,
-                            format!("{} is not managed", label.label),
-                            "run `abmx setup` to import it or decline it",
-                        );
-                    }
-                    for label in &plan.ignored {
-                        gmail_section.push(Status::Skip, format!("{} (ignored)", label.label));
-                    }
-                    for label in &plan.invalid {
-                        gmail_section.hint(
-                            Status::Warn,
-                            format!("{label}: not a parser id after the prefix"),
-                            "rename the gmailctl label",
-                        );
-                    }
-                    for parser_id in &plan.orphans {
-                        gmail_section.hint(
-                            Status::Fail,
-                            format!(
-                                "`{parser_id}` is in [labels.accounts] but no Gmail label routes to it"
-                            ),
-                            "add the gmailctl rule or remove the mapping",
-                        );
-                    }
-
-                    if discovered.is_empty() {
-                        gmail_section.hint(
-                            Status::Fail,
-                            format!("no `{}*` labels found", config.labels.prefix),
-                            "create a gmailctl rule, then run `abmx setup`",
-                        );
-                    } else if plan.managed.is_empty() {
-                        gmail_section.hint(
-                            Status::Fail,
-                            "no routed label is managed",
-                            "run `abmx setup` to choose a label and an account",
-                        );
-                    }
-                }
-            },
-        }
-        sections.push(gmail_section);
-    }
-
     if strict {
         let mut strict_section = Section::new("strict labels");
-        match (&config.fetch.gmail, &parser) {
-            (Some(_), Some(parser)) => match config.build_gmail(&base) {
-                Ok(fetcher) => {
-                    let work =
-                        tempfile::tempdir().context("creating a temporary sample directory")?;
-                    let inventory = author::scan_gmail(
-                        &fetcher,
-                        Some(parser),
-                        &config.labels,
-                        &author::Options::default(),
-                        work.path(),
-                    )?;
-                    if inventory.labels.is_empty() && inventory.orphans.is_empty() {
+        match (&gmail, &parser) {
+            (Some(fetcher), Some(parser)) => {
+                let work = tempfile::tempdir().context("creating a temporary sample directory")?;
+                let inventory = author::scan_gmail(
+                    fetcher,
+                    Some(parser),
+                    &config.labels,
+                    &author::Options::default(),
+                    work.path(),
+                )?;
+                if inventory.labels.is_empty() && inventory.orphans.is_empty() {
+                    strict_section.hint(
+                        Status::Fail,
+                        format!("no `{}*` labels found", config.labels.prefix),
+                        "create a label and a gmailctl rule",
+                    );
+                }
+                for report in inventory.labels.iter().chain(inventory.orphans.iter()) {
+                    if report.status == author::LabelStatus::Ok {
+                        strict_section.push(Status::Ok, report.label.clone());
+                    } else if report.status == author::LabelStatus::Ignored {
+                        strict_section.push(Status::Skip, format!("{}: ignored", report.label));
+                    } else if report.status == author::LabelStatus::MissingAccount {
+                        strict_section.hint(
+                            Status::Skip,
+                            format!("{}: not managed", report.label),
+                            "run `abmx setup` to import it or decline it",
+                        );
+                    } else {
                         strict_section.hint(
                             Status::Fail,
-                            format!("no `{}*` labels found", config.labels.prefix),
-                            "create a label and a gmailctl rule",
+                            format!("{}: {}", report.label, report.status.as_str()),
+                            format!("run `abmx samples --label {}`", report.label),
                         );
                     }
-                    for report in inventory.labels.iter().chain(inventory.orphans.iter()) {
-                        if report.status == author::LabelStatus::Ok {
-                            strict_section.push(Status::Ok, report.label.clone());
-                        } else if report.status == author::LabelStatus::Ignored {
-                            strict_section.push(Status::Skip, format!("{}: ignored", report.label));
-                        } else if report.status == author::LabelStatus::MissingAccount {
-                            strict_section.hint(
-                                Status::Skip,
-                                format!("{}: not managed", report.label),
-                                "run `abmx setup` to import it or decline it",
-                            );
-                        } else {
-                            strict_section.hint(
-                                Status::Fail,
-                                format!("{}: {}", report.label, report.status.as_str()),
-                                format!("run `abmx samples --label {}`", report.label),
-                            );
-                        }
-                    }
                 }
-                Err(error) => strict_section.hint(
-                    Status::Fail,
-                    error.to_string(),
-                    "run `abmx auth gmail` and check [fetch.gmail]",
-                ),
-            },
-            (None, _) => strict_section.push(Status::Skip, "no [fetch.gmail]"),
+            }
+            (None, Some(_)) => strict_section.hint(
+                Status::Skip,
+                "Gmail is not available",
+                gmail_build_error
+                    .as_deref()
+                    .unwrap_or("run `abmx setup` or `abmx auth gmail`"),
+            ),
             (_, None) => strict_section.push(Status::Skip, "no parser corpus"),
         }
         sections.push(strict_section);

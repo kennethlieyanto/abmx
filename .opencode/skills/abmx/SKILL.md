@@ -11,7 +11,9 @@ Samples are downloaded by `abmx samples` into
 `$XDG_CONFIG_HOME/abmx/samples/<parser-id>/` (usually
 `~/.config/abmx/samples/<parser-id>/`). Each managed label gets up to three
 `.eml` files and `manifest.json` records how many were available. Fewer than
-three samples is a warning: be conservative and do not invent a template.
+three samples is a warning: be conservative and do not invent a template. The
+import window `[labels].since` does not apply to samples; they are the newest
+messages under the label.
 
 The parser corpus is one directory per parser id, normally
 `~/.config/abmx/parsers/<parser-id>/`; `[general].parsers` can point somewhere

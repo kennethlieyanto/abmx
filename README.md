@@ -178,8 +178,10 @@ id in the label. gmailctl routes; `abmx` parses. The spec format is in
 
 `abmx samples` downloads the newest three messages for every label in
 `[labels.accounts]` into `$XDG_CONFIG_HOME/abmx/samples/<parser-id>/`, along
-with a `manifest.json`. It never parses and never needs a parser. A label with
-fewer than three messages is a warning; the agent should stay conservative.
+with a `manifest.json`. It never parses and never needs a parser. It also
+deliberately ignores `[labels].since`: the import window must not starve a
+parser of evidence. A label with fewer than three messages is a warning; the
+agent should stay conservative.
 
 Options: `--label <label|parser-id>` restricts the download, `--samples N`
 changes the count, `--out DIR` changes the directory, and `--json` prints the

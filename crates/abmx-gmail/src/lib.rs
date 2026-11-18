@@ -163,18 +163,17 @@ impl GmailFetcher {
     }
 
     /// The newest `limit` messages under a label name, for `abmx samples`.
+    ///
+    /// Sampling is authoring evidence, not a sync. It deliberately ignores
+    /// `[labels].since`: a quiet import window must not starve a parser of
+    /// samples. The label search itself is bounded by `limit`, so this does not
+    /// paginate the whole label first.
     pub fn sample_label(
         &self,
         label_name: &str,
         limit: usize,
     ) -> Result<Vec<SampleMessage>, GmailError> {
-        let ids = self.label_message_ids(label_name)?;
-        let mut samples = Vec::new();
-        for id in ids.into_iter().take(limit.max(1)) {
-            let bytes = self.raw(&id)?;
-            samples.push(SampleMessage { id, bytes });
-        }
-        Ok(samples)
+        self.client.sample_label(label_name, limit)
     }
 }
 

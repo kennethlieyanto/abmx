@@ -12,6 +12,14 @@ fn raw_json(id: &str, bytes: &[u8]) -> String {
 }
 
 fn fetcher(server: &MockServer, dir: &std::path::Path) -> GmailFetcher {
+    fetcher_with_since(server, dir, None)
+}
+
+fn fetcher_with_since(
+    server: &MockServer,
+    dir: &std::path::Path,
+    since: Option<chrono::NaiveDate>,
+) -> GmailFetcher {
     let store = TokenStore::new(dir.join("credentials.json"));
     store
         .save(&Credentials {
@@ -25,6 +33,7 @@ fn fetcher(server: &MockServer, dir: &std::path::Path) -> GmailFetcher {
     config.base_url = format!("{}/gmail/v1", server.url());
     config.token_url = format!("{}/token", server.url());
     config.prefix = "abmx:".to_owned();
+    config.since = since;
     GmailFetcher::new(config).unwrap()
 }
 
@@ -231,6 +240,49 @@ fn sampling_a_label_returns_the_newest_messages() {
     assert_eq!(samples.len(), 1);
     assert_eq!(samples[0].id, "m1");
     assert_eq!(samples[0].bytes, EMAIL);
+}
+
+#[test]
+fn sampling_ignores_the_sync_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start();
+    token_route(&server);
+    labels_route(&server);
+    server.route(
+        "GET",
+        "/gmail/v1/users/me/messages/m1",
+        vec![Response::json(raw_json("m1", EMAIL))],
+    );
+    server.route(
+        "GET",
+        "/gmail/v1/users/me/messages",
+        vec![Response::json(r#"{"messages":[{"id":"m1"}]}"#)],
+    );
+
+    let fetcher = fetcher_with_since(
+        &server,
+        dir.path(),
+        Some(chrono::NaiveDate::from_ymd_opt(2026, 11, 1).unwrap()),
+    );
+    let samples = fetcher.sample_label("abmx:test", 5).unwrap();
+    assert_eq!(samples.len(), 1);
+
+    let list = server
+        .requests()
+        .into_iter()
+        .find(|request| request.path_only() == "/gmail/v1/users/me/messages")
+        .expect("messages.list was called");
+    // Sampling is authoring evidence: no sync window applies.
+    assert!(
+        !list.query.contains("after"),
+        "query unexpectedly had a window: {}",
+        list.query
+    );
+    assert!(
+        list.query.contains("label%3A"),
+        "query was not a label search: {}",
+        list.query
+    );
 }
 
 #[test]

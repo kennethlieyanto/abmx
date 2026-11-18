@@ -66,8 +66,9 @@ History window
   their current `since`.
 - `All history` is available but warns: it scans every labelled message and is
   slow, and old templates may not match the parser.
-- The date is saved to `[labels].since`. It bounds both `abmx samples` and
-  `abmx sync`.
+- The date is saved to `[labels].since`. It bounds `abmx sync` and
+  `abmx status --strict`. `abmx samples` ignores it and always takes the newest
+  three messages per managed label.
 
 ### 4. Gmail
 

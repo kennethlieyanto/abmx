@@ -55,9 +55,9 @@ $XDG_CONFIG_HOME/abmx/samples/<parser-id>/03.eml
 $XDG_CONFIG_HOME/abmx/samples/manifest.json
 ```
 
-`[labels].since` bounds both the samples and `sync`. Without it, every labelled
-message in the mailbox is considered, which is slow and may surface old
-templates the parser has not seen.
+`[labels].since` bounds `sync` and `abmx status --strict`. `abmx samples`
+deliberately ignores it and always takes the newest three messages per managed
+label, so a quiet import window does not starve parser evidence.
 
 Only labels in `[labels.accounts]` are sampled. Ignored labels and labels with
 no account entry are skipped. A label with fewer than three messages is a

@@ -171,8 +171,8 @@ fn step_history(path: &Path, doc: &mut ConfigDocument) -> Result<()> {
     let days_ago = |days: i64| (today - chrono::Duration::days(days)).to_string();
 
     log::info(
-        "only mail on/after this date is fetched; a narrow window is faster and \
-         avoids old templates the parser has not seen",
+        "only mail on/after this date is imported; `abmx samples` still takes the \
+         newest messages for authoring",
     )?;
 
     let mut prompt = select("History window");

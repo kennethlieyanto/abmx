@@ -104,6 +104,38 @@ ssh server 'chmod 600 ~/.local/state/abmx/gmail-credentials.json'
 
 The file contains a client id and a refresh token — no mail, no password.
 
+### Portable bundle (`abmx auth export`)
+
+Copying the token file works, but it does not carry the OAuth client secret, so
+the target still needs `ABMX_GMAIL_CLIENT_SECRET` or a client JSON. Export
+writes one self-contained bundle instead:
+
+```bash
+abmx auth export --out abmx-gmail-auth.json
+```
+
+The bundle contains the client id, client secret, refresh token, and scopes, and
+is written with mode `0600`. Install it on a server with no browser:
+
+```bash
+abmx auth import --file abmx-gmail-auth.json
+```
+
+`auth import` writes it to the configured token path (default
+`~/.local/state/abmx/gmail-credentials.json`). Alternatively mount the bundle in
+a container and point `[fetch.gmail].token` at it:
+
+```toml
+[fetch.gmail]
+token = "/run/secrets/abmx/gmail-credentials.json"
+```
+
+When the configured client id/secret are absent, `abmx` falls back to the bundle,
+so a container needs only that one file. Use `--stdout` (or `--out -`) to pipe
+the JSON, and `--force` to overwrite an existing file. The bundle is a
+password-equivalent secret: anyone holding it can read the mailbox until
+`abmx auth logout` revokes the refresh token.
+
 ## What `abmx` asks Gmail for
 
 Scope: `https://www.googleapis.com/auth/gmail.readonly`. Nothing else.

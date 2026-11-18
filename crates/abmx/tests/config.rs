@@ -2,6 +2,7 @@ use std::path::Path;
 
 use abmx::config::Config;
 use abmx::paths;
+use abmx_gmail::{Credentials, TokenStore};
 
 const CONFIG: &str = r#"
 [general]
@@ -187,9 +188,15 @@ fn tilde_paths_expand() {
 
 #[test]
 fn the_starter_template_parses_and_has_no_placeholders() {
-    let config: Config = toml::from_str(abmx::config::INIT_TEMPLATE).unwrap();
+    let mut config: Config = toml::from_str(abmx::config::INIT_TEMPLATE).unwrap();
     config.validate_labels().unwrap();
     assert!(config.fetch.gmail.is_some());
+
+    // Point the token at a path that cannot exist, so the ambient user token
+    // cannot satisfy the credentials check.
+    config.fetch.gmail.as_mut().unwrap().token = Some(std::path::PathBuf::from(
+        "definitely-missing-credentials.json",
+    ));
     assert!(config.gmail_credentials(Path::new(".")).is_err());
     assert!(config.build_sink(Path::new(".")).is_err());
 }
@@ -311,6 +318,40 @@ fn expected_client_secret(from_file: &str) -> String {
         .ok()
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| from_file.to_owned())
+}
+
+#[test]
+fn an_exported_token_bundle_supplies_the_client_id_and_secret() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+[fetch.gmail]
+token = "gmail-credentials.json"
+
+[labels]
+prefix = "receipt/"
+"#,
+    )
+    .unwrap();
+
+    TokenStore::new(dir.path().join("gmail-credentials.json"))
+        .save(&Credentials {
+            client_id: "bundle.apps.googleusercontent.com".into(),
+            refresh_token: "refresh".into(),
+            scopes: vec![],
+            client_secret: Some("bundle-secret".into()),
+        })
+        .unwrap();
+
+    let config = Config::load(&path).unwrap();
+    let credentials = config.gmail_credentials(dir.path()).unwrap();
+    assert_eq!(credentials.client_id, "bundle.apps.googleusercontent.com");
+    assert_eq!(
+        credentials.client_secret.as_deref(),
+        Some(expected_client_secret("bundle-secret").as_str())
+    );
 }
 
 #[test]

@@ -1,0 +1,123 @@
+# The chart deliberately has no defaults for abmx's application config.
+# `config.existingConfigMap` or `config.data` is required; see the README.
+
+image:
+  repository: ghcr.io/kennethlieyanto/abmx
+  # Empty uses the chart appVersion. Pin a release tag in production.
+  tag: ""
+  # Set a digest (sha256:…) to pin an immutable image instead of a tag.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# How often to run `abmx sync`.
+schedule: "*/15 * * * *"
+timeZone: ""
+concurrencyPolicy: Forbid
+suspend: false
+startingDeadlineSeconds: 300
+
+# The first run downloads the budget into the persistent /data volume.
+activeDeadlineSeconds: 1800
+backoffLimit: 0
+successfulJobsHistoryLimit: 3
+failedJobsHistoryLimit: 3
+ttlSecondsAfterFinished: null
+
+command: []
+# Global flags come before the subcommand. The config file is mounted from
+# config.existingConfigMap (key: config.toml) at /etc/abmx/config.toml.
+args:
+  - "--config"
+  - "/etc/abmx/config.toml"
+  - "sync"
+extraArgs: []
+
+config:
+  # Existing ConfigMap with a `config.toml` key. Use this in GitOps.
+  existingConfigMap: ""
+  # Raw TOML used only when existingConfigMap is empty. Rendered through `tpl`.
+  # There are no chart defaults for [labels], accounts, or the Actual server.
+  data: ""
+
+parsers:
+  # Existing ConfigMap whose keys are parser ids and whose values are that
+  # parser's config.toml. The image's bundled corpus is used as a fallback
+  # unless mode is `replace`.
+  existingConfigMap: ""
+  # overlay: mounted parsers win, image corpus fills gaps
+  # replace: only the mounted parsers are used
+  mode: overlay
+  mountPath: /etc/abmx/parsers
+  # Used by the init container that expands the flat ConfigMap keys into
+  # <id>/config.toml directories.
+  assembleImage: busybox:1.36
+  assemblePullPolicy: IfNotPresent
+
+gmailAuth:
+  # Existing Secret containing the `abmx auth export` bundle.
+  existingSecret: ""
+  key: gmail-credentials.json
+  mountPath: /run/secrets/abmx
+  fileName: gmail-credentials.json
+
+secrets:
+  # Existing Secret injected with envFrom. Expected keys:
+  #   ABMX_ACTUAL_API_KEY, ABMX_ACTUAL_SERVER_PASSWORD,
+  #   ABMX_ACTUAL_BUDGET_PASSWORD, ABMX_GMAIL_CLIENT_SECRET
+  existingSecret: ""
+  extraEnvFrom: []
+
+persistence:
+  enabled: true
+  # Use a pre-created claim instead of creating one.
+  existingClaim: ""
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+  annotations: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  automountServiceAccountToken: false
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  # The runtime image is node:22-bookworm-slim, whose `node` user is 1000.
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+extraEnv: []
+extraVolumes: []
+extraVolumeMounts: []
+initContainers: []

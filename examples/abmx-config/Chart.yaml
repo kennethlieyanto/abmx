@@ -1,0 +1,5 @@
+apiVersion: v2
+name: abmx-config
+description: Non-secret abmx application config and parser corpus, generated from plain files
+type: application
+version: 0.1.0

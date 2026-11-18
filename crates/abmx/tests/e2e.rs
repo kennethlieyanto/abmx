@@ -77,6 +77,7 @@ fn gmail_fetcher(server: &MockServer, dir: &std::path::Path) -> GmailFetcher {
             client_id: "client".into(),
             refresh_token: "refresh".into(),
             scopes: vec![],
+            client_secret: None,
         })
         .unwrap();
 

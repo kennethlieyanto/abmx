@@ -1,0 +1,24 @@
+# abmx application config. This is the file `abmx setup` writes locally as
+# ~/.config/abmx/config.toml. The chart mounts it at /etc/abmx/config.toml.
+
+[fetch.gmail]
+token = "/run/secrets/abmx/gmail-credentials.json"
+max_messages = 10000
+
+[sink.actual]
+# The Actual server itself, not an HTTP wrapper.
+server_url = "http://actual-budget-actualbudget.actual-budget.svc.cluster.local:5006"
+budget_sync_id = "REPLACE_WITH_ACTUAL_SYNC_ID"
+# @actual-app/api's local copy of the budget. Keep it on the /data PVC.
+data_dir = "/data/cache/actual"
+timeout_secs = 300
+cleared = "never"
+
+[labels]
+prefix = "receipt/"
+since = 2026-11-01
+
+[labels.accounts]
+# One entry per parser id you want to import. Find account UUIDs with
+# `abmx accounts` against your Actual server.
+# "example.card_debit" = "<actual account uuid>"

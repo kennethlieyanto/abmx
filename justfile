@@ -29,6 +29,18 @@ ci: check test fixtures
 run *args:
     cargo run -q -p abmx -- {{args}}
 
+# Build the container image locally.
+image:
+    docker build -t abmx:dev .
+
+# Lint and render the Helm chart with its CI fixture values.
+helm-lint:
+    helm lint charts/abmx -f charts/abmx/ci/minimal-values.yaml
+    helm lint examples/abmx-config
+
+helm-template:
+    helm template abmx charts/abmx -f charts/abmx/ci/minimal-values.yaml
+
 # Exercise the whole pipeline against saved .eml files and the file sink.
 # `just demo ./sample-mail`
 demo dir parser="example.journal_transfer" parsers="parsers":

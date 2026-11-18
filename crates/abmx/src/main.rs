@@ -9,7 +9,7 @@ use abmx::paths;
 use abmx::state::State;
 use abmx::Runner;
 use abmx_core::{ApplyOptions, FetchRequest, Fetcher, LedgerMatch, Plan, Report, Sink};
-use abmx_gmail::{revoke_refresh_token, TokenStore, REVOKE_URL};
+use abmx_gmail::{revoke_refresh_token, Credentials, TokenStore, REVOKE_URL};
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
@@ -199,6 +199,37 @@ enum AuthCommand {
         #[arg(long)]
         no_revoke: bool,
     },
+
+    /// Export a self-contained credential bundle for a server or container.
+    ///
+    /// The bundle adds the OAuth client secret to the refresh token, so one
+    /// mounted file is enough to authenticate. Treat it like a password.
+    Export {
+        /// Write the bundle here. `-` writes to stdout.
+        #[arg(long, value_name = "FILE", default_value = "abmx-gmail-auth.json")]
+        out: PathBuf,
+        /// Write the JSON to stdout instead of a file.
+        #[arg(long)]
+        stdout: bool,
+        /// Overwrite an existing file.
+        #[arg(long)]
+        force: bool,
+        /// Allow a bundle without a client secret (public OAuth clients).
+        #[arg(long)]
+        allow_missing_client_secret: bool,
+    },
+
+    /// Install an exported bundle at the configured token path.
+    ///
+    /// No browser or OAuth flow is needed on the target machine.
+    Import {
+        /// Bundle to read. `-` reads stdin.
+        #[arg(long, value_name = "FILE")]
+        file: PathBuf,
+        /// Overwrite an existing token file.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 fn main() {
@@ -248,6 +279,13 @@ fn run(cli: Cli) -> Result<i32> {
                 manual,
             } => auth_gmail(&settings, no_browser, port, manual),
             AuthCommand::Logout { no_revoke } => auth_logout(&settings, no_revoke),
+            AuthCommand::Export {
+                out,
+                stdout,
+                force,
+                allow_missing_client_secret,
+            } => auth_export(&settings, &out, stdout, force, allow_missing_client_secret),
+            AuthCommand::Import { file, force } => auth_import(&settings, &file, force),
         },
         Command::Status {
             offline,
@@ -520,6 +558,109 @@ fn auth_logout(settings: &Settings, no_revoke: bool) -> Result<i32> {
 
     store.clear()?;
     println!("removed {}", store.path().display());
+
+    Ok(EXIT_OK)
+}
+
+fn auth_export(
+    settings: &Settings,
+    out: &Path,
+    stdout: bool,
+    force: bool,
+    allow_missing_client_secret: bool,
+) -> Result<i32> {
+    let (config, base, _) = load_config(settings)?;
+    let store = TokenStore::new(config.gmail_token_path(&base));
+
+    let Some(token) = store.load()? else {
+        bail!(
+            "no stored Gmail credentials at {}; run `abmx auth gmail` first",
+            store.path().display()
+        );
+    };
+
+    let client = config.gmail_credentials(&base)?;
+    if client.client_secret.is_none() && !allow_missing_client_secret {
+        bail!(
+            "no Gmail client secret found; set ABMX_GMAIL_CLIENT_SECRET or point \
+             `[fetch.gmail].credentials_file` at Google's OAuth client JSON. \
+             Pass --allow-missing-client-secret for a public OAuth client."
+        );
+    }
+
+    let scopes = if token.scopes.is_empty() {
+        vec![abmx_gmail::auth::SCOPE.to_owned()]
+    } else {
+        token.scopes
+    };
+
+    let bundle = Credentials {
+        client_id: client.client_id,
+        refresh_token: token.refresh_token,
+        scopes,
+        client_secret: client.client_secret,
+    };
+
+    let to_stdout = stdout || out == Path::new("-");
+    if to_stdout {
+        eprintln!(
+            "warning: this bundle contains a refresh token and the OAuth client secret; \
+             do not paste it into logs or commit it"
+        );
+        println!("{}", serde_json::to_string_pretty(&bundle)?);
+    } else {
+        if out.exists() && !force {
+            bail!(
+                "{} already exists; pass --force to overwrite",
+                out.display()
+            );
+        }
+        TokenStore::new(out).save(&bundle)?;
+        println!("exported Gmail credentials to {}", out.display());
+    }
+
+    Ok(EXIT_OK)
+}
+
+fn auth_import(settings: &Settings, file: &Path, force: bool) -> Result<i32> {
+    let (config, base, _) = load_config(settings)?;
+
+    let text = if file == Path::new("-") {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)
+            .context("reading the credential bundle from stdin")?;
+        text
+    } else {
+        std::fs::read_to_string(file)
+            .with_context(|| format!("reading the credential bundle {}", file.display()))?
+    };
+
+    let bundle: Credentials =
+        serde_json::from_str(&text).context("parsing the credential bundle")?;
+
+    if bundle.client_id.trim().is_empty() {
+        bail!("the bundle has no client_id");
+    }
+    if bundle.refresh_token.trim().is_empty() {
+        bail!("the bundle has no refresh_token");
+    }
+
+    let store = TokenStore::new(config.gmail_token_path(&base));
+    if store.path().exists() && !force {
+        bail!(
+            "{} already exists; pass --force to overwrite",
+            store.path().display()
+        );
+    }
+    store.save(&bundle)?;
+
+    println!("imported Gmail credentials to {}", store.path().display());
+    if bundle.client_secret.is_none() {
+        eprintln!(
+            "note: the bundle has no client secret; set ABMX_GMAIL_CLIENT_SECRET or \
+             `[fetch.gmail].client_secret_file`"
+        );
+    }
 
     Ok(EXIT_OK)
 }

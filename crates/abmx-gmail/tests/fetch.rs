@@ -28,6 +28,7 @@ fn fetcher_with_since(
             client_id: "client".into(),
             refresh_token: "refresh".into(),
             scopes: vec![],
+            client_secret: None,
         })
         .unwrap();
 
@@ -116,6 +117,7 @@ fn since_adds_an_after_filter_to_the_query() {
             client_id: "client".into(),
             refresh_token: "refresh".into(),
             scopes: vec![],
+            client_secret: None,
         })
         .unwrap();
 
@@ -264,6 +266,7 @@ fn exceeding_the_cap_is_an_error_not_a_truncation() {
             client_id: "client".into(),
             refresh_token: "refresh".into(),
             scopes: vec![],
+            client_secret: None,
         })
         .unwrap();
 

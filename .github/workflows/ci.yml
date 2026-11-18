@@ -37,3 +37,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Process transport against the real helper
         run: cargo test -p abmx-actual --test process -- --ignored
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Lint the chart
+        run: helm lint charts/abmx -f charts/abmx/ci/minimal-values.yaml
+      - name: Render the chart
+        run: helm template abmx charts/abmx -f charts/abmx/ci/minimal-values.yaml > /dev/null
+      - name: Lint the example config chart
+        run: helm lint examples/abmx-config
+      - name: Render the example config chart
+        run: helm template abmx-config examples/abmx-config --namespace abmx > /dev/null

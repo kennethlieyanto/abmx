@@ -1,0 +1,32 @@
+abmx is installed as a CronJob ({{ .Values.schedule }}).
+
+Before the first run:
+
+1. Provide application config, either:
+   - an existing ConfigMap with a `config.toml` key, referenced by
+     `config.existingConfigMap`, or
+   - `config.data` with the TOML inline.
+   The chart has no defaults for [labels], accounts, or the Actual server.
+
+2. Provide the Gmail credential bundle from `abmx auth export`:
+   kubectl -n {{ .Release.Namespace }} create secret generic abmx-gmail-auth \
+     --from-file=gmail-credentials.json=abmx-gmail-auth.json
+   and point `gmailAuth.existingSecret` at it.
+
+3. Provide Actual credentials and any optional secrets in a Secret referenced
+   by `secrets.existingSecret`. Expected keys include ABMX_ACTUAL_API_KEY (or
+   ABMX_ACTUAL_SERVER_PASSWORD), and optionally
+   ABMX_ACTUAL_BUDGET_PASSWORD.
+
+4. If `parsers.existingConfigMap` is set, its keys must be parser ids and its
+   values the parser's config.toml. With `parsers.mode: replace`, that
+   ConfigMap is the only corpus.
+
+Run a sync now:
+
+  kubectl -n {{ .Release.Namespace }} create job \
+    --from=cronjob/{{ include "abmx.fullname" . }} abmx-manual
+  kubectl -n {{ .Release.Namespace }} logs job/abmx-manual
+
+The first run downloads the Actual budget into the /data volume, so it can take
+longer than later runs. The SQLite state also lives there.

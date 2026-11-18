@@ -311,6 +311,10 @@ directory sees the secrets without exporting them by hand.
 | Actual server password | `ABMX_ACTUAL_SERVER_PASSWORD` | `server_password` / `server_password_file`        |
 | Actual budget password | `ABMX_ACTUAL_BUDGET_PASSWORD` | `budget_password` / `budget_password_file`        |
 
+The Gmail refresh token lives in the token file. For a server or container, use
+`abmx auth export` to write one self-contained bundle (client id, secret, and
+refresh token) and point `[fetch.gmail].token` at it.
+
 `ABMX_ACTUAL_API_KEY` now means **Actual's** budget-scoped key. If your `.env`
 still holds the old `actual-http-api` wrapper key, remove it: the helper will
 reject it as an invalid session token. On Actual builds without API keys, use
@@ -323,6 +327,9 @@ abmx init [--path FILE] [--force]   write a starter config
 abmx setup [--manual] [--review] [--remap]
                                       interactive config, Gmail, labels, accounts
 abmx auth gmail [--manual]          OAuth2 + PKCE; --manual for a headless box
+abmx auth export [--out FILE] [--stdout] [--force]
+                                      write a portable credential bundle
+abmx auth import --file FILE        install an exported bundle locally
 abmx auth logout [--no-revoke]      revoke the refresh token, then remove it locally
 abmx status [--offline] [--strict] [--check] [--json]
                                       full health check; --offline skips network
@@ -465,6 +472,25 @@ process.
 Credentials land in `/run/credentials/abmx.service/<name>`, so the config refers
 to them as `api_key_file = "/run/credentials/abmx.service/actual-api-key"`.
 
+## Kubernetes
+
+`charts/abmx` runs `abmx sync` as a CronJob. It consumes two ConfigMaps — your
+application `config.toml` and (optionally) a parser corpus — plus Secrets for
+credentials, so GitOps changes do not require rebuilding the image.
+
+```bash
+# once, on a machine with a browser
+abmx auth gmail
+abmx auth export --out abmx-gmail-auth.json
+
+# then point the chart at your config and parser ConfigMaps
+helm install abmx charts/abmx -f my-values.yaml
+```
+
+`examples/abmx-config/` is a tiny chart that turns plain `config.toml` and
+`parsers/<id>/config.toml` files in Git into those ConfigMaps. See
+[charts/abmx/README.md](charts/abmx/README.md).
+
 ## Out of scope, by design
 
 - Parsing bank templates in code. Templates are runtime TOML specs.
@@ -492,6 +518,8 @@ crates/abmx-mail/      MIME and HTML normalization
 crates/abmx-parse/     the declarative parser engine
 crates/abmx-parser/    corpus discovery, routing, schema
 parsers/               the bank corpus: <id>/config.toml + <id>/fixtures/
+charts/abmx/           Helm chart: CronJob, config/parser ConfigMaps, PVC
+examples/abmx-config/  config repo template: files → ConfigMaps
 xtask/                 fixture redaction helper
 Dockerfile             abmx + the Node helper in one image
 ```

@@ -30,12 +30,18 @@ pub const SCOPE: &str = "https://www.googleapis.com/auth/gmail.readonly";
 ///
 /// The access token is deliberately *not* persisted: it is short-lived, and
 /// keeping one secret on disk instead of two is a smaller blast radius.
+///
+/// `client_secret` is normally `None`: the attended flow keeps the OAuth client
+/// separate from the refresh token. `abmx auth export` writes a bundle with it
+/// so a server or container can authenticate from one file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Credentials {
     pub client_id: String,
     pub refresh_token: String,
     #[serde(default)]
     pub scopes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -261,6 +267,7 @@ fn authorize_with(config: &OAuthConfig, mode: Mode) -> Result<Credentials, Gmail
             .scope
             .map(|scope| scope.split_whitespace().map(str::to_owned).collect())
             .unwrap_or_else(|| vec![SCOPE.to_owned()]),
+        client_secret: None,
     })
 }
 
@@ -602,6 +609,7 @@ mod tests {
             client_id: "client".into(),
             refresh_token: "refresh".into(),
             scopes: vec![SCOPE.into()],
+            client_secret: None,
         };
         store.save(&credentials).unwrap();
 
@@ -629,6 +637,7 @@ mod tests {
                 client_id: "client".into(),
                 refresh_token: "refresh".into(),
                 scopes: vec![],
+                client_secret: None,
             })
             .unwrap();
 

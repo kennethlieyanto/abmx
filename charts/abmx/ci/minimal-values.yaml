@@ -1,0 +1,24 @@
+# Fixture for `helm lint` / `helm template`. Not a shipped default.
+config:
+  data: |
+    [fetch.gmail]
+    token = "/run/secrets/abmx/gmail-credentials.json"
+
+    [sink.file]
+    path = "/data/ledger.jsonl"
+
+    [labels]
+    prefix = "receipt/"
+
+    [labels.accounts]
+    "test.bank" = "uuid-test"
+
+parsers:
+  existingConfigMap: abmx-parsers
+  mode: replace
+
+gmailAuth:
+  existingSecret: abmx-gmail-auth
+
+secrets:
+  existingSecret: abmx-secrets

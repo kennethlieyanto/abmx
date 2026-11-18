@@ -50,6 +50,7 @@ fn fetcher(server: &MockServer, dir: &Path) -> GmailFetcher {
             client_id: "client".into(),
             refresh_token: "refresh".into(),
             scopes: vec![],
+            client_secret: None,
         })
         .unwrap();
 

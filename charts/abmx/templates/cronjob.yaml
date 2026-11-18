@@ -1,0 +1,185 @@
+{{- $envFrom := .Values.secrets.extraEnvFrom -}}
+{{- if .Values.secrets.existingSecret -}}
+{{- $envFrom = prepend $envFrom (dict "secretRef" (dict "name" .Values.secrets.existingSecret)) -}}
+{{- end -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "abmx.fullname" . }}
+  labels:
+    {{- include "abmx.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.schedule | quote }}
+  {{- if .Values.timeZone }}
+  timeZone: {{ .Values.timeZone | quote }}
+  {{- end }}
+  concurrencyPolicy: {{ .Values.concurrencyPolicy }}
+  suspend: {{ .Values.suspend }}
+  {{- if .Values.startingDeadlineSeconds }}
+  startingDeadlineSeconds: {{ .Values.startingDeadlineSeconds }}
+  {{- end }}
+  successfulJobsHistoryLimit: {{ .Values.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .Values.backoffLimit }}
+      {{- if .Values.activeDeadlineSeconds }}
+      activeDeadlineSeconds: {{ .Values.activeDeadlineSeconds }}
+      {{- end }}
+      {{- if .Values.ttlSecondsAfterFinished }}
+      ttlSecondsAfterFinished: {{ .Values.ttlSecondsAfterFinished }}
+      {{- end }}
+      template:
+        metadata:
+          labels:
+            {{- include "abmx.selectorLabels" . | nindent 12 }}
+            {{- with .Values.podLabels }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.podAnnotations }}
+          annotations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "abmx.serviceAccountName" . }}
+          automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if or .Values.parsers.existingConfigMap .Values.initContainers }}
+          initContainers:
+            {{- if .Values.parsers.existingConfigMap }}
+            - name: assemble-parsers
+              image: {{ printf "%s" .Values.parsers.assembleImage | quote }}
+              imagePullPolicy: {{ .Values.parsers.assemblePullPolicy }}
+              command:
+                - /bin/sh
+                - -c
+              args:
+                - |
+                  set -eu
+                  for f in /config/parsers/*; do
+                    [ -f "$f" ] || continue
+                    id=$(basename "$f")
+                    mkdir -p "/parsers/$id"
+                    cp "$f" "/parsers/$id/config.toml"
+                  done
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+              volumeMounts:
+                - name: parsers-config
+                  mountPath: /config/parsers
+                  readOnly: true
+                - name: parsers
+                  mountPath: /parsers
+            {{- end }}
+            {{- with .Values.initContainers }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          containers:
+            - name: abmx
+              image: {{ include "abmx.image" . | quote }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              {{- with .Values.command }}
+              command:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              args:
+                {{- range .Values.args }}
+                - {{ . | quote }}
+                {{- end }}
+                {{- range .Values.extraArgs }}
+                - {{ . | quote }}
+                {{- end }}
+              env:
+                - name: HOME
+                  value: /data
+                {{- if .Values.parsers.existingConfigMap }}
+                - name: ABMX_PARSERS
+                  value: {{ include "abmx.parserPaths" . | quote }}
+                {{- end }}
+                {{- with .Values.extraEnv }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+              {{- if $envFrom }}
+              envFrom:
+                {{- toYaml $envFrom | nindent 16 }}
+              {{- end }}
+              securityContext:
+                {{- toYaml .Values.securityContext | nindent 16 }}
+              resources:
+                {{- toYaml .Values.resources | nindent 16 }}
+              volumeMounts:
+                - name: config
+                  mountPath: /etc/abmx
+                  readOnly: true
+                - name: data
+                  mountPath: /data
+                - name: tmp
+                  mountPath: /tmp
+                {{- if .Values.parsers.existingConfigMap }}
+                - name: parsers
+                  mountPath: {{ .Values.parsers.mountPath }}
+                  readOnly: true
+                {{- end }}
+                {{- if .Values.gmailAuth.existingSecret }}
+                - name: gmail-auth
+                  mountPath: {{ .Values.gmailAuth.mountPath }}
+                  readOnly: true
+                {{- end }}
+                {{- with .Values.extraVolumeMounts }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+          volumes:
+            - name: config
+              configMap:
+                name: {{ include "abmx.configMapName" . }}
+            - name: data
+              {{- if .Values.persistence.enabled }}
+              persistentVolumeClaim:
+                claimName: {{ include "abmx.pvcName" . }}
+              {{- else }}
+              emptyDir: {}
+              {{- end }}
+            - name: tmp
+              emptyDir: {}
+            {{- if .Values.parsers.existingConfigMap }}
+            - name: parsers-config
+              configMap:
+                name: {{ .Values.parsers.existingConfigMap }}
+            - name: parsers
+              emptyDir: {}
+            {{- end }}
+            {{- if .Values.gmailAuth.existingSecret }}
+            - name: gmail-auth
+              secret:
+                secretName: {{ .Values.gmailAuth.existingSecret }}
+                defaultMode: 0440
+                items:
+                  - key: {{ .Values.gmailAuth.key }}
+                    path: {{ .Values.gmailAuth.fileName }}
+            {{- end }}
+            {{- with .Values.extraVolumes }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}

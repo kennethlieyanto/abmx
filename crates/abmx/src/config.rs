@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use abmx_actual::{ActualConfig, ActualSink, ClearedPolicy, NotesConfig};
 use abmx_core::{AccountMap, Sink};
 use abmx_file::FileSink;
-use abmx_gmail::{GmailConfig, GmailFetcher};
+use abmx_gmail::{GmailConfig, GmailFetcher, TokenStore};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
@@ -306,6 +306,8 @@ impl Config {
     ///
     /// Explicit config wins over `credentials_file`, and the secret follows the
     /// usual env → literal → file precedence so systemd can override everything.
+    /// An exported token bundle (`abmx auth export`) is the last fallback for
+    /// both values, so a container can authenticate from one mounted file.
     pub fn gmail_credentials(&self, base: &Path) -> Result<GmailCredentials> {
         let Some(gmail) = &self.fetch.gmail else {
             bail!("no [fetch.gmail] section in the config");
@@ -318,21 +320,14 @@ impl Config {
             None => None,
         };
 
-        let client_id = gmail
+        let explicit_id = gmail
             .client_id
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-            .or_else(|| from_file.as_ref().map(|client| client.client_id.clone()))
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "[fetch.gmail] needs `credentials_file` (Google's OAuth client JSON) \
-                     or `client_id`"
-                )
-            })?;
+            .map(str::to_owned);
 
-        let client_secret = paths::resolve_secret(
+        let explicit_secret = paths::resolve_secret(
             "ABMX_GMAIL_CLIENT_SECRET",
             gmail.client_secret.as_deref(),
             gmail
@@ -340,8 +335,30 @@ impl Config {
                 .as_ref()
                 .map(|path| paths::resolve_path(base, path))
                 .as_deref(),
-        )?
-        .or_else(|| from_file.and_then(|client| client.client_secret));
+        )?;
+
+        // Only read the token file when it can actually contribute. This keeps
+        // a malformed token from blocking `abmx auth gmail` when the client is
+        // configured explicitly.
+        let bundle = if explicit_id.is_none() || explicit_secret.is_none() {
+            TokenStore::new(self.gmail_token_path(base)).load()?
+        } else {
+            None
+        };
+
+        let client_id = explicit_id
+            .or_else(|| from_file.as_ref().map(|client| client.client_id.clone()))
+            .or_else(|| bundle.as_ref().map(|bundle| bundle.client_id.clone()))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "[fetch.gmail] needs `credentials_file` (Google's OAuth client JSON), \
+                     `client_id`, or an exported token bundle (abmx auth export)"
+                )
+            })?;
+
+        let client_secret = explicit_secret
+            .or_else(|| from_file.and_then(|client| client.client_secret))
+            .or_else(|| bundle.and_then(|bundle| bundle.client_secret));
 
         Ok(GmailCredentials {
             client_id,

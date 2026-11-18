@@ -98,8 +98,25 @@ For every accepted label it offers the open accounts and writes:
 "example.card_debit" = "<actual account uuid>"
 ```
 
-A parser does not have to exist yet. If it is missing, `abmx author` is the next
-step after setup.
+A parser does not have to exist yet. The next step is `abmx samples` plus the
+authoring skill below.
+
+## Author a parser with AI
+
+```bash
+abmx samples
+mkdir -p ~/.agents/skills/abmx && abmx skill > ~/.agents/skills/abmx/SKILL.md
+```
+
+Then prompt your agent:
+
+```
+help me create parser for all my transaction email, use abmx parser authoring skill
+```
+
+`abmx samples` writes up to three messages per managed label to
+`$XDG_CONFIG_HOME/abmx/samples/<parser-id>/` and never requires a parser.
+Fewer than three samples is a warning; the agent should stay conservative.
 
 ## Secrets
 
@@ -131,8 +148,8 @@ still an error — that is drift, not an absence of a decision.
 ## After setup
 
 ```bash
-abmx author                     # if a mapped label has no parser yet
-abmx sync --dry-run             # inspect the plan
+abmx samples                    # download evidence for the mapped labels
+abmx sync --dry-run             # inspect the plan once parsers exist
 abmx status --online            # config, labels, accounts, auth, Gmail inventory
 abmx sync                       # import
 ```

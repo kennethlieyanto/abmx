@@ -96,9 +96,9 @@ check-parser id:
 # authoring a parser
 # ---------------------------------------------------------------------------
 
-# Inventory abmx:* labels and emit an authoring prompt on stdout.
-author *args:
-    cargo run -q -p abmx -- author {{args}}
+# Download up to three sample emails per managed label.
+samples *args:
+    cargo run -q -p abmx -- samples {{args}}
 
 # Rewrite real emails into publishable fixtures (needs redact.toml, gitignored).
 # Copy the output into parsers/<id>/fixtures/ afterwards.

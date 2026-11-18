@@ -162,7 +162,7 @@ impl GmailFetcher {
         self.message_ids(&id)
     }
 
-    /// The newest `limit` messages under a label name, for `abmx author`.
+    /// The newest `limit` messages under a label name, for `abmx samples`.
     pub fn sample_label(
         &self,
         label_name: &str,

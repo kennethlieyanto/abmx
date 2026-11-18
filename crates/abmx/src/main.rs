@@ -97,23 +97,20 @@ enum Command {
         json: bool,
     },
 
-    /// Inventory routed labels and emit an authoring prompt without a parser.
-    Author {
-        /// Offline bootstrap from a file or directory of `.eml` samples.
-        #[arg(long, value_name = "DIR|FILE")]
-        input: Option<PathBuf>,
-        /// Restrict the scan to one routed label.
-        #[arg(long, value_name = "LABEL")]
+    /// Download the newest messages for each managed label (parser evidence).
+    Samples {
+        /// Restrict to one Gmail label name or parser id.
+        #[arg(long, value_name = "LABEL|PARSER")]
         label: Option<String>,
-        /// How many of the newest samples to inspect per label.
+        /// How many of the newest messages to download per label.
         #[arg(long, default_value_t = 3, value_name = "N")]
         samples: usize,
-        /// Machine-readable output.
+        /// Output directory. Defaults to $XDG_CONFIG_HOME/abmx/samples.
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+        /// Machine-readable manifest.
         #[arg(long)]
         json: bool,
-        /// Write the prompt to a file instead of stdout.
-        #[arg(long, value_name = "FILE")]
-        out: Option<PathBuf>,
     },
 
     /// Fetch, parse, and write the ledger. The timer entrypoint.
@@ -258,23 +255,12 @@ fn run(cli: Cli) -> Result<i32> {
             check,
             json,
         } => status(&settings, online, strict, check, json),
-        Command::Author {
-            input,
+        Command::Samples {
             label,
             samples,
-            json,
             out,
-        } => run_author(
-            &settings,
-            author::Options {
-                samples,
-                label,
-                input,
-                quiet: settings.quiet,
-            },
             json,
-            out.as_deref(),
-        ),
+        } => run_samples(&settings, label, samples, out, json),
         Command::Sync {
             from_dir,
             label,
@@ -310,10 +296,12 @@ fn build_runner(config: &Config, base: &Path) -> Result<Runner> {
             | abmx_parser::Error::EmptyCorpus { .. }
             | abmx_parser::Error::Parse(abmx_parse::Error::NoParsers { .. }) => anyhow::anyhow!(
                 "no parsers installed — nothing can be parsed yet.\n\n\
-             bootstrap with one of:\n  \
-             abmx author                  inventory labels and author parsers\n  \
-             abmx author --input <dir>    from saved .eml files\n  \
-             just install-parsers         copy this checkout's corpus into ~/.config/abmx"
+             download samples and ask an agent to author one:\n  \
+             abmx samples\n  \
+             mkdir -p ~/.agents/skills/abmx && abmx skill > ~/.agents/skills/abmx/SKILL.md\n  \
+             then: \"help me create parser for all my transaction email, use abmx parser authoring skill\"\n\n\
+             or install this checkout's corpus:\n  \
+             just install-parsers"
             ),
             other => anyhow::anyhow!(
                 "loading the parser corpus: {other}\n  \
@@ -947,7 +935,7 @@ fn status(settings: &Settings, online: bool, strict: bool, check: bool, json: bo
                             strict_section.hint(
                                 Status::Fail,
                                 format!("{}: {}", report.label, report.status.as_str()),
-                                format!("run `abmx author --label {}`", report.label),
+                                format!("run `abmx samples --label {}`", report.label),
                             );
                         }
                     }
@@ -1028,10 +1016,10 @@ fn require_parsers(runner: &Runner) -> Result<()> {
     if runner.parser.registry().parsers.is_empty() {
         bail!(
             "no parsers installed — nothing can be parsed yet.\n\n\
-             bootstrap with one of:\n  \
-             abmx author                  inventory labels and author parsers\n  \
-             abmx author --input <dir>    from saved .eml files\n  \
-             abmx skill                   print the authoring skill"
+             download samples and ask an agent to author one:\n  \
+             abmx samples\n  \
+             mkdir -p ~/.agents/skills/abmx && abmx skill > ~/.agents/skills/abmx/SKILL.md\n  \
+             then: \"help me create parser for all my transaction email, use abmx parser authoring skill\""
         );
     }
     Ok(())
@@ -1302,131 +1290,61 @@ fn accounts(settings: &Settings, json: bool) -> Result<i32> {
     Ok(EXIT_OK)
 }
 
-fn load_optional_config(settings: &Settings) -> Result<(Option<Config>, Option<PathBuf>, PathBuf)> {
-    if let Some(path) = &settings.config {
-        let config = Config::load(path)?;
-        return Ok((Some(config), Some(path.clone()), Config::base_dir(path)));
-    }
-
-    match paths::config_path(None) {
-        Ok(path) => {
-            let config = Config::load(&path)?;
-            let base = Config::base_dir(&path);
-            Ok((Some(config), Some(path), base))
-        }
-        Err(error) => {
-            if std::env::var_os("ABMX_CONFIG").is_some() {
-                Err(error)
-            } else {
-                Ok((None, None, std::env::current_dir()?))
-            }
-        }
-    }
-}
-
-fn run_author(
+fn run_samples(
     settings: &Settings,
-    options: author::Options,
+    label: Option<String>,
+    count: usize,
+    out: Option<PathBuf>,
     json: bool,
-    out: Option<&Path>,
 ) -> Result<i32> {
-    let (config, config_path, base) = load_optional_config(settings)?;
-    let config = config.unwrap_or_default();
-
-    let parser_options = config.parser_options(&base);
-    let discovery = abmx_parser::discover(&parser_options);
-    let corpus = discovery
-        .dirs
-        .first()
-        .cloned()
-        .unwrap_or_else(paths::default_parsers_dir);
-
-    let parser = match abmx_parser::Parser::load(&parser_options) {
-        Ok((parser, _)) => Some(parser),
-        Err(
-            abmx_parser::Error::NoCorpus { .. }
-            | abmx_parser::Error::EmptyCorpus { .. }
-            | abmx_parser::Error::Parse(abmx_parse::Error::NoParsers { .. }),
-        ) => None,
-        Err(error) => {
-            eprintln!("abmx: warning: {error}");
-            None
-        }
-    };
-    let summaries = parser
-        .as_ref()
-        .map(|parser| parser.registry().summaries())
-        .unwrap_or_default();
-
-    let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
-    let work_dir = paths::xdg_state_dir().join("abmx/author").join(timestamp);
-    std::fs::create_dir_all(&work_dir)
-        .with_context(|| format!("creating {}", work_dir.display()))?;
-    if let Err(error) = restrict_permissions(&work_dir, 0o700) {
-        eprintln!("warning: {error}");
+    let (config, base, _) = load_config(settings)?;
+    config.validate_labels()?;
+    if config.labels.accounts.is_empty() {
+        bail!("no [labels.accounts] entries; run `abmx setup` to choose which labels to import");
     }
 
-    let context = author::Context {
-        config_path: config_path.as_deref(),
-        corpus: &corpus,
-        work_dir: &work_dir,
-        summaries: &summaries,
-        prefix: &config.labels.prefix,
-    };
-
-    let inventory = if let Some(input) = &options.input {
-        author::scan_input(input, parser.as_ref(), &config.labels, &options, &work_dir)?
-    } else {
-        let fetcher = config
-            .build_gmail(&base)
-            .context("Gmail authoring needs [fetch.gmail]; use --input for saved .eml files")?;
-        author::scan_gmail(
-            &fetcher,
-            parser.as_ref(),
-            &config.labels,
-            &options,
-            &work_dir,
-        )?
-    };
-
-    if !settings.quiet {
-        eprint!("{}", author::summary(&inventory));
-    }
+    let fetcher = config
+        .build_gmail(&base)
+        .context("Gmail is not authorized; run `abmx setup` or `abmx auth gmail`")?;
+    let report = abmx::samples::download(
+        &config,
+        &fetcher,
+        &abmx::samples::Options {
+            out,
+            samples: count,
+            label,
+        },
+    )?;
 
     if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(EXIT_OK);
+    }
+
+    println!(
+        "samples: {} label(s) -> {}",
+        report.labels.len(),
+        report.output.display()
+    );
+    for label in &report.labels {
         println!(
-            "{}",
-            serde_json::to_string_pretty(&author::render_json(&inventory))?
+            "  {:<32} {:>2}/{:<2}",
+            label.label, label.downloaded, label.requested
         );
-    } else {
-        let prompt = author::render(&context, &inventory);
-        match out {
-            Some(path) => {
-                std::fs::write(path, prompt)
-                    .with_context(|| format!("writing {}", path.display()))?;
-                eprintln!("prompt: {}", path.display());
-            }
-            None => print!("{prompt}"),
+    }
+
+    for warning in &report.warnings {
+        eprintln!("warning: {warning}");
+    }
+    for label in &report.labels {
+        for warning in &label.warnings {
+            eprintln!("warning: {}: {warning}", label.label);
         }
     }
 
-    Ok(if inventory.needs_work() > 0 {
-        EXIT_FAILED
-    } else {
-        EXIT_OK
-    })
-}
-
-fn restrict_permissions(path: &Path, mode: u32) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let permissions = std::fs::Permissions::from_mode(mode);
-    std::fs::set_permissions(path, permissions)
-        .with_context(|| format!("setting permissions on {}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn restrict_permissions(_path: &Path, _mode: u32) -> Result<()> {
-    Ok(())
+    println!();
+    println!("next: author the parsers from these samples; see `abmx skill`");
+    Ok(EXIT_OK)
 }
 
 fn dump(path: &Path, json: bool) -> Result<i32> {
@@ -1498,7 +1416,7 @@ fn summarize_plan(plan: &Plan, quiet: bool, verbose: bool, persisted: bool) {
             .map(|entry| entry.label.as_str())
             .collect();
         for label in labels {
-            eprintln!("  next: abmx author --label {label}");
+            eprintln!("  next: abmx samples --label {label}");
         }
 
         if persisted {

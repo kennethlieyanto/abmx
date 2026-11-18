@@ -22,6 +22,7 @@ pub mod gmail_auth;
 pub mod labels;
 pub mod paths;
 pub mod runner;
+pub mod samples;
 pub mod setup;
 pub mod state;
 

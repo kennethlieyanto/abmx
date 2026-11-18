@@ -62,7 +62,7 @@ impl FromIterator<(String, String)> for AccountMap {
 /// Why a labeled message was **not** imported.
 ///
 /// These are defects in the parser or the Gmail rule, never per-row judgement
-/// calls: the fix is always `abmx author --label …`, a `[labels.accounts]`
+/// calls: the fix is always `abmx samples --label …`, a `[labels.accounts]`
 /// entry, or a gmailctl rule. Nothing is ever "approved" by a human.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]

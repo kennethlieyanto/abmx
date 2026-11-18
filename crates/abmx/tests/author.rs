@@ -1,4 +1,4 @@
-//! `abmx author`: label inventory and the last-three evidence. Read-only.
+//! Live label inventory used by `abmx status --strict`. Read-only.
 
 use std::path::Path;
 
@@ -77,15 +77,7 @@ fn scan_takes_the_last_three_and_reports_missing_mapping() {
     );
 
     let fetcher = fetcher(&server, dir.path());
-    let corpus = dir.path().join("corpus");
     let options = author::Options::default();
-    let context = author::Context {
-        config_path: None,
-        corpus: &corpus,
-        work_dir: dir.path(),
-        summaries: &[],
-        prefix: "receipt/",
-    };
 
     let labels = LabelsSection::default();
     let inventory = author::scan_gmail(&fetcher, None, &labels, &options, dir.path()).unwrap();
@@ -96,12 +88,6 @@ fn scan_takes_the_last_three_and_reports_missing_mapping() {
     assert_eq!(report.status, LabelStatus::MissingAccount);
     assert_eq!(report.samples.len(), 3);
     assert_eq!(report.messages, 3);
-
-    let prompt = author::render(&context, &inventory);
-    assert!(prompt.contains("receipt/example-qris"));
-    assert!(prompt.contains("missing_account"));
-    assert!(prompt.contains("Rp 27.500"));
-    assert!(prompt.contains("One label maps to one parser"));
 }
 
 #[test]

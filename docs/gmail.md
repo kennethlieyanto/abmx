@@ -146,14 +146,15 @@ Labels are the routing identity, not a hint. The user applies exactly one
 `[labels.accounts]` maps the parser id to a ledger account.
 
 ```bash
-abmx author --label receipt/example-qris
+abmx samples --label receipt/example-qris
 ```
 
-`abmx author` takes the newest three messages under the label, writes them under
-`~/.local/state/abmx/author/<timestamp>/<label>/` with `0600` permissions, and
-emits block dumps plus a variance table. It never touches the state database.
-If the three samples are different templates the label is reported as
-`mixed_shapes`; fix the label/filter instead of splitting the parser.
+`abmx samples` downloads up to three messages per managed label into
+`$XDG_CONFIG_HOME/abmx/samples/<parser-id>/` with `0600` permissions and writes
+`manifest.json`. It never parses, never needs a parser, and never touches the
+state database. Fewer than three samples is a warning; if the samples are
+different templates the label is reported as `mixed_shapes`; fix the
+label/filter instead of splitting the parser.
 
 See [authoring.md](authoring.md) for the full loop.
 

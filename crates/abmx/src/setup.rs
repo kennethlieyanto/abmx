@@ -667,10 +667,25 @@ fn summary(path: &Path, config: &Config) -> Result<()> {
     if config.labels.accounts.is_empty() {
         lines.push("        nothing is imported until a label is mapped".to_owned());
     } else {
-        lines.push("        next: `abmx author`, then `abmx sync --dry-run`".to_owned());
+        lines.push(format!(
+            "        samples go to {}",
+            paths::xdg_config_dir().join("abmx/samples").display()
+        ));
     }
 
     note("Summary", lines.join("\n"))?;
+
+    if !config.labels.accounts.is_empty() {
+        note(
+            "Author a parser with AI",
+            "1. abmx samples\n\
+             2. mkdir -p ~/.agents/skills/abmx && abmx skill > ~/.agents/skills/abmx/SKILL.md\n\
+             3. prompt your agent:\n\
+                \"help me create parser for all my transaction email, use abmx parser authoring skill\"\n\
+             4. abmx sync --dry-run",
+        )?;
+    }
+
     Ok(())
 }
 

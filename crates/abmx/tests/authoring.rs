@@ -99,25 +99,20 @@ fn verify_requires_a_parser_id() {
 }
 
 #[test]
-fn skills_install_and_refuse_to_clobber_edits() {
-    let dir = tempfile::tempdir().unwrap();
-    let written = authoring::skill::write_skills(dir.path(), false).unwrap();
-    assert_eq!(written.len(), 5);
-
-    let skill = dir.path().join("abmx-parser-authoring/SKILL.md");
-    let text = std::fs::read_to_string(&skill).unwrap();
+fn the_authoring_skill_is_one_self_contained_document() {
+    let text = authoring::skill::render_authoring().unwrap();
     assert!(text.starts_with("---\nname: abmx parser authoring"));
     assert!(text.contains("description:"));
-    assert!(text.contains("spec-reference.md"));
-
-    // Re-running is idempotent.
-    authoring::skill::write_skills(dir.path(), false).unwrap();
-
-    // A local edit is preserved unless --force is passed.
-    std::fs::write(&skill, "edited").unwrap();
-    assert!(authoring::skill::write_skills(dir.path(), false).is_err());
-    authoring::skill::write_skills(dir.path(), true).unwrap();
-    assert!(std::fs::read_to_string(&skill).unwrap().starts_with("---"));
+    assert!(text.contains("abmx samples"));
+    assert!(text.contains("samples/<parser-id>"));
+    assert!(text.contains("# bank parser spec reference"));
+    assert!(text.contains("## Verifying a parser"));
+    assert!(text.contains("# Parser authoring pitfalls"));
+    assert!(text.contains("[labels.accounts]"));
+    assert!(
+        !text.contains("references/"),
+        "the skill must not link references"
+    );
 }
 
 #[test]

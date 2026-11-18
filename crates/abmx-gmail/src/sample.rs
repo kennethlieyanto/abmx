@@ -20,7 +20,7 @@ pub struct SampleMessage {
 impl GmailClient {
     /// List up to `limit` messages carrying `label` and fetch their raw bytes.
     ///
-    /// Spam and trash are excluded so an authoring prompt is not polluted by
+    /// Spam and trash are excluded so a sample set is not polluted by
     /// filtered mail. Label names are matched by Gmail's search syntax, which
     /// understands nested labels such as `Bank/example/QRIS`.
     pub fn sample_label(

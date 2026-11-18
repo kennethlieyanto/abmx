@@ -23,7 +23,7 @@ date                 amount label                        counterparty
 
 broken (2), not imported:
   receipt/example.journal_va   parse_failed   amount: no value matched
-  next: abmx author --label receipt/example.journal_va
+  next: abmx samples --label receipt/example.journal_va
   nothing was written to the ledger
 
 applied: added 0, updated 0, skipped 0, errors 0
@@ -106,26 +106,31 @@ promos to `Newsletter`, merchant receipts to plain `receipt`, statements to
 (`receipt/` by default), ignores the plain `receipt` label, and imports only the
 parser ids mapped in `[labels.accounts]`.
 
-`abmx status` says what is missing. When a routed label has no parser,
-`abmx author` packages the newest three messages into a prompt:
+`abmx status` says what is missing. To author a parser, download real evidence
+first:
 
 ```bash
-opencode run --auto "$(abmx author)"
+abmx samples        # up to 3 newest messages per managed label
+```
+
+Then install the authoring skill once and point your agent at it:
+
+```bash
+mkdir -p ~/.agents/skills/abmx && abmx skill > ~/.agents/skills/abmx/SKILL.md
 ```
 
 ```
-1 label(s), 3 sample(s); 1 need work
-  receipt/example-qris      missing_parser      3  -
+help me create parser for all my transaction email, use abmx parser authoring skill
 ```
 
-The agent writes the parser straight into `~/.config/abmx/parsers/<id>/` with
-its fixtures, verifies it with `abmx parser check --parser <id>`, and updates
-`[labels.accounts]` after asking which account it belongs to.
+The agent writes the parser into `~/.config/abmx/parsers/<id>/` with its
+fixtures and verifies it with `abmx parser check --parser <id>`.
 
-Already have `.eml` files? `abmx author --input <dir> --label receipt/<id>`
-does the same offline. Then put `abmx sync` on a timer (see the NixOS module
-below): `sync` only fetches mapped labels, so unmanaged ones are left alone
-rather than aborting the run.
+Already have `.eml` files? Put them under
+`~/.config/abmx/samples/<parser-id>/` and ask the agent to author from those.
+Then put `abmx sync` on a timer (see the NixOS module below): `sync` only
+fetches mapped labels, so unmanaged ones are left alone rather than aborting the
+run.
 
 ### You need
 
@@ -135,10 +140,10 @@ rather than aborting the run.
    [`actual-http-api`](https://github.com/jhonderson/actual-http-api) on `:5007`.
    From a checkout: `cp .env.example .env`, fill in the Actual password and API
    key, then `just actual-api`. See [docs/actual.md](docs/actual.md).
-3. **Parsers** — nothing to install. `abmx author` creates them under
-   `~/.config/abmx/parsers/<id>/` (`config.toml` plus `fixtures/`). If you
-   already have a corpus (this repository ships one), point at it with
-   `--parsers`, `$ABMX_PARSERS`, or `[general].parsers`, or run
+3. **Parsers** — nothing to install. `abmx samples` downloads evidence and an
+   agent writes parsers under `~/.config/abmx/parsers/<id>/` (`config.toml`
+   plus `fixtures/`). If you already have a corpus (this repository ships one),
+   point at it with `--parsers`, `$ABMX_PARSERS`, or `[general].parsers`, or run
    `just install-parsers`.
 
 ## Why mail, not statements?
@@ -167,36 +172,39 @@ Parsers are runtime data: a `config.toml` per template, addressed by the parser
 id in the label. gmailctl routes; `abmx` parses. The spec format is in
 [docs/parsing.md](docs/parsing.md).
 
-`abmx author`:
+`abmx samples` downloads the newest three messages for every label in
+`[labels.accounts]` into `$XDG_CONFIG_HOME/abmx/samples/<parser-id>/`, along
+with a `manifest.json`. It never parses and never needs a parser. A label with
+fewer than three messages is a warning; the agent should stay conservative.
 
-- inventories every label under `[labels].prefix` and reports
-  `missing_parser`, `missing_account`, `parse_failed`, `mixed_shapes`,
-  `insufficient_samples`, `empty`, `ignored`, or `orphan_account`;
-- samples the newest three messages per label, honouring `[labels].since`;
-- writes one representative `.eml` per label under
-  `~/.local/state/abmx/author/<timestamp>/`;
-- emits a prompt with block dumps and a variance table.
-
-Options: `--label <label>` restricts it to one route, `--samples N` changes the
-evidence depth, `--input <dir>` works offline, `--json` emits the bundle, and
-`--out FILE` writes the prompt instead of stdout.
+Options: `--label <label|parser-id>` restricts the download, `--samples N`
+changes the count, `--out DIR` changes the directory, and `--json` prints the
+manifest.
 
 ### The verification loop
 
 `abmx parser check --parser <id>` verifies the parser against its colocated
 fixtures. A spec is done when every sample is `strict`, non-zero, and not
-`failed`. `abmx status --strict` samples the live newest three under every
-routed label and reports the same statuses.
+`failed`. `abmx status --strict` samples live mail for managed labels and reports
+the same statuses.
 
-If the samples under one label do not share a label skeleton, `author` reports
-`mixed_shapes` and tells the agent to fix the gmailctl rule rather than write a
-parser for two templates.
+If the samples under one label do not share a label skeleton, the label is
+mislabeled. Fix the gmailctl rule; do not write one parser for two templates.
 
 ### Reusable skill
 
-`abmx skill` prints the authoring skill to stdout. Save it under your agent's
-skills directory once; after that the prompt is simply "author the parsers for
-these emails".
+`abmx skill` prints one self-contained `SKILL.md` to stdout. Install it once:
+
+```bash
+mkdir -p ~/.agents/skills/abmx
+abmx skill > ~/.agents/skills/abmx/SKILL.md
+```
+
+After that, the prompt is simply:
+
+```
+help me create parser for all my transaction email, use abmx parser authoring skill
+```
 
 ## The four primitives
 
@@ -299,8 +307,8 @@ abmx auth gmail [--manual]          OAuth2 + PKCE; --manual for a headless box
 abmx auth logout [--no-revoke]      revoke the refresh token, then remove it locally
 abmx status [--online] [--strict] [--check] [--json]
                                       config, corpus, labels, accounts, state, sink, auth
-abmx author [--label L] [--samples N] [--input DIR] [--json] [--out FILE]
-                                      inventory routed labels and emit an authoring prompt
+abmx samples [--label L|PARSER] [--samples N] [--out DIR] [--json]
+                                      download sample emails for parser authoring
 abmx sync [--dry-run] [--json] [--diff] [--from-dir DIR] [--label L] [--limit N]
                                       fetch, parse, and write the ledger
 abmx reset [--purge] [--yes]        forget delivered messages

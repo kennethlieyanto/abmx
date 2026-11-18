@@ -179,6 +179,10 @@ impl Sink for ActualSink {
         true
     }
 
+    fn preview_notes(&self, transaction: &abmx_core::Transaction) -> Option<String> {
+        crate::convert::notes(transaction, &self.notes)
+    }
+
     fn accounts(&self) -> Result<Vec<SinkAccount>> {
         let url = self.url("/accounts");
         let response = self

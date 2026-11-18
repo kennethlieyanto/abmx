@@ -57,6 +57,24 @@ fn sink(server: &MockServer) -> ActualSink {
 }
 
 #[test]
+fn dry_run_previews_the_configured_notes() {
+    let server = MockServer::start();
+    let mut item = row("one", -1000);
+    item.transaction.description = Some("QRIS payment".into());
+
+    let actual = sink(&server);
+    assert_eq!(
+        actual.preview_notes(&item.transaction).as_deref(),
+        Some("QRIS payment")
+    );
+
+    let mut config = ActualConfig::new(server.url(), "secret-key", "sync-id");
+    config.cleared = ClearedPolicy::Never;
+    let no_notes = ActualSink::new(config, NotesConfig { fields: Vec::new() }).unwrap();
+    assert_eq!(no_notes.preview_notes(&item.transaction), None);
+}
+
+#[test]
 fn accounts_are_read_from_the_wrapper() {
     let server = MockServer::start();
     server.route(

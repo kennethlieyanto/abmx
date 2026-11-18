@@ -105,6 +105,13 @@ pub trait Sink {
     /// an error: a sink that imported 49 of 50 rows should say so.
     fn apply(&self, rows: &[ImportRow], options: &ApplyOptions) -> Result<Report>;
 
+    /// Sink-specific prose for `sync --dry-run`, such as Actual's `notes`.
+    /// Must be cheap and side-effect free. `None` means the sink has no
+    /// preview for this transaction.
+    fn preview_notes(&self, _transaction: &crate::Transaction) -> Option<String> {
+        None
+    }
+
     /// Read back what the ledger already holds for these accounts and dates.
     ///
     /// Read-only by contract: `abmx diff` calls this and must never be able

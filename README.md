@@ -16,9 +16,9 @@ Gmail (routed labels) ──► abmx ──► parser corpus ──► classify 
 $ abmx sync
 fetched 15, parsed 15 — import 13, broken 2, unmatched 0, failed 0
 
-date                 amount label                        counterparty
-2026-11-12     -128,000 IDR receipt/example.card_debit  EXAMPLE PAYEE
-2026-11-11     -124,300 IDR receipt/example.card_debit  EXAMPLE MERCHANT
+date                 amount label                        counterparty          notes
+2026-11-12     -128,000 IDR receipt/example.card_debit  EXAMPLE PAYEE      -
+2026-11-11     -124,300 IDR receipt/example.card_debit  EXAMPLE MERCHANT   -
 ...
 
 broken (2), not imported:

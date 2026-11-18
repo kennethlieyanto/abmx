@@ -8,7 +8,7 @@ use abmx::labels;
 use abmx::paths;
 use abmx::state::State;
 use abmx::Runner;
-use abmx_core::{ApplyOptions, FetchRequest, Fetcher, LedgerMatch, Plan, Report};
+use abmx_core::{ApplyOptions, FetchRequest, Fetcher, LedgerMatch, Plan, Report, Sink};
 use abmx_gmail::{revoke_refresh_token, TokenStore, REVOKE_URL};
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -1138,10 +1138,29 @@ fn sync(
     };
     let plan = runner.plan(fetcher.as_ref(), request)?;
 
+    // A dry run previews the sink's prose (Actual notes).
+    // Building a sink is side-effect free, but a broken sink must not turn a
+    // plain dry run into an error; a real sync still requires it.
+    let sink = if dry_run {
+        if json {
+            None
+        } else {
+            config.build_sink(&base).ok()
+        }
+    } else {
+        Some(config.build_sink(&base)?)
+    };
+
     if json {
         println!("{}", serde_json::to_string_pretty(&plan)?);
     } else {
-        summarize_plan(&plan, settings.quiet, settings.verbose, !dry_run);
+        summarize_plan(
+            &plan,
+            settings.quiet,
+            settings.verbose,
+            !dry_run,
+            sink.as_deref(),
+        );
     }
 
     if dry_run {
@@ -1163,7 +1182,7 @@ fn sync(
         return Ok(EXIT_FAILED);
     }
 
-    let sink = config.build_sink(&base)?;
+    let sink = sink.expect("a real sync builds the sink");
     let options = apply_options(&config, dry_run);
     let report = runner.apply(sink.as_ref(), &plan, &options)?;
 
@@ -1455,7 +1474,13 @@ fn dump(path: &Path, json: bool) -> Result<i32> {
 
 const UNMATCHED_PREVIEW: usize = 10;
 
-fn summarize_plan(plan: &Plan, quiet: bool, verbose: bool, persisted: bool) {
+fn summarize_plan(
+    plan: &Plan,
+    quiet: bool,
+    verbose: bool,
+    persisted: bool,
+    sink: Option<&dyn Sink>,
+) {
     let delivered = if plan.stats.skipped > 0 {
         format!(" ({} already delivered)", plan.stats.skipped)
     } else {
@@ -1478,17 +1503,21 @@ fn summarize_plan(plan: &Plan, quiet: bool, verbose: bool, persisted: bool) {
     if !quiet && !plan.rows.is_empty() {
         eprintln!();
         eprintln!(
-            "{:<10} {:>16} {:<28} counterparty",
-            "date", "amount", "label"
+            "{:<10} {:>16} {:<28} {:<40} notes",
+            "date", "amount", "label", "counterparty"
         );
         for row in &plan.rows {
             let transaction = &row.transaction;
+            let notes = sink
+                .and_then(|sink| sink.preview_notes(transaction))
+                .unwrap_or_else(|| "-".to_owned());
             let mut line = format!(
-                "{:<10} {:>16} {:<28} {}",
+                "{:<10} {:>16} {:<28} {:<40} {}",
                 transaction.occurred_on,
                 format_amount(transaction),
                 truncate(&row.account_key, 28),
                 truncate(transaction.counterparty.as_deref().unwrap_or("-"), 40),
+                truncate(&notes, 40),
             );
             if verbose {
                 line.push_str(&format!("  · {} · {}", transaction.parser, row.message));

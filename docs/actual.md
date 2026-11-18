@@ -141,6 +141,9 @@ a restart.
 disable notes entirely, or add fields such as `reference_id`, `channel`, or
 `parser` if you want them.
 
+`abmx sync --dry-run` previews the notes in its table (a `-` means the import
+will omit the `notes` key).
+
 Five decisions worth knowing:
 
 ### `amount` is value × 100 — for every currency

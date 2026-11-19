@@ -1,0 +1,26 @@
+{
+    "name": "abmx-website",
+    "version": "0.1.0",
+    "description": "The abmx website and documentation",
+    "type": "module",
+    "private": true,
+    "license": "MIT",
+    "scripts": {
+        "dev": "astro dev --host 0.0.0.0",
+        "build": "astro build",
+        "preview": "astro preview",
+        "check": "astro check",
+        "compiler:wasi": "bash scripts/use-wasi-compiler.sh"
+    },
+    "dependencies": {
+        "@astrojs/markdown-satteri": "^0.4.10",
+        "@astrojs/sitemap": "^3.7.6",
+        "@astrojs/starlight": "^0.43.1",
+        "astro": "^7.4.13",
+        "starlight-links-validator": "^0.27.0"
+    },
+    "devDependencies": {
+        "@astrojs/check": "^0.9.6",
+        "typescript": "^6.0.3"
+    }
+}

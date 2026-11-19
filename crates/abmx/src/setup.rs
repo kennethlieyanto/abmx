@@ -291,7 +291,7 @@ fn step_gmail(path: &Path, doc: &mut ConfigDocument, options: &Options) -> Resul
              3. OAuth consent screen: External, then add yourself as a test user.\n\
              4. Credentials -> Create credentials -> OAuth client ID -> Desktop app.\n\
              5. Download the JSON file.\n\n\
-             Details: docs/gmail.md",
+             Details: https://kennethlieyanto.github.io/abmx/guides/gmail/",
         )?;
 
         let configure = confirm("Point abmx at the downloaded OAuth client JSON now?")
@@ -418,7 +418,7 @@ fn step_labels(
                  gmailctl owns the classification. Add a rule under\n  \
                  ~/.gmailctl/config.jsonnet\n\
                  then run `gmailctl apply` and `abmx setup` again.\n\n\
-                 See docs/gmail.md.",
+                 See https://kennethlieyanto.github.io/abmx/guides/gmail/.",
                 config.labels.prefix, config.labels.prefix, config.labels.prefix
             ),
         )?;
@@ -513,7 +513,7 @@ fn step_accounts(
                 "abmx drives Actual's official Node client through a bundled helper.\n\n\
                  Have your Actual server URL, a budget-scoped API key (Settings →\n\
                  General → Security → API keys), and the budget's sync id ready.\n\
-                 Details: docs/actual.md.",
+                 Details: https://kennethlieyanto.github.io/abmx/guides/actual/.",
             )?;
 
             let configure = confirm("Configure Actual now?")

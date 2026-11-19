@@ -103,7 +103,7 @@
 
             meta = {
               description = "Sync bank transaction emails into an Actual Budget ledger";
-              homepage = "https://github.com/kennethlieyanto/actual-gmail-tx-sync";
+              homepage = "https://github.com/kennethlieyanto/abmx";
               license = pkgs.lib.licenses.mit;
               mainProgram = "abmx";
             };

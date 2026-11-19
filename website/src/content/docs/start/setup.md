@@ -1,4 +1,7 @@
-# Setup
+---
+title: Setup
+description: What abmx setup asks, what it writes, and when to rerun it.
+---
 
 `abmx setup` is the attended quickstart. It walks through the pieces that must be
 true before `abmx sync` can import anything:
@@ -33,7 +36,7 @@ If no config resolves, it offers to write the starter template to
 
 Setup asks for the Gmail label prefix:
 
-```
+```text
 Discovery rule
 labels starting with this prefix are discovered; the rest becomes the parser id
 
@@ -45,14 +48,15 @@ Gmail label prefix › receipt/
 - Matching is case-insensitive, so `Receipt/example.card_debit` is found by
   `receipt/`.
 - The rest of the label must be a parser id: `receipt/example.card_debit` becomes
-  `example.card_debit`. Nested labels such as `receipt/2026/example` are not parser ids.
+  `example.card_debit`. Nested labels such as `receipt/2026/example` are not
+  parser ids.
 - The value is saved to `[labels].prefix`.
 
 ### 3. History window
 
 Setup asks how far back to fetch:
 
-```
+```text
 History window
 › Keep current (2026-11-01)
   Last 7 days
@@ -82,14 +86,15 @@ The authorization itself is the same PKCE loopback flow as
 is written to `~/.local/state/abmx/gmail-credentials.json`.
 
 The client JSON and the token are deliberately separate, just like gws and
-gmailctl: the client identifies the app, the token identifies the user.
+gmailctl: the client identifies the app, the token identifies the user. See
+[Gmail](/guides/gmail/) for the Google Cloud side.
 
 ### 5. Labels
 
 Setup lists every Gmail label under `[labels].prefix`. For each label that is
 neither mapped nor declined, it asks:
 
-```
+```text
 Import transactions labelled `receipt/example.card_debit`?
 ```
 
@@ -97,8 +102,8 @@ Import transactions labelled `receipt/example.card_debit`?
 - **No** records the parser id in `[labels].ignore`, so the question is not
   asked again unless you pass `--review`.
 
-Labels whose suffix is not a parser id (for example
-`receipt/some/thing`) are reported and skipped; rename the gmailctl label.
+Labels whose suffix is not a parser id (for example `receipt/some/thing`) are
+reported and skipped; rename the gmailctl label.
 
 If there are no routed labels at all, setup prints an example gmailctl rule and
 stops this step. abmx never creates Gmail labels or filters.
@@ -109,9 +114,10 @@ them.
 
 ### 6. Ledger accounts
 
-If the ledger is not configured, setup asks for the Actual server URL, the budget
-sync id, and an Actual API key (if your Actual build offers Settings → Security → API keys). Leave the key blank to use the
-server password instead. It then validates the connection by listing accounts.
+If the ledger is not configured, setup asks for the Actual server URL, the
+budget sync id, and an Actual API key (if your Actual build offers
+Settings → Security → API keys). Leave the key blank to use the server password
+instead. It then validates the connection by listing accounts.
 
 For every accepted label it offers the open accounts and writes:
 
@@ -120,39 +126,22 @@ For every accepted label it offers the open accounts and writes:
 "example.card_debit" = "<actual account uuid>"
 ```
 
-A parser does not have to exist yet. The next step is `abmx samples` plus the
-authoring skill below.
-
-## Author a parser with AI
-
-```bash
-abmx samples
-mkdir -p ~/.agents/skills/abmx && abmx skill > ~/.agents/skills/abmx/SKILL.md
-```
-
-Then prompt your agent:
-
-```
-help me create parser for all my transaction email, use abmx parser authoring skill
-```
-
-`abmx samples` writes up to three messages per managed label to
-`$XDG_CONFIG_HOME/abmx/samples/<parser-id>/` and never requires a parser.
-Fewer than three samples is a warning; the agent should stay conservative.
+A parser does not have to exist yet. The next step is `abmx samples` plus
+[parser authoring](/guides/authoring/).
 
 ## Secrets
 
-| Secret | Where setup puts it |
-| --- | --- |
-| Gmail OAuth client | `<config dir>/gmail-client.json` (0600) |
-| Actual API key | `<config dir>/actual-api-key` (0600), unless `ABMX_ACTUAL_API_KEY` is set |
-| Actual server password | `<config dir>/actual-server-password` (0600), when no API key is entered |
-| Actual budget password | `<config dir>/actual-budget-password` (0600), only when you enter one |
+| Secret                  | Where setup puts it                                                     |
+| ----------------------- | ----------------------------------------------------------------------- |
+| Gmail OAuth client      | `<config dir>/gmail-client.json` (0600)                                 |
+| Actual API key          | `<config dir>/actual-api-key` (0600), unless `ABMX_ACTUAL_API_KEY` is set |
+| Actual server password  | `<config dir>/actual-server-password` (0600), when no API key is entered |
+| Actual budget password  | `<config dir>/actual-budget-password` (0600), only when you enter one    |
 
 Environment variables always win over files, which keeps systemd
 `LoadCredential` and `EnvironmentFile` setups working:
 
-```
+```text
 ABMX_GMAIL_CLIENT_SECRET
 ABMX_ACTUAL_API_KEY
 ABMX_ACTUAL_SERVER_PASSWORD

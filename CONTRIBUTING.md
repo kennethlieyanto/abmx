@@ -1,5 +1,10 @@
 # Contributing
 
+This repository is the engine and tooling. User documentation lives on the
+[website](https://kennethlieyanto.github.io/abmx/); the site's source is in
+`website/src/content/docs/`. Please send user-facing docs changes there, not to
+the README.
+
 Parsers are runtime data, not code. `abmx` deliberately ships **no bank
 parsers**: your corpus lives in `~/.config/abmx/parsers/` (or wherever
 `--parsers`/`$ABMX_PARSERS` points). This repository contains one synthetic
@@ -8,26 +13,17 @@ example under `examples/parsers/` for documentation and tests.
 Do not open a pull request adding a real bank parser or real email fixtures.
 Those belong in your private runtime corpus.
 
-## Authoring a parser locally
+## Development
 
 ```bash
-mkdir -p ~/.config/abmx/samples/<id>
-cp ~/saved-emails/*.eml ~/.config/abmx/samples/<id>/   # 2-3 emails minimum
-
-abmx parser init <id>                                  # writes ~/.config/abmx/parsers/<id>
-$EDITOR ~/.config/abmx/parsers/<id>/config.toml
-abmx dump ~/.config/abmx/samples/<id>/one.eml          # see the blocks
-abmx parser check --parser <id> --parsers ~/.config/abmx/parsers
+nix develop        # rust, cargo, clippy, just, node, sqlite
+just ci            # fmt, clippy, tests, synthetic parser fixtures
+just helper-test   # the Node helper (run `just helper-install` once)
 ```
 
-For a fully synthetic contribution, edit `examples/parsers/example.bank/` and
-run:
-
-```bash
-abmx parser check --parsers examples/parsers
-```
-
-`just ci` runs that check as part of the test suite.
+`just test` runs the workspace tests. `just check` is formatting plus clippy
+with warnings denied. CI also runs the helper's Node tests and the real helper
+process.
 
 ## Fixture rules
 
@@ -51,10 +47,10 @@ abmx parser check --parsers examples/parsers
   `<corpus>/<id>/fixtures/`. The directory name **is** the parser id; there is
   no `id` field in the spec.
 - Add a fixture for every layout variation you know about. A bank that sends two
-  layouts is two `requires`/`rejects` fingerprints, usually in the same parser if
-  the fields are identical, or two parser directories if they are not.
-- Prefer `requires`/`rejects` label fingerprints over sender rules when several
-  templates share a sender and subject.
+  layouts gets two fixtures; if the extracted fields differ, use two parser
+  directories.
+- The full format is in the [parser spec](https://kennethlieyanto.github.io/abmx/reference/parser-spec/)
+  and the authoring workflow is in [authoring parsers](https://kennethlieyanto.github.io/abmx/guides/authoring/).
 
 ## Before pushing
 
@@ -63,9 +59,14 @@ just ci          # fmt, clippy, tests, synthetic parser fixtures
 just helper-test # the Node helper (run `just helper-install` once)
 ```
 
-That runs formatting, clippy with warnings denied, the whole test suite, and the
-synthetic example parser against its fixture. CI also runs the helper's Node
-tests and the real helper process.
+If you changed the site or docs, also run:
+
+```bash
+just site-check
+```
+
+On x86_64 hosts without AVX2 (pre-Haswell CPUs), see `website/README.md` for
+the WASI compiler and Pagefind workaround.
 
 ## The Actual helper
 
@@ -98,6 +99,35 @@ Mention the bundled client version in the release notes, e.g. "bundles
 `@actual-app/api` 26.12.0". `abmx status` compares it with the server: a minor
 skew warns, a year jump refuses to write.
 
+## Documentation site
+
+The site is Astro + Starlight in `website/` and is deployed to GitHub Pages at
+`/abmx/`. Content lives in `website/src/content/docs/`.
+
+```bash
+cd website
+npm ci
+npm run dev        # http://localhost:4321/abmx/
+npm run check      # astro check (types + content)
+npm run build
+```
+
+Internal links in Markdown may be root-relative (`/guides/gmail/`); a Sätteri
+plugin prefixes Astro's `base` at build time. Links in MDX JSX attributes and in
+frontmatter (hero actions) are not rewritten, so write those with `/abmx/`
+explicitly.
+
+On x86_64 hosts without AVX2 (pre-Haswell CPUs), Astro's native compiler binding
+and Pagefind can fail. Use:
+
+```bash
+npm run compiler:wasi              # install the WASI compiler binding
+ABMX_NO_PAGEFIND=1 npm run build   # skip the search index locally
+```
+
+CI builds on a modern GitHub runner with the native bindings and Pagefind
+enabled.
+
 ## Releasing
 
 There is no release automation. The workspace shares one version
@@ -121,6 +151,6 @@ Two extension surfaces, two rules:
 - **A new mailbox or ledger** is a crate implementing `Fetcher` or `Sink`, plus
   one builder in `abmx/src/config.rs`. Keep vendor quirks inside the crate.
 
-Keep `abmx-core` vendor-neutral. The parser contract is documented in
-[parsing.md](docs/parsing.md); the system design is in
-[architecture.md](docs/architecture.md).
+Keep `abmx-core` vendor-neutral. The parser contract is documented in the
+[parser spec](https://kennethlieyanto.github.io/abmx/reference/parser-spec/); the
+system design is in [architecture](https://kennethlieyanto.github.io/abmx/reference/architecture/).

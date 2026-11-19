@@ -69,6 +69,24 @@ demo dir parser="example.bank" parsers="examples/parsers":
     cat "$work/ledger.jsonl"
 
 # ---------------------------------------------------------------------------
+# website
+# ---------------------------------------------------------------------------
+
+# Build the documentation site. On hosts where `npm run compiler:wasi` was
+# needed, Pagefind cannot run either; skip the search index for the local build.
+site:
+    cd website && if [ -f node_modules/.abmx-wasi ]; then export ABMX_NO_PAGEFIND=1; fi; npm run build
+
+# Run the Starlight dev server at http://localhost:4321/abmx/.
+site-dev:
+    cd website && npm run dev
+
+# Type-check the site and build it, exactly what the website workflow runs.
+site-check:
+    cd website && npm run check
+    cd website && if [ -f node_modules/.abmx-wasi ]; then export ABMX_NO_PAGEFIND=1; fi; npm run build
+
+# ---------------------------------------------------------------------------
 # parser corpus
 # ---------------------------------------------------------------------------
 

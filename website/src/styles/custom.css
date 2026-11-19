@@ -1,0 +1,77 @@
+:root {
+  --sl-color-accent-low: #ccfbf1;
+  --sl-color-accent: #0f766e;
+  --sl-color-accent-high: #134e4a;
+}
+
+:root[data-theme='dark'] {
+  --sl-color-accent-low: #042f2e;
+  --sl-color-accent: #2dd4bf;
+  --sl-color-accent-high: #99f6e4;
+}
+
+/* Landing page ------------------------------------------------------------ */
+
+.hero {
+  padding-block: 2.5rem 1rem;
+}
+
+.hero .tagline {
+  max-width: 46rem;
+  font-size: clamp(1.05rem, 2vw, 1.3rem);
+  color: var(--sl-color-gray-2);
+}
+
+.hero .actions {
+  margin-top: 0.75rem;
+}
+
+.platforms {
+  color: var(--sl-color-gray-3);
+  font-size: var(--sl-text-sm);
+}
+
+.landing-section {
+  margin-top: 3.5rem;
+}
+
+.landing-section > h2 {
+  padding-top: 2rem;
+  border-top: 1px solid var(--sl-color-hairline);
+}
+
+.lead {
+  max-width: 48rem;
+  font-size: var(--sl-text-lg);
+}
+
+.demo {
+  margin-block: 1.5rem;
+}
+
+/* Code blocks inside cards should not fight the card padding. */
+.card .expressive-code {
+  margin-top: 0.75rem;
+}
+
+.card h3 {
+  margin-top: 0;
+}
+
+/* Keep the "why" bullet list compact and scannable. */
+.why-list {
+  display: grid;
+  gap: 0.6rem;
+  max-width: 50rem;
+  padding-left: 1.1rem;
+}
+
+.why-list li::marker {
+  color: var(--sl-color-accent);
+}
+
+@media (min-width: 50rem) {
+  .hero {
+    padding-block: 4rem 2rem;
+  }
+}

@@ -1,4 +1,7 @@
-# Architecture
+---
+title: Architecture
+description: Two foundations, one pipeline, and why parsers are data while fetchers and sinks are code.
+---
 
 `abmx` is one project with two foundations and one pipeline.
 
@@ -12,7 +15,7 @@ mailboxes and ledgers carry credentials, pagination, retries, and vendor quirks.
 Forcing both through the same extension mechanism would be worse than keeping
 them apart.
 
-```
+```text
 ┌──────────────── sync foundation ────────────────┐
 │  Fetcher · Sink · Policy · Plan · Report         │  abmx-core
 └───────▲──────────────────────────────▲──────────┘
@@ -44,14 +47,14 @@ problem. The synchronizer's hard problem is different: **transport, identity, an
 state**. Copying the stages would give symmetry but the wrong abstraction —
 `abmx` never routes, and its "output" is not the product; the _write_ is.
 
-| Parser            | Sync                | Difference                                              |
-| ----------------- | ------------------- | ------------------------------------------------------- |
-| input             | **Fetcher**         | same role, transport varies per user                    |
+| Parser            | Sync                | Difference                                                     |
+| ----------------- | ------------------- | -------------------------------------------------------------- |
+| input             | **Fetcher**         | same role, transport varies per user                           |
 | label routing     | gmailctl + `[labels.accounts]` | the label names the parser; the config maps it to an account |
-| parser spec       | `abmx-parser`       | not reimplemented                                       |
-| extraction result | `abmx-tx` contract  | the shared vocabulary between the halves                |
-| output schema     | **Policy → Sink**   | the decision and the write are separate                 |
-| —                 | **State**           | no equivalent in the parser, and where correctness lives |
+| parser spec       | `abmx-parser`       | not reimplemented                                              |
+| extraction result | `abmx-tx` contract  | the shared vocabulary between the halves                       |
+| output schema     | **Policy → Sink**   | the decision and the write are separate                        |
+| —                 | **State**           | no equivalent in the parser, and where correctness lives       |
 
 ## The primitives
 
@@ -72,7 +75,8 @@ pub trait Fetcher {
 - **Bytes, not transactions.** A fetcher produces RFC 5322 bytes. Parsing is
   always the parser's job.
 - **Label-tagged messages.** Each `RawMessage` carries the `receipt/*` label that
-  selected it, so the caller chooses the parser from the label and the account from `[labels.accounts]` without guessing.
+  selected it, so the caller chooses the parser from the label and the account
+  from `[labels.accounts]` without guessing.
 
 ### Classification
 
@@ -97,18 +101,18 @@ pub trait Sink {
 ```
 
 - **`idempotent()` is the important one.** It asks: does the sink deduplicate on
-  `tx_id`? Actual does (on `imported_id`). A file writer does not. The runner only
-  maintains applied-state when the sink cannot do it itself — otherwise you build
-  a second source of truth that drifts.
+  `tx_id`? Actual does (on `imported_id`). A file writer does not. The runner
+  only maintains applied-state when the sink cannot do it itself — otherwise you
+  build a second source of truth that drifts.
 - **Push and pull are not separate primitives.** A pull sink (JSONL, QIF) writes
   an artifact instead of calling an API. Same `apply`.
 - **Partial success is a `Report`, not an error.** A sink that imported 49 of 50
   rows should say so. The Actual sink bisects a failing chunk into single rows so
   one bad row cannot cost the rest.
-- **`snapshot()` is the read side.** `abmx sync --dry-run --diff` needs to know what the ledger
-  already holds, and only the sink knows how to ask. The method is read-only by
-  contract, and a sink that cannot answer returns an error rather than an empty
-  list, so "no matches" is never confused with "I cannot see".
+- **`snapshot()` is the read side.** `abmx sync --dry-run --diff` needs to know
+  what the ledger already holds, and only the sink knows how to ask. The method
+  is read-only by contract, and a sink that cannot answer returns an error rather
+  than an empty list, so "no matches" is never confused with "I cannot see".
 
 Actual is the one non-Rust boundary: its official client is the Node package
 `@actual-app/api`, so `abmx-actual` spawns `helper/helper.js` for one operation
@@ -150,12 +154,11 @@ are checked before applying.
 
 ## Label discipline
 
-There is no cursor. Every run lists the account's labels, keeps the
-`receipt/*` ones that are mapped in `[labels.accounts]`, paginates the message
-ids under each one, and drops ids already recorded in state before downloading
-raw bodies.
+There is no cursor. Every run lists the account's labels, keeps the `receipt/*`
+ones that are mapped in `[labels.accounts]`, paginates the message ids under
+each one, and drops ids already recorded in state before downloading raw bodies.
 
-```
+```text
 list labels ──► keep [labels.accounts] ────────► list messages per label
       │                                      │
       │ mapped id has no Gmail label         ▼
@@ -175,12 +178,12 @@ Why this is safer than a cursor:
 - Mail labeled late is picked up on the next run; a cursor would have skipped it.
 - A partial failure leaves the failed message unseen, so it is retried.
 - An unmapped Gmail label is ignored, not a sync failure. A *mapped* id with no
-  Gmail label, a missing parser, or a message carrying two managed labels
-  aborts the run instead of silently importing noise or skipping it.
+  Gmail label, a missing parser, or a message carrying two managed labels aborts
+  the run instead of silently importing noise or skipping it.
 - A cap is a hard error, never a silent truncation.
 
-The cost is listing message ids per label on every run. That is cheap; raw
-bodies are fetched only for messages the state has not seen.
+The cost is listing message ids per label on every run. That is cheap; raw bodies
+are fetched only for messages the state has not seen.
 
 ## Adding a fetcher
 
@@ -188,13 +191,6 @@ bodies are fetched only for messages the state has not seen.
 2. Implement `Fetcher`. Return `RawMessage`s with a stable key prefixed by the
    transport (`imap:<uid>`, `dir:<name>`) and the `receipt/*` label that selected
    them, so keys never collide in shared state.
-3. Add a builder in `abmx/src/config.rs` and one arm in `build_fetcher`.
-
-## Adding a fetcher
-
-1. New crate, `abmx-<name>`, depend on `abmx-core`.
-2. Implement `Fetcher`. Return `RawMessage`s with a stable key prefixed by the
-   transport (`imap:<uid>`, `dir:<name>`) so keys never collide in shared state.
 3. Add a builder in `abmx/src/config.rs` and one arm in `build_fetcher`.
 4. Test with `abmx-testkit`: a mock HTTP server for API sources, or a temp
    directory for file sources.
@@ -214,10 +210,11 @@ trait; one is a guess.
 ## Adding a parser
 
 No code. Write `<corpus>/<id>/config.toml`, add samples under
-`<corpus>/<id>/fixtures/`, and run `abmx parser check --parser <id> --parsers
-<corpus>`. `abmx parser init`, `infer`, `generate`, and `verify` exist to make
-that loop fast. See [parsing.md](parsing.md) for the spec format and
-[authoring.md](authoring.md) for the AI-assisted workflow.
+`<corpus>/<id>/fixtures/`, and run
+`abmx parser check --parser <id> --parsers <corpus>`. The useful commands are
+`parser init`, `dump`, `explain`, `lint`, and `check`. See the
+[Parser spec](/reference/parser-spec/) for the format and
+[Authoring parsers](/guides/authoring/) for the workflow.
 
 The corpus is runtime data: `abmx` searches `--parsers`, `$ABMX_PARSERS`,
 `~/.config/abmx/parsers`, then `/etc/abmx/parsers`. It never reads the working
@@ -236,7 +233,7 @@ migration, not a silent reinterpretation of old rows.
 
 - A plugin loader, dynamic dispatch by name, or a sink DSL.
 - An async runtime.
-- A second binary. The parser is a library plus a `abmx parser` command group;
+- A second binary. The parser is a library plus an `abmx parser` command group;
   it is not a separate product with its own release cadence.
 - Generic input framing. The extension point for non-email sources is the
   `Transaction` schema, not the parser's input layer.

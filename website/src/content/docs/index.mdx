@@ -1,0 +1,152 @@
+---
+title: Bank emails to ledger
+description: Sync bank transaction emails into an Actual Budget ledger — live, idempotent, and without a bank API.
+template: splash
+hero:
+  title: abmx
+  tagline: Your bank already emails you every transaction. abmx turns those emails into ledger rows — the day they happen, not when the statement arrives.
+  actions:
+    - text: Get started
+      link: /abmx/start/quickstart/
+      icon: right-arrow
+    - text: Install
+      link: /abmx/start/install/
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard, TabItem, Tabs } from '@astrojs/starlight/components';
+
+<div class="demo">
+
+```console
+$ abmx sync
+fetched 15, parsed 15 — import 13, broken 2, unmatched 0, failed 0
+
+date                 amount label                        counterparty          notes
+2026-11-12      -12,500 IDR receipt/example.card_debit  EXAMPLE PAYEE      -
+2026-11-11      -45,000 IDR receipt/example.card_debit  EXAMPLE MERCHANT   -
+
+broken (2), not imported:
+  receipt/example.journal_va   parse_failed   amount: no value matched
+  next: abmx samples --label receipt/example.journal_va
+  nothing was written to the ledger
+```
+
+</div>
+
+<div class="landing-section">
+
+## How it works
+
+`abmx` never guesses. Mail that is not labelled is not fetched, a parser that is
+not strict does not import, and a row the bank reported as failed never reaches
+the ledger. Broken labels are named and retried after you fix the parser or the
+Gmail rule.
+
+<CardGrid>
+  <Card title="Route with labels" icon="list-format">
+    gmailctl applies exactly one `receipt/<parser-id>` label to transaction mail.
+    The label is the contract; there is no sender list to drift.
+  </Card>
+  <Card title="Parse with runtime data" icon="document">
+    A parser is a `config.toml` plus fixtures under `~/.config/abmx/parsers/`.
+    No compiler, no rebuild, no bank code in the binary.
+  </Card>
+  <Card title="Import, or report broken" icon="approve-check">
+    Strict rows are written to Actual Budget through the official Node client.
+    Anything unsure becomes an actionable broken label instead of a guess.
+  </Card>
+</CardGrid>
+
+</div>
+
+<div class="landing-section">
+
+## Why not parse statements?
+
+Statements are complete and bank-authoritative, but they are a month late. The
+point of abmx is to see a transaction the day it happens.
+
+|                        | Email notification                        | Monthly statement         |
+| ---------------------- | ----------------------------------------- | ------------------------- |
+| Latency                | minutes                                   | ~30 days                  |
+| Granularity            | one event per message                     | whole period              |
+| Completeness           | lossy (thresholds, spam, missing channels) | bank-authoritative        |
+| Metadata               | merchant, channel, reference id           | often less                |
+| Parsing cost           | stable HTML labels                        | PDF/CSV/Excel, fragile    |
+
+Statement import is planned, not implemented. Until then, abmx imports live
+transactions and leaves reconciliation against the statement to you.
+
+</div>
+
+<div class="landing-section">
+
+## Install
+
+<Tabs>
+  <TabItem label="Nix">
+    ```bash
+    nix run github:kennethlieyanto/abmx -- --version
+    ```
+
+    The flake bundles the Actual helper and Node.
+  </TabItem>
+  <TabItem label="Cargo">
+    ```bash
+    cargo install --path crates/abmx
+    ```
+
+    From a clone. The Actual sink additionally needs Node 22+ and the helper's
+    `node_modules`; see [Install](/start/install/).
+  </TabItem>
+  <TabItem label="Container">
+    ```bash
+    docker build -t abmx .
+    docker run --rm abmx --version
+    ```
+
+    The image contains the binary and the Node helper.
+  </TabItem>
+</Tabs>
+
+</div>
+
+<div class="landing-section">
+
+## Start reading
+
+<CardGrid>
+  <LinkCard
+    title="Quickstart"
+    href="/abmx/start/quickstart/"
+    description="Set up the config, Gmail, labels, and accounts, then import."
+  />
+  <LinkCard
+    title="Author a parser"
+    href="/abmx/guides/authoring/"
+    description="Download samples and let an agent write and verify the parser."
+  />
+  <LinkCard
+    title="Parser spec"
+    href="/abmx/reference/parser-spec/"
+    description="The TOML format behind every bank template."
+  />
+  <LinkCard
+    title="Architecture"
+    href="/abmx/reference/architecture/"
+    description="The four primitives and why the seams are where they are."
+  />
+</CardGrid>
+
+</div>
+
+<div class="landing-section">
+
+## Honest about maturity
+
+One fetcher (Gmail), one real sink (Actual Budget), one reference sink (JSONL).
+The primitives are stable; the integrations are thin. abmx ships no bank
+parsers — they are authored at runtime and belong to you.
+
+</div>

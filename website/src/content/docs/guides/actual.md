@@ -1,4 +1,7 @@
-# Actual Budget
+---
+title: Actual Budget
+description: Why Actual needs a helper, how credentials and amounts work, and what abmx sends.
+---
 
 Actual has **no HTTP API**. The official client is [`@actual-app/api`], a Node
 library that downloads a copy of the budget database, mutates it locally, and
@@ -10,14 +13,14 @@ operation it spawns `node helper.js`, writes one JSON request to stdin, reads on
 JSON response from stdout, and waits for it to exit. Nothing stays running: no
 port, no service, no shared secret on the wire.
 
-```
+```text
 abmx ──spawn──► actual-helper (Node) ──► @actual-app/api ──► actual-server
      ◄─JSON───                              (local copy)          :5006
 ```
 
 [`@actual-app/api`]: https://actualbudget.org/docs/api/
 
-## Quick start
+## Configure
 
 You need Node 22+ and the helper only if you install with plain
 `cargo install`; the Nix package and the container bundle both.
@@ -48,30 +51,13 @@ abmx accounts  # account UUIDs, and which parsers are mapped
 whole budget. It is disposable: delete it and the next run downloads a fresh
 copy.
 
-### Container
-
-The repository's `Dockerfile` contains the Rust binary and the helper, so the
-image needs nothing else at runtime:
-
-```bash
-docker build -t abmx .
-mkdir -p var/abmx
-docker run --rm --user "$(id -u):$(id -g)" \
-  -v "$PWD/var/abmx:/data" \
-  -v "$PWD/abmx.toml:/config/abmx.toml:ro" \
-  -e ABMX_ACTUAL_SERVER_PASSWORD \
-  abmx --config /config/abmx.toml sync
-```
-
-`/data` holds the config-adjacent state, the Gmail token, and the budget cache.
-Pass secrets as environment variables or mount a credentials file; the helper
-and Node come from the image.
+Running in a container? See [Docker](/guides/deployment/docker/).
 
 ## Credentials
 
-An **Actual API key** is the preferred credential: it is scoped to one budget and
-revocable in Settings → General → Security → API keys. If your Actual build does
-not show that section, use the **server password** instead.
+An **Actual API key** is the preferred credential: it is scoped to one budget
+and revocable in Settings → General → Security → API keys. If your Actual build
+does not show that section, use the **server password** instead.
 
 | Config | Environment | Meaning |
 | --- | --- | --- |
@@ -82,13 +68,15 @@ not show that section, use the **server password** instead.
 If both credentials are present the API key wins. Secrets follow the usual
 precedence: environment → literal → file.
 
-> **Upgrading from `actual-http-api`:** `ABMX_ACTUAL_API_KEY` used to be the
-> wrapper's key. It now means Actual's own key. Remove the old value from `.env`
-> or you will get `invalid or expired session token`. Replace `url = "…:5007"`
-> with `server_url = "…:5006"`; `abmx` refuses the old key with a migration
-> message rather than silently ignoring it.
+:::caution[Upgrading from actual-http-api]
+`ABMX_ACTUAL_API_KEY` used to be the wrapper's key. It now means Actual's own
+key. Remove the old value from `.env` or you will get
+`invalid or expired session token`. Replace `url = "…:5007"` with
+`server_url = "…:5006"`; `abmx` refuses the old key with a migration message
+rather than silently ignoring it.
+:::
 
-## What `abmx` sends
+## What abmx sends
 
 The helper calls `importTransactions`, Actual's reconciling import:
 
@@ -123,14 +111,13 @@ All four options are documented `@actual-app/api` options; the helper is a
 pass-through, not a second implementation.
 
 `notes` is omitted when there is nothing to write. The default
-`[sink.actual].notes_fields` is just `["description"]`; set it to `[]` to
-disable notes entirely, or add fields such as `reference_id`, `channel`, or
-`parser`.
+`[sink.actual].notes_fields` is just `["description"]`; set it to `[]` to disable
+notes entirely, or add fields such as `reference_id`, `channel`, or `parser`.
 
 `abmx sync --dry-run` previews the notes in its table (a `-` means the import
 will omit the `notes` key).
 
-Five decisions worth knowing:
+Six decisions worth knowing:
 
 ### `amount` is value × 100 — for every currency
 
@@ -138,9 +125,9 @@ Actual stores money as an integer of "value × 100", whatever the currency. IDR
 has no minor units, so **Rp 27,500 must be sent as `2_750_000`**. Getting this
 wrong silently multiplies every transaction by 100.
 
-`abmx` does the conversion in `abmx-actual/src/convert.rs`:
+`abmx` does the conversion in `crates/abmx-actual/src/convert.rs`:
 
-```
+```text
 amount = amount_minor × 10^(2 − currency_exponent)
 ```
 
@@ -161,21 +148,21 @@ changes and re-runs. Actual's `importTransactions` will never add the same
 
 `importTransactions` reconciles by `imported_id` **and** by a fuzzy
 amount/date/payee match. That second path is where surprises live: a row that
-already exists under a *different* importer's id (a CSV import, a bank sync)
-can end up duplicated instead of reconciled.
+already exists under a *different* importer's id (a CSV import, a bank sync) can
+end up duplicated instead of reconciled.
 
 `abmx sync --dry-run --diff` reads the ledger for the plan's date window and
 classifies every row before anything is written:
 
-```
+```text
 ledger: 12 new, 2 already present, 1 foreign imported_id
   foreign  2026-11-06  -72,000 IDR  EXAMPLE MERCHANT  imported as example-2026-11-06-merchant
 ```
 
 - `new` — nothing in the ledger has this account, date and amount.
 - `already present` — a manual row or a row abmx itself imported; it will reconcile.
-- `foreign imported_id` — the existing row came from another importer, so expect a
-  duplicate. The exit code is still `0` unless a label is broken; treat the
+- `foreign imported_id` — the existing row came from another importer, so expect
+  a duplicate. The exit code is still `0` unless a label is broken; treat the
   foreign line as a warning before applying for real.
 
 The match is deliberately conservative: account + date + amount only. Payee
@@ -260,7 +247,7 @@ the account ids and the payload.
 `abmx` bundles exactly one `@actual-app/api` version. Actual ships the server and
 the client together, so `abmx status` compares them:
 
-```
+```text
 sink
   ok    actual: 2 accounts
   ok    helper 26.11.0 (@actual-app/api)
@@ -289,7 +276,7 @@ Update by installing a new `abmx`: Nix `nix flake update`, container pull, or
 | `network-failure` | server unreachable | check `server_url` from the machine running abmx |
 | `missing-key` / `decrypt-failure` | end-to-end encrypted budget | set `budget_password` |
 | `the Actual helper timed out` | slow budget sync | raise `timeout_secs` |
-| amounts are 100× too big | you are not using `abmx`'s sink | do not hand-write the `amount` field |
+| amounts are 100× too big | you are not using abmx's sink | do not hand-write the `amount` field |
 | rows appear twice | a sink other than `importTransactions` was used | `abmx` always uses the reconciling import |
 | `account not found` | mapping points at a deleted account | `abmx accounts`, then fix `[labels.accounts]` |
 

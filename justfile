@@ -3,7 +3,7 @@ default:
 
 # The repository's parser corpus. Recipes pass it with --parsers, so nothing
 # depends on the working directory or an environment variable.
-corpus := justfile_directory() / "parsers"
+corpus := justfile_directory() / "examples/parsers"
 
 # ---------------------------------------------------------------------------
 # build / run
@@ -43,7 +43,7 @@ helm-template:
 
 # Exercise the whole pipeline against saved .eml files and the file sink.
 # `just demo ./sample-mail`
-demo dir parser="example.journal_transfer" parsers="parsers":
+demo dir parser="example.bank" parsers="examples/parsers":
     #!/usr/bin/env bash
     set -euo pipefail
     work=$(mktemp -d)
@@ -73,11 +73,11 @@ demo dir parser="example.journal_transfer" parsers="parsers":
 # ---------------------------------------------------------------------------
 
 # Parse a file or directory with one parser, as JSON on stdout.
-parse path parser="example.journal_transfer":
+parse path parser="example.bank":
     cargo run -q -p abmx -- parser parse {{path}} --parser {{parser}} --parsers "{{corpus}}"
 
 # Parse a directory as one JSON object per line.
-ndjson path parser="example.journal_transfer":
+ndjson path parser="example.bank":
     cargo run -q -p abmx -- parser parse {{path}} --parser {{parser}} --format ndjson --parsers "{{corpus}}"
 
 # Explain the block regions behind each field of one parser.
@@ -113,42 +113,14 @@ samples *args:
     cargo run -q -p abmx -- samples {{args}}
 
 # Rewrite real emails into publishable fixtures (needs redact.toml, gitignored).
-# Copy the output into parsers/<id>/fixtures/ afterwards.
+# Copy the output into your parser's fixtures/ directory afterwards.
 redact in="sample" out="build/redacted":
     @test -f redact.toml || { echo "missing redact.toml; copy redact.example.toml and fill it in"; exit 1; }
     cargo run -q -p xtask -- redact --in {{in}} --out {{out}}
 
-# Scaffold parsers/<id>/config.toml and parsers/<id>/fixtures/
+# Scaffold a parser in the user corpus (~/.config/abmx/parsers/<id>).
 parser-init id:
-    cargo run -q -p abmx -- parser init {{id}} --parsers "{{corpus}}"
-
-# ---------------------------------------------------------------------------
-# installing a parser
-# ---------------------------------------------------------------------------
-
-# Check one parser, then copy it into $XDG_CONFIG_HOME/abmx/parsers/<id>.
-install-parser id:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo run -q -p abmx -- parser check --parser {{id}} -v --parsers "{{corpus}}"
-    dest="${XDG_CONFIG_HOME:-$HOME/.config}/abmx/parsers/{{id}}"
-    mkdir -p "$dest"
-    cp -R "{{corpus}}/{{id}}/." "$dest/"
-    echo "installed {{id}} -> $dest"
-
-# Check all parsers, then install them into the XDG corpus.
-install-parsers:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cargo run -q -p abmx -- parser check -v --parsers "{{corpus}}"
-    dest="${XDG_CONFIG_HOME:-$HOME/.config}/abmx/parsers"
-    mkdir -p "$dest"
-    for dir in "{{corpus}}"/*/; do
-      id="$(basename "$dir")"
-      mkdir -p "$dest/$id"
-      cp -R "$dir." "$dest/$id/"
-    done
-    echo "installed parsers -> $dest"
+    cargo run -q -p abmx -- parser init {{id}}
 
 # Remove the user config (~/.config/abmx) and every installed parser, so the
 # first-run UX can be tried again. The Gmail token and state DB live in

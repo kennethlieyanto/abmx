@@ -1,9 +1,8 @@
-//! End-to-end tests over the committed fixture corpus.
+//! End-to-end tests over the committed synthetic example corpus.
 //!
-//! A parser is a directory: `parsers/<id>/config.toml` with its samples in
-//! `parsers/<id>/fixtures/*.eml`. The directory name is the parser id, so this
-//! is also a routing test: a fixture under `parsers/example.card_debit/fixtures/`
-//! must be claimed by `example.card_debit`.
+//! A parser is a directory: `examples/parsers/<id>/config.toml` with its samples
+//! in `examples/parsers/<id>/fixtures/*.eml`. The directory name is the parser
+//! id, so this is also a routing test.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -18,12 +17,12 @@ fn repo_root() -> PathBuf {
 }
 
 fn registry() -> Registry {
-    Registry::load(repo_root().join("parsers")).expect("load parsers")
+    Registry::load(repo_root().join("examples/parsers")).expect("load example parsers")
 }
 
 /// `(parser id, fixture path)`, sorted.
 fn fixtures() -> Vec<(String, PathBuf)> {
-    let root = repo_root().join("parsers");
+    let root = repo_root().join("examples/parsers");
     let mut files = Vec::new();
     collect(&root, &mut files);
     files.sort();
@@ -31,7 +30,7 @@ fn fixtures() -> Vec<(String, PathBuf)> {
     files
         .into_iter()
         .filter_map(|path| {
-            // parsers/<id>/fixtures/<file>.eml
+            // examples/parsers/<id>/fixtures/<file>.eml
             let id = path
                 .parent()
                 .and_then(|fixtures| fixtures.parent())
@@ -91,12 +90,10 @@ fn every_fixture_is_parsed() {
             transaction.warnings
         );
         assert_ne!(transaction.amount.amount_minor, 0);
-        assert_eq!(transaction.amount.currency, "IDR");
+        assert_eq!(transaction.amount.currency, "USD");
 
         seen.insert(transaction.parser.clone());
 
-        // Two fixtures are byte-identical emails; they must collapse onto one
-        // identity so a consumer's import stays idempotent.
         if let Some(message_id) = &transaction.source.message_id {
             if let Some(previous) = ids.insert(message_id.clone(), transaction.id.clone()) {
                 assert_eq!(previous, transaction.id, "duplicates must share an id");
@@ -104,21 +101,7 @@ fn every_fixture_is_parsed() {
         }
     }
 
-    let expected: BTreeSet<String> = [
-        "example.card_debit",
-        "example.journal_qris",
-        "example.journal_transfer",
-        "example.journal_va",
-        "wallet.card_online",
-        "wallet.incoming_transfer",
-        "wallet.online_order",
-        "wallet.qris_payment",
-        "banktwo.bank_transfer",
-        "banktwo.qris_payment",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect();
+    let expected: BTreeSet<String> = ["example.bank"].into_iter().map(str::to_string).collect();
 
     assert_eq!(seen, expected);
 }
@@ -131,7 +114,7 @@ fn every_parser_has_fixtures() {
     for parser in &registry.parsers {
         assert!(
             ids.contains(&parser.id),
-            "{} has no fixtures under parsers/{}/fixtures/",
+            "{} has no fixtures under examples/parsers/{}/fixtures/",
             parser.id,
             parser.id
         );
@@ -143,109 +126,13 @@ fn amounts_dates_and_counterparties_are_correct() {
     let registry = registry();
 
     // (parser id, fixture file name, minor amount, local date, counterparty)
-    let expectations: &[(&str, &str, i64, &str, &str)] = &[
-        ("example.card_debit", "01.eml", -27_500, "2026-10-30", "ExamplePay"),
-        ("example.card_debit", "02.eml", -11_000, "2026-11-03", "ExamplePay"),
-        ("example.card_debit", "03.eml", -11_000, "2026-10-11", "ExamplePay"),
-        (
-            "example.journal_qris",
-            "01.eml",
-            -72_000,
-            "2026-11-06",
-            "EXAMPLE MERCHANT",
-        ),
-        (
-            "example.journal_va",
-            "01.eml",
-            -550_000,
-            "2026-11-02",
-            "EXAMPLE MERCHANT",
-        ),
-        (
-            "example.journal_transfer",
-            "01.eml",
-            -372_000,
-            "2026-11-07",
-            "EXAMPLE PERSON",
-        ),
-        (
-            "wallet.incoming_transfer",
-            "01.eml",
-            100_000,
-            "2025-10-22",
-            "EXAMPLE MERCHANT",
-        ),
-        (
-            "wallet.incoming_transfer",
-            "02.eml",
-            200_000,
-            "2026-09-18",
-            "EXAMPLE MERCHANT",
-        ),
-        (
-            "wallet.qris_payment",
-            "01.eml",
-            -5_500,
-            "2026-09-19",
-            "EXAMPLE MERCHANT",
-        ),
-        (
-            "wallet.card_online",
-            "01.eml",
-            -500,
-            "2026-09-13",
-            "DEI*AWS ID NON3DS",
-        ),
-        (
-            "wallet.online_order",
-            "01.eml",
-            -19_000,
-            "2026-09-23",
-            "EXAMPLE MERCHANT",
-        ),
-        (
-            "banktwo.qris_payment",
-            "01.eml",
-            -18_600,
-            "2026-09-18",
-            "EXAMPLE MERCHANT",
-        ),
-        (
-            "banktwo.qris_payment",
-            "02.eml",
-            -4_269_000,
-            "2026-07-12",
-            "EXAMPLE MERCHANT",
-        ),
-        (
-            "banktwo.qris_payment",
-            "03.eml",
-            -4_269_000,
-            "2026-07-12",
-            "EXAMPLE MERCHANT",
-        ),
-        (
-            "banktwo.bank_transfer",
-            "01.eml",
-            -10_001_288,
-            "2026-09-06",
-            "EXAMPLE MERCHANT",
-        ),
-        (
-            "banktwo.bank_transfer",
-            "02.eml",
-            -15_000_487,
-            "2026-02-19",
-            "EXAMPLE MERCHANT",
-        ),
-        (
-            "banktwo.bank_transfer",
-            "03.eml",
-            -85_000,
-            "2025-07-11",
-            "EXAMPLE PERSON",
-        ),
-    ];
+    let expectations: &[(&str, &str, i64, &str, &str)] = &[(
+        "example.bank",
+        "01.eml",
+        -2_750,
+        "2026-10-30",
+        "Example Merchant",
+    )];
 
     assert_eq!(
         expectations.len(),
@@ -255,7 +142,7 @@ fn amounts_dates_and_counterparties_are_correct() {
 
     for (id, file, amount, date, counterparty) in expectations {
         let path = repo_root()
-            .join("parsers")
+            .join("examples/parsers")
             .join(id)
             .join("fixtures")
             .join(file);
@@ -266,7 +153,7 @@ fn amounts_dates_and_counterparties_are_correct() {
             transaction.amount.amount_minor, *amount,
             "{id}/{file}: amount"
         );
-        assert_eq!(transaction.currency_exponent, 0, "{id}/{file}: exponent");
+        assert_eq!(transaction.currency_exponent, 2, "{id}/{file}: exponent");
         assert_eq!(
             transaction.occurred_on.to_string(),
             *date,
@@ -283,16 +170,15 @@ fn amounts_dates_and_counterparties_are_correct() {
 #[test]
 fn a_transaction_date_far_from_the_email_date_is_still_strict() {
     let registry = registry();
-    let path = repo_root().join("parsers/example.card_debit/fixtures/01.eml");
+    let path = repo_root().join("examples/parsers/example.bank/fixtures/01.eml");
     let bytes = std::fs::read(&path).expect("read fixture");
     let mut email = abmx_mail::parse_eml(&bytes, Some(path.display().to_string())).expect("parse");
 
-    // Banks send late and batched alerts. The gap between the transaction date
-    // and the email date is data, not an extraction failure, so the parser must
-    // not mark the row as suspicious.
+    // Send late and batched alerts: the gap between the transaction date and
+    // the email date is data, not an extraction failure.
     email.date -= chrono::Duration::days(30);
 
-    match registry.run("example.card_debit", &email, "test") {
+    match registry.run("example.bank", &email, "test") {
         Outcome::Parsed(transaction) => {
             assert_eq!(transaction.extraction, abmx_tx::Extraction::Strict);
             assert!(

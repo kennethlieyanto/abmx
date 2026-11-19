@@ -1,6 +1,6 @@
 //! Date parsing, including Indonesian month abbreviations.
 //!
-//! `chrono`'s `%b` only understands English, and wallet writes `22 Okt 2025`, so a
+//! `chrono`'s `%b` only understands English, and Wallet writes `22 Okt 2025`, so a
 //! translation pass is not optional.
 
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};

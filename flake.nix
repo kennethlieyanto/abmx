@@ -91,10 +91,8 @@
 
             postInstall = ''
               mkdir -p $out/share/abmx
-              cp -r parsers $out/share/abmx/parsers
               cp -r ${actual-helper}/share/abmx/actual-helper $out/share/abmx/actual-helper
               wrapProgram $out/bin/abmx \
-                --set-default ABMX_PARSERS "$out/share/abmx/parsers" \
                 --set-default ABMX_ACTUAL_HELPER "$out/share/abmx/actual-helper/helper.js" \
                 --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.nodejs_22 ]}
             '';

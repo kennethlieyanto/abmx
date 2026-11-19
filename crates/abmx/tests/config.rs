@@ -22,7 +22,7 @@ since = 2026-11-10
 
 [labels.accounts]
 "example.card_debit" = "uuid-example"
-"wallet.qris_payment" = "uuid-wallet"
+"example.qris_payment" = "uuid-wallet"
 "#;
 
 fn write(dir: &Path) -> std::path::PathBuf {
@@ -64,7 +64,7 @@ fn labels_round_trip_and_encode_the_parser_id() {
 
     let accounts = config.account_map();
     assert_eq!(accounts.get("example.card_debit"), Some("uuid-example"));
-    assert_eq!(accounts.get("wallet.qris_payment"), Some("uuid-wallet"));
+    assert_eq!(accounts.get("example.qris_payment"), Some("uuid-wallet"));
     assert_eq!(accounts.len(), 2);
 
     assert_eq!(
@@ -73,7 +73,7 @@ fn labels_round_trip_and_encode_the_parser_id() {
     );
     // The prefix is case-insensitive; the parser id is normalised to lower case.
     assert_eq!(
-        config.labels.parser_id("Receipt/example.CARD_DEBIT"),
+        config.labels.parser_id("Receipt/Example.CARD_DEBIT"),
         Some("example.card_debit".to_owned())
     );
     assert_eq!(config.labels.parser_id("Receipt"), None);

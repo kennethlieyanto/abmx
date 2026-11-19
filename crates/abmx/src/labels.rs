@@ -110,7 +110,7 @@ mod tests {
             since: None,
             accounts: [
                 ("example.card_debit".to_owned(), "uuid-example".to_owned()),
-                ("wallet.qris_payment".to_owned(), "uuid-wallet".to_owned()),
+                ("example.qris_payment".to_owned(), "uuid-wallet".to_owned()),
             ]
             .into_iter()
             .collect(),
@@ -145,7 +145,7 @@ mod tests {
         assert_eq!(plan.unmanaged[0].parser_id, "new.parser");
         assert_eq!(plan.ignored.len(), 1);
         assert_eq!(plan.invalid, vec!["receipt/bad/name"]);
-        assert_eq!(plan.orphans, vec!["wallet.qris_payment"]);
+        assert_eq!(plan.orphans, vec!["example.qris_payment"]);
     }
 
     #[test]
@@ -161,7 +161,7 @@ mod tests {
             &discovered(&[
                 "receipt/example.card_debit",
                 "Receipt/example.card_debit",
-                "receipt/wallet.qris_payment",
+                "receipt/example.qris_payment",
             ]),
             &labels(),
         );
@@ -172,7 +172,7 @@ mod tests {
     #[test]
     fn a_fully_mapped_inventory_has_nothing_to_do() {
         let plan = plan(
-            &discovered(&["receipt/example.card_debit", "receipt/wallet.qris_payment"]),
+            &discovered(&["receipt/example.card_debit", "receipt/example.qris_payment"]),
             &labels(),
         );
         assert_eq!(plan.managed.len(), 2);

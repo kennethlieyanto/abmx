@@ -9,11 +9,11 @@
 # Longest values are applied first, so a full name wins over a surname.
 [[replace]]
 from = "FULL NAME AS PRINTED UPPERCASE"
-to = "ANDI PRATAMA"
+to = "EXAMPLE PERSON"
 
 [[replace]]
 from = "Full Name As Printed"
-to = "Andi Pratama"
+to = "Example Person"
 
 [[replace]]
 from = "your.email@example.com"
@@ -22,7 +22,7 @@ to = "user@example.invalid"
 # People or person-named businesses that appear as counterparties.
 [[replace]]
 from = "COUNTERPARTY PERSON NAME"
-to = "EXAMPLE PERSON"
+to = "EXAMPLE COUNTERPARTY"
 
 # Masked account/card renderings that regexes cannot classify safely.
 [[replace]]

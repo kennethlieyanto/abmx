@@ -9,7 +9,7 @@ use abmx_gmail::{GmailConfig, GmailFetcher};
 use abmx_testkit::{MockServer, Response};
 use base64::Engine;
 
-const EMAIL: &str = "From: example <example@example.invalid>\r\n\
+const EMAIL: &str = "From: Example <example@bank.example>\r\n\
 To: me@example.invalid\r\n\
 Subject: Internet Transaction Journal\r\n\
 Date: Thu, 30 Oct 2026 17:28:17 +0700\r\n\
@@ -135,7 +135,9 @@ fn downloads_the_newest_three_for_managed_labels_only() {
     assert!(label.warnings.is_empty());
 
     for index in 1..=3 {
-        let path = out.join("example.card_debit").join(format!("{index:02}.eml"));
+        let path = out
+            .join("example.card_debit")
+            .join(format!("{index:02}.eml"));
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("Total Payment"), "{}", path.display());
         assert!(text.contains("Rp 27.500"), "{}", path.display());

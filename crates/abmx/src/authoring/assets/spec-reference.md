@@ -1,6 +1,6 @@
 # bank parser spec reference
 
-A parser lives at `parsers/<id>/config.toml`. The directory name **is** the
+A parser lives at `~/.config/abmx/parsers/<id>/config.toml` (or another `<corpus>` directory). The directory name **is** the
 parser id; there is no `id` field. `spec_version` must be the version below.
 Changes to behaviour bump `version`; they never change a transaction's stable
 `id`.

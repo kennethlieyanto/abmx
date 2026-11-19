@@ -17,8 +17,8 @@ $ abmx sync
 fetched 15, parsed 15 — import 13, broken 2, unmatched 0, failed 0
 
 date                 amount label                        counterparty          notes
-2026-11-12     -128,000 IDR receipt/example.card_debit  EXAMPLE PAYEE      -
-2026-11-11     -124,300 IDR receipt/example.card_debit  EXAMPLE MERCHANT   -
+2026-11-12      -12,500 IDR receipt/example.card_debit  EXAMPLE PAYEE      -
+2026-11-11      -45,000 IDR receipt/example.card_debit  EXAMPLE MERCHANT   -
 ...
 
 broken (2), not imported:
@@ -36,12 +36,14 @@ message key to each row.
 
 Early, and honest about it. One fetcher (Gmail), one real sink (Actual Budget),
 one reference sink (JSONL file). The primitives are stable; the integrations are
-thin. The parser corpus lives in this repository under `parsers/`.
+thin. `abmx` ships no bank parsers; author them at runtime under
+`~/.config/abmx/parsers/`. The repository only contains a synthetic example under
+`examples/parsers/`.
 
 ## Install
 
 ```bash
-# Nix: the turnkey path. Bundles the parser corpus, the Actual helper, and Node.
+# Nix: the turnkey path. Bundles the Actual helper and Node.
 nix build .#          # ./result/bin/abmx
 nix develop           # rust, cargo, clippy, rustfmt, just, node, sqlite
 
@@ -57,10 +59,10 @@ include both. For a plain cargo install, run `just helper-install` once and keep
 `crates/abmx-actual/helper/` where `abmx` can find it, or set
 `ABMX_ACTUAL_HELPER`. The JSONL file sink needs neither.
 
-The Nix package bundles the corpus and points `ABMX_PARSERS` at it. A source
-checkout does not: run `just install-parsers` to check the repo corpus and copy
-it into `~/.config/abmx/parsers/`, or pass `--parsers <dir>` explicitly. `abmx`
-never reads the working directory.
+`abmx` never reads the working directory. Parsers live in your own corpus at
+`~/.config/abmx/parsers/`, or wherever `--parsers`, `$ABMX_PARSERS`, or
+`[general].parsers` points. The repository ships one synthetic example under
+`examples/parsers/` for documentation and tests; it is not installed.
 
 ## Quickstart
 
@@ -149,9 +151,8 @@ run.
    see [docs/actual.md](docs/actual.md).
 3. **Parsers** — nothing to install. `abmx samples` downloads evidence and an
    agent writes parsers under `~/.config/abmx/parsers/<id>/` (`config.toml`
-   plus `fixtures/`). If you already have a corpus (this repository ships one),
-   point at it with `--parsers`, `$ABMX_PARSERS`, or `[general].parsers`, or run
-   `just install-parsers`.
+   plus `fixtures/`). If you already have a corpus, point at it with `--parsers`,
+   `$ABMX_PARSERS`, or `[general].parsers`.
 
 ## Why mail, not statements?
 
@@ -353,7 +354,7 @@ abmx parser explain <path> --parser ID
 abmx parser lint [--parser ID]      static spec checks
 abmx parser check [-v] [--parser ID]
                                       verify every parser against its fixtures
-abmx parser init <id>               scaffold parsers/<id>/{config.toml,fixtures}
+abmx parser init <id>               scaffold ~/.config/abmx/parsers/<id>/{config.toml,fixtures}
 ```
 
 Every `abmx parser` command takes `--parsers <dir>` (repeatable) or
@@ -488,7 +489,7 @@ helm install abmx charts/abmx -f my-values.yaml
 ```
 
 `examples/abmx-config/` is a tiny chart that turns plain `config.toml` and
-`parsers/<id>/config.toml` files in Git into those ConfigMaps. See
+`files/parsers/<id>/config.toml` files in Git into those ConfigMaps. See
 [charts/abmx/README.md](charts/abmx/README.md).
 
 ## Out of scope, by design
@@ -517,7 +518,7 @@ crates/abmx-tx/        the Transaction contract
 crates/abmx-mail/      MIME and HTML normalization
 crates/abmx-parse/     the declarative parser engine
 crates/abmx-parser/    corpus discovery, routing, schema
-parsers/               the bank corpus: <id>/config.toml + <id>/fixtures/
+examples/parsers/      a synthetic parser example: <id>/config.toml + fixtures/
 charts/abmx/           Helm chart: CronJob, config/parser ConfigMaps, PVC
 examples/abmx-config/  config repo template: files → ConfigMaps
 xtask/                 fixture redaction helper

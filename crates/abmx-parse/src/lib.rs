@@ -1,7 +1,7 @@
 //! Declarative bank parsers: TOML spec in, transactions out.
 //!
 //! The engine is fixed; a new bank or a new transaction type is one data file,
-//! `parsers/<id>/config.toml`, where the directory name is the parser id.
+//! `<corpus>/<id>/config.toml`, where the directory name is the parser id.
 //! Nothing here performs I/O beyond reading spec files, so the parsing path is a
 //! pure function and easy to test.
 
@@ -709,15 +709,15 @@ mod tests {
 
     #[test]
     fn regions_group_by_label() {
-        let blocks: Vec<Block> = ["Total", "Rp", "5.500", ",00", "walletaccount", "Warung"]
+        let blocks: Vec<Block> = ["Total", "Rp", "5.500", ",00", "walletAccount", "Warung"]
             .into_iter()
             .map(Block::new)
             .collect();
-        let labels = vec!["Total".to_string(), "walletaccount".to_string()];
+        let labels = vec!["Total".to_string(), "walletAccount".to_string()];
         let regions = Regions::build(&blocks, &labels);
 
         assert_eq!(regions.get("Total"), Some(&["Rp", "5.500", ",00"][..]));
-        assert_eq!(regions.get("walletaccount"), Some(&["Warung"][..]));
+        assert_eq!(regions.get("walletAccount"), Some(&["Warung"][..]));
     }
 
     #[test]

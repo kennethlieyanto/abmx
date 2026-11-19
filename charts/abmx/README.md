@@ -54,9 +54,8 @@ Then set `gmailAuth.existingSecret` and `secrets.existingSecret`.
 
 ## Parser corpus
 
-The image bundles the corpus from the abmx repository. To manage parsers in Git
-without rebuilding the image, point `parsers.existingConfigMap` at a ConfigMap
-whose **keys are parser ids** and whose **values are that parser's
+`abmx` ships **no built-in parser corpus**. Point `parsers.existingConfigMap` at
+a ConfigMap whose **keys are parser ids** and whose **values are that parser's
 `config.toml`**:
 
 ```yaml
@@ -64,17 +63,14 @@ data:
   example.card_debit: |
     spec_version = 2
     …
-  wallet.qris_payment: |
+  example.qris_payment: |
     spec_version = 2
     …
 ```
 
-An init container expands those flat keys into `<id>/config.toml` directories.
-
-- `parsers.mode: overlay` (default) — mounted parsers win, the image corpus
-  fills any gaps.
-- `parsers.mode: replace` — only the mounted corpus is used. Use this when the
-  ConfigMap is the single source of truth.
+An init container expands those flat keys into `<id>/config.toml` directories,
+and `ABMX_PARSERS` points at that directory. The image has no fallback corpus,
+so this ConfigMap is the source of truth.
 
 See `examples/abmx-config/` in the abmx repository for a tiny Helm chart that
 generates both ConfigMaps from plain files in Git.
@@ -98,7 +94,6 @@ generates both ConfigMaps from plain files in Git.
 | `config.existingConfigMap` | `""` | ConfigMap with a `config.toml` key |
 | `config.data` | `""` | Inline TOML (rendered through `tpl`) |
 | `parsers.existingConfigMap` | `""` | ConfigMap of parser id → `config.toml` |
-| `parsers.mode` | `overlay` | `overlay` or `replace` |
 | `parsers.mountPath` | `/etc/abmx/parsers` | Mounted corpus path |
 | `gmailAuth.existingSecret` | `""` | Secret with the exported bundle |
 | `gmailAuth.key` | `gmail-credentials.json` | Secret key |

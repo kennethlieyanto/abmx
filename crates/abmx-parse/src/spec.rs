@@ -14,7 +14,7 @@ pub struct SpecSummary {
     pub version: u32,
     pub bank: String,
     pub kind: Kind,
-    /// The `parsers/<id>/config.toml` file this came from.
+    /// The `<corpus>/<id>/config.toml` file this came from.
     pub file: std::path::PathBuf,
 }
 
@@ -104,7 +104,7 @@ pub struct OccurredSpec {
     /// `en` or `id` (Indonesian month abbreviations).
     #[serde(default = "english")]
     pub locale: String,
-    /// Split date and time fields, e.g. banktwo's `Date` + `Time`.
+    /// Split date and time fields, e.g. Banktwo's `Date` + `Time`.
     #[serde(default)]
     pub date: Option<SubField>,
     #[serde(default)]

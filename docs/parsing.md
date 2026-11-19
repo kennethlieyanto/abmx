@@ -1,7 +1,7 @@
 # The parser contract
 
 Two things are versioned here: the **transaction output** (`SCHEMA_VERSION`) and
-the **parser spec format** (`spec_version` in every `parsers/<id>/config.toml`).
+the **parser spec format** (`spec_version` in every `<corpus>/<id>/config.toml`).
 
 Run `abmx parser schema` for the machine-readable JSON Schema, generated from the Rust
 types so it cannot drift from the implementation.
@@ -132,8 +132,7 @@ date and the email `Date:` header carries no meaning and is not checked.
 `id` is derived from email metadata only, never from parsed output. Consequences:
 
 - Re-parsing after a spec change never creates a second row.
-- Two byte-identical emails (a real thing; see `parsers/banktwo.qris_payment/fixtures/02.eml` and
-  `03`) collapse to one `id`.
+- Two byte-identical emails (a real thing) collapse to one `id`.
 - The archive filename does not matter.
 
 ## Exit codes
@@ -155,7 +154,7 @@ Do not do arithmetic on `amount`.
 
 ## Parser spec format
 
-One parser per label-visible template, in `parsers/<id>/config.toml`. The
+One parser per label-visible template, in `<corpus>/<id>/config.toml`. The
 directory name **is** the parser id; there is no `id` field to disagree with it.
 `spec_version` must match the engine's supported version. There is no `[match]`
 section and no account field.

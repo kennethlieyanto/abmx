@@ -196,7 +196,12 @@ mod tests {
     fn failed_rows_are_never_imported() {
         assert_eq!(
             check_transaction(
-                &tx("example.card_debit", -27500, Extraction::Strict, Status::Failed),
+                &tx(
+                    "example.card_debit",
+                    -27500,
+                    Extraction::Strict,
+                    Status::Failed
+                ),
                 &accounts()
             ),
             Err(BrokenReason::BankDeclaredFailed)
@@ -235,7 +240,7 @@ mod tests {
         assert_eq!(
             check_transaction(
                 &tx(
-                    "wallet.qris_payment",
+                    "example.qris_payment",
                     -1000,
                     Extraction::Strict,
                     Status::Settled
@@ -243,7 +248,7 @@ mod tests {
                 &accounts()
             ),
             Err(BrokenReason::UnmappedAccount {
-                parser: "wallet.qris_payment".into()
+                parser: "example.qris_payment".into()
             })
         );
     }

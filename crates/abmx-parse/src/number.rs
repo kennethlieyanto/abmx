@@ -1,7 +1,7 @@
 //! Locale-aware decimal parsing.
 //!
 //! Every bank writes money differently, and two of our banks disagree *within*
-//! the same bank (example's journal uses `372,000.00`, its card alert uses `11.000`).
+//! the same bank (Example's journal uses `372,000.00`, its card alert uses `11.000`).
 //! The spec declares the convention per field.
 
 use crate::spec::NumberStyle;

@@ -338,8 +338,7 @@ fn build_runner(config: &Config, base: &Path) -> Result<Runner> {
              abmx samples\n  \
              mkdir -p ~/.agents/skills/abmx && abmx skill > ~/.agents/skills/abmx/SKILL.md\n  \
              then: \"help me create parser for all my transaction email, use abmx parser authoring skill\"\n\n\
-             or install this checkout's corpus:\n  \
-             just install-parsers"
+             the repository's synthetic example is under examples/parsers/"
             ),
             other => anyhow::anyhow!(
                 "loading the parser corpus: {other}\n  \

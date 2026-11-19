@@ -22,7 +22,7 @@ impl GmailClient {
     ///
     /// Spam and trash are excluded so a sample set is not polluted by
     /// filtered mail. Label names are matched by Gmail's search syntax, which
-    /// understands nested labels such as `Bank/example/QRIS`.
+    /// understands nested labels such as `Bank/Example/QRIS`.
     pub fn sample_label(
         &self,
         label: &str,

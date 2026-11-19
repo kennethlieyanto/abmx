@@ -329,8 +329,9 @@ future = "field"
 
         let mut doc = ConfigDocument::open_or_template(&path).unwrap();
         doc.set_gmail_credentials_file("gmail-client.json").unwrap();
-        doc.set_account("wallet.qris_payment", "uuid-new").unwrap();
-        doc.set_account("example.card_debit", "uuid-updated").unwrap();
+        doc.set_account("example.qris_payment", "uuid-new").unwrap();
+        doc.set_account("example.card_debit", "uuid-updated")
+            .unwrap();
         assert!(doc.save().unwrap());
 
         let text = std::fs::read_to_string(&path).unwrap();
@@ -340,7 +341,7 @@ future = "field"
         assert!(text.contains("future = \"field\""));
         assert!(text.contains("credentials_file = \"gmail-client.json\""));
         assert!(text.contains("max_messages = 50"));
-        assert!(text.contains("\"wallet.qris_payment\" = \"uuid-new\""));
+        assert!(text.contains("\"example.qris_payment\" = \"uuid-new\""));
         assert!(text.contains("\"example.card_debit\" = \"uuid-updated\""));
     }
 

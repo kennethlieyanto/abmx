@@ -89,7 +89,7 @@ fn dir_id(dir: &Path) -> Option<String> {
 
 /// Verify one candidate parser against a file or directory of `.eml` samples.
 ///
-/// `spec` may be a parser directory (`parsers/<id>/`) or a `config.toml`. The
+/// `spec` may be a parser directory (`<corpus>/<id>/`) or a `config.toml`. The
 /// parser id is the directory name; pass `id` when the candidate lives in a
 /// scratch directory that is not named after the parser.
 ///

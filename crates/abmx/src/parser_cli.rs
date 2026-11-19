@@ -87,7 +87,7 @@ pub enum ParserCommand {
         parser: Option<String>,
     },
 
-    /// Scaffold parsers/<id>/config.toml and parsers/<id>/fixtures/.
+    /// Scaffold <id>/config.toml and <id>/fixtures/ in the user corpus.
     Init {
         /// Parser id, e.g. example-qris. It becomes the directory name.
         id: String,

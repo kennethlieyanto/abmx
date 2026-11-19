@@ -9,7 +9,7 @@ use abmx_gmail::{GmailConfig, GmailFetcher};
 use abmx_testkit::{MockServer, Response};
 use base64::Engine;
 
-const EMAIL: &str = "From: example <example@example.invalid>\r\n\
+const EMAIL: &str = "From: Example <example@bank.example>\r\n\
 To: me@example.invalid\r\n\
 Subject: Internet Transaction Journal\r\n\
 Date: Thu, 30 Oct 2026 17:28:17 +0700\r\n\

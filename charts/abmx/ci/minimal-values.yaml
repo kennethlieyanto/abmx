@@ -15,7 +15,6 @@ config:
 
 parsers:
   existingConfigMap: abmx-parsers
-  mode: replace
 
 gmailAuth:
   existingSecret: abmx-gmail-auth

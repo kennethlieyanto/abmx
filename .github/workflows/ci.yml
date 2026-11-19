@@ -16,7 +16,7 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
-      - run: cargo run -q --bin abmx -- parser check -v --parsers parsers
+      - run: cargo run -q --bin abmx -- parser check -v --parsers examples/parsers
 
   actual-helper:
     runs-on: ubuntu-latest

@@ -1,4 +1,4 @@
-//! `abmx-parser` — Indonesian bank transaction email parser.
+//! `abmx-parser` — bank transaction email parser.
 //!
 //! Input: an RFC 5322 message (`.eml` bytes).
 //! Output: one [`Transaction`] per email, or an [`Outcome`] explaining why not.

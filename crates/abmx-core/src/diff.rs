@@ -166,7 +166,10 @@ mod tests {
 
     #[test]
     fn a_different_importer_is_flagged() {
-        let matched = classify(&row("mail_1", -27_500, 0), &ledger(Some("example-2026-10-30")));
+        let matched = classify(
+            &row("mail_1", -27_500, 0),
+            &ledger(Some("example-2026-10-30")),
+        );
         assert!(matched.is_foreign());
         assert!(!matched.is_same_id("mail_1"));
     }

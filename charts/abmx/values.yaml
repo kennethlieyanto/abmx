@@ -45,12 +45,9 @@ config:
 
 parsers:
   # Existing ConfigMap whose keys are parser ids and whose values are that
-  # parser's config.toml. The image's bundled corpus is used as a fallback
-  # unless mode is `replace`.
+  # parser's config.toml. abmx ships no parser corpus, so a working sync needs
+  # this (or an equivalent corpus mounted through extraVolumes/extraEnv).
   existingConfigMap: ""
-  # overlay: mounted parsers win, image corpus fills gaps
-  # replace: only the mounted parsers are used
-  mode: overlay
   mountPath: /etc/abmx/parsers
   # Used by the init container that expands the flat ConfigMap keys into
   # <id>/config.toml directories.

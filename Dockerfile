@@ -4,7 +4,6 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY xtask ./xtask
-COPY parsers ./parsers
 
 RUN cargo build --release -p abmx --bin abmx
 
@@ -32,10 +31,8 @@ COPY --from=helper-deps /app/node_modules ./node_modules
 COPY crates/abmx-actual/helper/helper.js ./
 
 COPY --from=builder /src/target/release/abmx /usr/local/bin/abmx
-COPY parsers /usr/share/abmx/parsers
 
-ENV ABMX_PARSERS=/usr/share/abmx/parsers \
-    ABMX_ACTUAL_HELPER=/app/helper.js \
+ENV ABMX_ACTUAL_HELPER=/app/helper.js \
     ABMX_ACTUAL_DATA_DIR=/data/cache/actual \
     XDG_CONFIG_HOME=/data/config \
     XDG_STATE_HOME=/data/state \

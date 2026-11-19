@@ -1,46 +1,55 @@
 # Contributing
 
-The parser corpus is the heart of the project. Adding a bank is a data change,
-not a code change.
+Parsers are runtime data, not code. `abmx` deliberately ships **no bank
+parsers**: your corpus lives in `~/.config/abmx/parsers/` (or wherever
+`--parsers`/`$ABMX_PARSERS` points). This repository contains one synthetic
+example under `examples/parsers/` for documentation and tests.
 
-## Adding a parser
+Do not open a pull request adding a real bank parser or real email fixtures.
+Those belong in your private runtime corpus.
+
+## Authoring a parser locally
 
 ```bash
-mkdir -p sample/<bank>/<type>
-cp ~/saved-emails/*.eml sample/<bank>/<type>/     # 2-3 emails minimum
+mkdir -p ~/.config/abmx/samples/<id>
+cp ~/saved-emails/*.eml ~/.config/abmx/samples/<id>/   # 2-3 emails minimum
 
-abmx parser infer sample/<bank>/<type> --id <bank>.<type> > /tmp/draft.toml
-abmx parser init <bank>.<type> --parsers parsers
-$EDITOR parsers/<bank>.<type>/config.toml         # paste the draft, fix the TODOs
-abmx dump sample/<bank>/<type>/one.eml            # see the blocks
-cargo run -p xtask -- redact --in sample/<bank>/<type> --out /tmp/redacted
-cp /tmp/redacted/*.eml parsers/<bank>.<type>/fixtures/
-just check-parser <bank>.<type>
+abmx parser init <id>                                  # writes ~/.config/abmx/parsers/<id>
+$EDITOR ~/.config/abmx/parsers/<id>/config.toml
+abmx dump ~/.config/abmx/samples/<id>/one.eml          # see the blocks
+abmx parser check --parser <id> --parsers ~/.config/abmx/parsers
 ```
 
-`just check-parser` must pass before you open a pull request.
+For a fully synthetic contribution, edit `examples/parsers/example.bank/` and
+run:
 
-To make the parser active outside the checkout, `just install-parser <bank>.<type>`
-checks it and copies the whole directory into `~/.config/abmx/parsers/`.
+```bash
+abmx parser check --parsers examples/parsers
+```
+
+`just ci` runs that check as part of the test suite.
 
 ## Fixture rules
 
 - **Never commit raw emails.** `sample/` and `redact.toml` are gitignored because
-  they contain real names, card numbers and account numbers.
-- Run `just redact` (or `cargo run -p xtask -- redact`) and commit only the output.
+  they contain real names, card numbers, and account numbers.
+- Run `just redact` (or `cargo run -p xtask -- redact`) and keep the output in
+  your private corpus.
 - Add any new real value you see to `redact.toml`, then re-run redaction. The
   tool fails the run if a sensitive value survives.
-- Two emails may legitimately be identical. Keep both fixtures: they prove that
-  identity is stable.
+- The only committed fixtures are synthetic: `@example.invalid` addresses,
+  example merchants, and arbitrary amounts.
+- Two emails may legitimately be identical. Keep both fixtures in your corpus:
+  they prove that identity is stable.
 
 ## Spec rules
 
 - `spec_version` only changes with the TOML format. Do not bump it for a new
   parser.
 - Bump `version` inside the spec when the extraction behaviour changes.
-- One directory per parser: `parsers/<bank>.<type>/config.toml`, with samples in
-  `parsers/<bank>.<type>/fixtures/`. The directory name **is** the parser id;
-  there is no `id` field in the spec.
+- One directory per parser: `<corpus>/<id>/config.toml`, with samples in
+  `<corpus>/<id>/fixtures/`. The directory name **is** the parser id; there is
+  no `id` field in the spec.
 - Add a fixture for every layout variation you know about. A bank that sends two
   layouts is two `requires`/`rejects` fingerprints, usually in the same parser if
   the fields are identical, or two parser directories if they are not.
@@ -50,13 +59,13 @@ checks it and copies the whole directory into `~/.config/abmx/parsers/`.
 ## Before pushing
 
 ```bash
-just ci          # fmt, clippy, tests, parser fixtures
+just ci          # fmt, clippy, tests, synthetic parser fixtures
 just helper-test # the Node helper (run `just helper-install` once)
 ```
 
-That runs formatting, clippy with warnings denied, the whole test suite, and
-every parser against its fixtures. CI also runs the helper's Node tests and the
-real helper process.
+That runs formatting, clippy with warnings denied, the whole test suite, and the
+synthetic example parser against its fixture. CI also runs the helper's Node
+tests and the real helper process.
 
 ## The Actual helper
 
@@ -100,16 +109,15 @@ git push origin vX.Y.Z
 ```
 
 The Nix flake reads the version from `Cargo.toml`, so bump it before tagging.
-Parser-only changes under `parsers/` are data, not code: they ship with the next
-tag like everything else, because the corpus is bundled into the binary's
-`share/` directory.
+Parser corpora are not part of the release: they are runtime data managed by the
+user (or by a deployment's ConfigMap).
 
 ## Scope
 
 Two extension surfaces, two rules:
 
-- **A new bank** is a parser directory under `parsers/` (`config.toml` plus
-  `fixtures/`). No Rust.
+- **A new bank** is a parser directory in your runtime corpus (`config.toml`
+  plus `fixtures/`). No Rust, and no change to this repository.
 - **A new mailbox or ledger** is a crate implementing `Fetcher` or `Sink`, plus
   one builder in `abmx/src/config.rs`. Keep vendor quirks inside the crate.
 

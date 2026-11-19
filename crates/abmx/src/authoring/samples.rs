@@ -328,7 +328,7 @@ pub fn is_label_like(text: &str) -> bool {
 
 /// Turn a label into a stable, lower-case parser id.
 ///
-/// `example/QRIS Payment` -> `example.qris_payment`. A `/` becomes the `bank.type`
+/// `Example/QRIS Payment` -> `example.qris_payment`. A `/` becomes the `bank.type`
 /// separator; other separators become `_`.
 pub fn slug(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn slug_keeps_bank_separator() {
-        assert_eq!(slug("example/QRIS Payment"), "example.qris_payment");
+        assert_eq!(slug("Example/QRIS Payment"), "example.qris_payment");
         assert_eq!(slug("  Tax: 2026  "), "tax_2026");
         assert_eq!(slug("simple"), "simple");
     }

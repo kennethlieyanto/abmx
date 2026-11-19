@@ -66,15 +66,15 @@ mod tests {
     #[test]
     fn single_sender_is_a_plain_from_term() {
         assert_eq!(
-            build_query(&["alerts@example.invalid".into()], 7, None),
-            "from:alerts@example.invalid -in:spam -in:trash newer_than:7d"
+            build_query(&["alerts@bank.example".into()], 7, None),
+            "from:alerts@bank.example -in:spam -in:trash newer_than:7d"
         );
     }
 
     #[test]
     fn multiple_senders_are_ored() {
-        let query = build_query(&["a@example.invalid".into(), "c@wallet.example".into()], 0, None);
-        assert_eq!(query, "from:(a@example.invalid OR c@wallet.example) -in:spam -in:trash");
+        let query = build_query(&["a@bank.example".into(), "c@wallet.example".into()], 0, None);
+        assert_eq!(query, "from:(a@bank.example OR c@wallet.example) -in:spam -in:trash");
     }
 
     #[test]

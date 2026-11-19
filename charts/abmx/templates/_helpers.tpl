@@ -72,12 +72,5 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
 {{- define "abmx.parserPaths" -}}
-{{- if not (has .Values.parsers.mode (list "overlay" "replace")) -}}
-{{- fail "parsers.mode must be 'overlay' or 'replace'" -}}
-{{- end -}}
-{{- if eq .Values.parsers.mode "overlay" -}}
-{{- printf "%s:/usr/share/abmx/parsers" .Values.parsers.mountPath -}}
-{{- else -}}
 {{- .Values.parsers.mountPath -}}
-{{- end -}}
 {{- end -}}

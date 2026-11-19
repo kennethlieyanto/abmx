@@ -17,5 +17,10 @@ result
 /sample/
 redact.toml
 
+# Local plan output (`abmx sync` dry runs contain real transactions)
+/plan
+/plan.json
+/plan.*.json
+
 # Node helper dependencies (bundled by Nix and the container, never committed)
 crates/abmx-actual/helper/node_modules/

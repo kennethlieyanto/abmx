@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use abmx::config::Config;
 use abmx::paths;
+use abmx::samples::{restrict, write_private};
 use abmx::state::State;
 use abmx_core::{
     classify_window, ApplyOptions, FetchRequest, Fetcher, ImportRow, MessageKey, Plan, PlannedRow,
@@ -20,6 +21,7 @@ use abmx_core::{
 };
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
+use serde::Serialize;
 
 const EXIT_FAILED: i32 = 2;
 const MATCH_WINDOW_DAYS: i64 = 3;
@@ -82,6 +84,25 @@ enum StatementCommand {
         json: bool,
     },
 
+    /// Download PDF statements for parser authoring evidence.
+    ///
+    /// `--label` samples an unmapped label too, so evidence is available
+    /// before a parser or account mapping exists.
+    Samples {
+        /// Restrict to one statement label name or parser id.
+        #[arg(long, value_name = "LABEL|PARSER")]
+        label: Option<String>,
+        /// How many of the newest messages to download per label.
+        #[arg(long, default_value_t = 3, value_name = "N")]
+        samples: usize,
+        /// Output directory. Defaults to $XDG_CONFIG_HOME/abmx/statement-samples.
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+        /// Machine-readable manifest.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Fetch statement PDFs, verify them, and import rows the ledger lacks.
     Sync {
         /// Print the plan and write nothing.
@@ -133,6 +154,25 @@ pub fn run(cli: StatementCli, config_path: Option<PathBuf>) -> Result<i32> {
             dry_run,
             json,
         ),
+        StatementCommand::Samples {
+            label,
+            samples,
+            out,
+            json,
+        } => match statement_samples(config_path.as_deref(), label, samples, out)? {
+            Some(report) => {
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                } else {
+                    print_sample_report(&report);
+                }
+                Ok(0)
+            }
+            None => {
+                eprintln!("statements are disabled ([statements].enabled = false)");
+                Ok(0)
+            }
+        },
         StatementCommand::Sync {
             dry_run,
             json,
@@ -304,6 +344,254 @@ fn check(
     }
 
     Ok(if failures > 0 { EXIT_FAILED } else { 0 })
+}
+
+#[derive(Debug, Serialize)]
+pub struct SampleReport {
+    output: PathBuf,
+    requested: usize,
+    labels: Vec<LabelSamples>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct LabelSamples {
+    label: String,
+    parser_id: String,
+    requested: usize,
+    messages: usize,
+    pdfs: usize,
+    files: Vec<FileSample>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct FileSample {
+    file: String,
+    message: String,
+    attachment: Option<String>,
+    bytes: usize,
+}
+
+#[derive(Debug)]
+struct SampleTarget {
+    label: String,
+    parser_id: String,
+}
+
+/// Build the statement samples. Returns `None` when statements are disabled so
+/// the combined `abmx samples` can omit the source.
+pub fn statement_samples(
+    config_path: Option<&Path>,
+    selector: Option<String>,
+    count: usize,
+    out: Option<PathBuf>,
+) -> Result<Option<SampleReport>> {
+    let path = paths::config_path(config_path)?;
+    let config = Config::load(&path)?;
+    let base = Config::base_dir(&path);
+    config.validate_statements()?;
+    if !config.statements.enabled {
+        return Ok(None);
+    }
+
+    let fetcher = config
+        .build_gmail_with(&base, &config.statements.prefix, None)
+        .context("Gmail is not authorized; run `abmx setup` or `abmx auth gmail`")?;
+    let discovered: Vec<String> = fetcher
+        .routed_labels()?
+        .into_iter()
+        .map(|label| label.name)
+        .collect();
+    let (targets, warnings) = select_sample_targets(&config, &discovered, selector.as_deref())?;
+
+    let requested = count.max(1);
+    let output = out.unwrap_or_else(paths::default_statement_samples_dir);
+    std::fs::create_dir_all(&output).with_context(|| format!("creating {}", output.display()))?;
+    restrict(&output, 0o700)?;
+
+    let mut labels = Vec::with_capacity(targets.len());
+    for target in targets {
+        let dir = output.join(&target.parser_id);
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).with_context(|| format!("clearing {}", dir.display()))?;
+        }
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        restrict(&dir, 0o700)?;
+
+        let messages = fetcher.sample_label(&target.label, requested)?;
+        let mut files = Vec::new();
+        let mut label_warnings = Vec::new();
+
+        for (message_index, message) in messages.iter().enumerate() {
+            let attachments = match abmx_mail::attachments(&message.bytes) {
+                Ok(attachments) => attachments,
+                Err(error) => {
+                    label_warnings.push(format!("message {}: {error}", message.id));
+                    continue;
+                }
+            };
+            let pdfs: Vec<&abmx_mail::Attachment> = attachments
+                .iter()
+                .filter(|attachment| attachment.is_pdf())
+                .collect();
+
+            if pdfs.is_empty() {
+                label_warnings.push(format!("message {} has no PDF attachment", message.id));
+                continue;
+            }
+
+            for (attachment_index, attachment) in pdfs.iter().enumerate() {
+                let file = if pdfs.len() == 1 {
+                    format!("{:02}.pdf", message_index + 1)
+                } else {
+                    format!("{:02}-{:02}.pdf", message_index + 1, attachment_index + 1)
+                };
+                let path = dir.join(&file);
+                write_private(&path, &attachment.bytes)?;
+                files.push(FileSample {
+                    file,
+                    message: message.id.clone(),
+                    attachment: attachment.name.clone(),
+                    bytes: attachment.bytes.len(),
+                });
+            }
+        }
+
+        if messages.len() < requested {
+            label_warnings.push(format!(
+                "wanted {requested} messages, downloaded {}",
+                messages.len()
+            ));
+        }
+
+        labels.push(LabelSamples {
+            label: target.label,
+            parser_id: target.parser_id,
+            requested,
+            messages: messages.len(),
+            pdfs: files.len(),
+            files,
+            warnings: label_warnings,
+        });
+    }
+
+    let report = SampleReport {
+        output: output.clone(),
+        requested,
+        labels,
+        warnings,
+    };
+    let manifest = output.join("manifest.json");
+    write_private(
+        &manifest,
+        &serde_json::to_vec_pretty(&report).context("serializing the samples manifest")?,
+    )?;
+
+    Ok(Some(report))
+}
+
+pub fn print_sample_report(report: &SampleReport) {
+    println!(
+        "samples: {} label(s) -> {}",
+        report.labels.len(),
+        report.output.display()
+    );
+    for label in &report.labels {
+        println!(
+            "  {:<44} {:>2} PDF(s) from {} message(s)",
+            label.label, label.pdfs, label.messages
+        );
+    }
+    for warning in &report.warnings {
+        eprintln!("warning: {warning}");
+    }
+    for label in &report.labels {
+        for warning in &label.warnings {
+            eprintln!("warning: {}: {warning}", label.label);
+        }
+    }
+    println!();
+    println!("next: author the parser from these PDFs; see `abmx skill`");
+}
+
+/// Every valid label under the prefix that is not ignored is a target. The
+/// account mapping is a sync decision, not an authoring one; `--label` narrows
+/// the set.
+fn select_sample_targets(
+    config: &Config,
+    discovered: &[String],
+    selector: Option<&str>,
+) -> Result<(Vec<SampleTarget>, Vec<String>)> {
+    let mut targets = Vec::new();
+    let mut warnings = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut ignored_match = false;
+
+    for label in discovered {
+        let Some(parser_id) = config.statements.parser_id(label) else {
+            continue;
+        };
+        let selected = match selector {
+            Some(selector) => {
+                label.eq_ignore_ascii_case(selector) || parser_id.eq_ignore_ascii_case(selector)
+            }
+            // Sampling is evidence, not sync: every non-ignored label is fair
+            // game, mapped or not.
+            None => true,
+        };
+        if !selected {
+            continue;
+        }
+        if config.statements.is_ignored(&parser_id) {
+            if selector.is_some() {
+                ignored_match = true;
+            }
+            continue;
+        }
+        if seen.insert(parser_id.clone()) {
+            targets.push(SampleTarget {
+                label: label.clone(),
+                parser_id,
+            });
+        }
+    }
+
+    if let Some(selector) = selector {
+        if targets.is_empty() {
+            if ignored_match {
+                bail!("`{selector}` is in [statements].ignore; remove it there to sample it");
+            }
+            bail!(
+                "no statement label under `{}` matches `{selector}`",
+                config.statements.prefix
+            );
+        }
+    } else if targets.is_empty() {
+        bail!(
+            "no sampleable statement labels under `{}`; add a gmailctl label or \
+             remove it from [statements].ignore",
+            config.statements.prefix
+        );
+    }
+
+    let mut mapped = BTreeSet::new();
+    for key in config.statements.accounts.keys() {
+        mapped.insert(key.split(':').next().unwrap_or(key));
+    }
+    for parser_id in mapped {
+        let found = discovered
+            .iter()
+            .any(|label| config.statements.parser_id(label).as_deref() == Some(parser_id));
+        if !found {
+            warnings.push(format!(
+                "`{}{parser_id}` is mapped in [statements.accounts] but no such Gmail label exists",
+                config.statements.prefix
+            ));
+        }
+    }
+
+    Ok((targets, warnings))
 }
 
 pub fn sync(
@@ -913,7 +1201,8 @@ fn collect_pdfs(dir: &Path, out: &mut Vec<PathBuf>) {
 
 #[cfg(test)]
 mod tests {
-    use super::infer_parser_id;
+    use super::{infer_parser_id, select_sample_targets};
+    use abmx::config::Config;
     use std::path::Path;
 
     #[test]
@@ -933,5 +1222,65 @@ mod tests {
             infer_parser_id(Path::new("/statements/.hidden/01.pdf")),
             None
         );
+    }
+
+    fn sample_config() -> Config {
+        toml::from_str(
+            r#"
+[statements]
+prefix = "financial_statements/"
+ignore = ["pluang.portfolio_summary", "bca.rdn_estatement"]
+
+[statements.accounts]
+"mandiri.consolidated_statement" = "uuid"
+"#,
+        )
+        .unwrap()
+    }
+
+    fn discovered() -> Vec<String> {
+        vec![
+            "financial_statements/bca.savings_statement".to_owned(),
+            "financial_statements/mandiri.consolidated_statement".to_owned(),
+            "financial_statements/pluang.portfolio_summary".to_owned(),
+            "financial_statements/bca.rdn_estatement".to_owned(),
+        ]
+    }
+
+    #[test]
+    fn samples_every_non_ignored_label_mapped_or_not() {
+        let (targets, _) = select_sample_targets(&sample_config(), &discovered(), None).unwrap();
+        let ids: Vec<&str> = targets
+            .iter()
+            .map(|target| target.parser_id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["bca.savings_statement", "mandiri.consolidated_statement"]
+        );
+    }
+
+    #[test]
+    fn a_selector_can_name_an_unmapped_label() {
+        let (targets, _) = select_sample_targets(
+            &sample_config(),
+            &discovered(),
+            Some("bca.savings_statement"),
+        )
+        .unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].parser_id, "bca.savings_statement");
+    }
+
+    #[test]
+    fn an_ignored_selector_is_reported() {
+        let error = select_sample_targets(
+            &sample_config(),
+            &discovered(),
+            Some("pluang.portfolio_summary"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("ignore"), "{error}");
     }
 }

@@ -169,7 +169,7 @@ labelIds=<label id>  q=-in:spam -in:trash
   ambiguous.
 - `[receipts].since` adds Gmail's `after:` filter to the sync query. Without it
   there is no date bound, so every labelled message is fetched and parsed.
-  `abmx receipt samples` is the exception: it uses a label search without the window,
+  `abmx samples` is the exception: it uses a label search without the window,
   so authoring evidence is unaffected.
 - `--limit N` caps the number of **unseen** messages fetched in one run; it is
   useful for a smoke test, not as a long-term window.
@@ -189,7 +189,7 @@ Labels are the routing identity, not a hint. The user applies exactly one
 abmx receipt samples --label receipt/example-qris
 ```
 
-`abmx receipt samples` downloads up to three messages per managed label into
+`abmx receipt samples` downloads up to three messages per non-ignored label into
 `$XDG_CONFIG_HOME/abmx/samples/<parser-id>/` with `0600` permissions and writes
 `manifest.json`. It never parses, never needs a parser, and never touches the
 state database. Fewer than three samples is a warning; if the samples are

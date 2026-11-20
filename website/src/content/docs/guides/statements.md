@@ -76,6 +76,11 @@ fetched 4, parsed 25 rows — new 25, already present 0, ambiguous 0 (added), fa
 
 A statement row is written `cleared`, because the bank has settled it.
 
+## Authoring the parser
+
+See [Authoring statement parsers](/guides/authoring-statements/) for samples,
+the normalized dump, the spec, and the arithmetic check.
+
 ## Importing one PDF by hand
 
 When the bank only offers a portal or app download (BCA, for example), keep the

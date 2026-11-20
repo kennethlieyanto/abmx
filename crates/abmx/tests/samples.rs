@@ -1,4 +1,4 @@
-//! `abmx receipt samples`: download the newest messages for every managed label.
+//! `abmx receipt samples`: download the newest messages for every non-ignored label.
 
 use std::path::Path;
 
@@ -83,7 +83,7 @@ fn raw_routes(server: &MockServer, ids: &[&str]) {
 }
 
 #[test]
-fn downloads_the_newest_three_for_managed_labels_only() {
+fn downloads_the_newest_three_for_non_ignored_labels() {
     let dir = tempfile::tempdir().unwrap();
     let server = MockServer::start();
     token_route(&server);
@@ -123,16 +123,31 @@ fn downloads_the_newest_three_for_managed_labels_only() {
 
     assert_eq!(
         report.labels.len(),
-        1,
-        "ignored/unmanaged labels are skipped"
+        2,
+        "ignored labels are skipped; unmapped ones are sampled"
     );
-    let label = &report.labels[0];
+    assert!(report
+        .labels
+        .iter()
+        .all(|label| label.parser_id != "ignored.one"));
+
+    let label = report
+        .labels
+        .iter()
+        .find(|label| label.parser_id == "example.card_debit")
+        .expect("mapped label");
     assert_eq!(label.label, "receipt/example.card_debit");
-    assert_eq!(label.parser_id, "example.card_debit");
     assert_eq!(label.requested, 3);
     assert_eq!(label.downloaded, 3);
     assert_eq!(label.messages, ["m1", "m2", "m3"]);
     assert!(label.warnings.is_empty());
+
+    let unmanaged = report
+        .labels
+        .iter()
+        .find(|label| label.parser_id == "unmanaged.one")
+        .expect("unmapped label is still evidence");
+    assert_eq!(unmanaged.downloaded, 3);
 
     for index in 1..=3 {
         let path = out
@@ -145,6 +160,7 @@ fn downloads_the_newest_three_for_managed_labels_only() {
     let manifest = std::fs::read_to_string(out.join("manifest.json")).unwrap();
     assert!(manifest.contains("\"downloaded\": 3"));
     assert!(manifest.contains("\"parser_id\": \"example.card_debit\""));
+    assert!(manifest.contains("\"parser_id\": \"unmanaged.one\""));
 
     // Sampled mail is private.
     #[cfg(unix)]

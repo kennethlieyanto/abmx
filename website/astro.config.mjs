@@ -57,7 +57,14 @@ export default defineConfig({
             'guides/gmail',
             'guides/actual',
             'guides/statements',
-            'guides/authoring',
+            {
+              label: 'Authoring',
+              items: [
+                'guides/authoring',
+                'guides/authoring-receipts',
+                'guides/authoring-statements',
+              ],
+            },
             {
               label: 'Deployment',
               collapsed: true,

@@ -64,7 +64,7 @@ was authored against.
 the parser:
 
 ```bash
-abmx receipt samples        # up to 3 newest messages per managed label
+abmx samples                # evidence for labeled receipts and statements
 mkdir -p ~/.agents/skills/abmx && abmx skill > ~/.agents/skills/abmx/SKILL.md
 ```
 

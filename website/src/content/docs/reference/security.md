@@ -35,8 +35,10 @@ See [Configuration](/start/configuration/#secrets) for the full table.
 
 ## Parser privacy
 
-`abmx receipt samples` downloads real mail to
-`$XDG_CONFIG_HOME/abmx/samples/<parser-id>/` with `0600` permissions. Those files
+`abmx samples` downloads real mail to
+`$XDG_CONFIG_HOME/abmx/samples/<parser-id>/` and statement PDFs to
+`$XDG_CONFIG_HOME/abmx/statement-samples/<parser-id>/`, both with `0600`
+permissions. Those files
 contain real amounts, counterparties, and account numbers. Delete the directory
 when you are done authoring.
 

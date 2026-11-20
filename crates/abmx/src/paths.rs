@@ -85,6 +85,11 @@ pub fn default_parsers_dir() -> PathBuf {
     xdg_config_dir().join("abmx/parsers")
 }
 
+/// Where `abmx statement samples` writes PDFs (PII; outside the repository).
+pub fn default_statement_samples_dir() -> PathBuf {
+    xdg_config_dir().join("abmx/statement-samples")
+}
+
 pub fn default_token_path() -> PathBuf {
     xdg_state_dir().join("abmx/gmail-credentials.json")
 }

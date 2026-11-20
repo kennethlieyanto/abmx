@@ -21,18 +21,21 @@ abmx dump <path> [--json]           normalized block dump (authoring aid)
 
 abmx sync [--dry-run] [--json] [--limit N]
                                     sync every enabled source: receipts, then statements
+abmx samples [--samples N] [--json]
+                                    download evidence for both enabled sources
 abmx receipt sync [--dry-run] [--json] [--diff] [--limit N]
                                     receipts only: fetch, parse, and write
 abmx receipt sync --from-dir DIR [--label L]
                                     offline receipt sync from saved .eml files
 abmx receipt samples [--label L|PARSER] [--samples N] [--out DIR] [--json]
-                                    download sample emails for parser authoring
-abmx samples                        deprecated alias for `abmx receipt samples`
+                                    sample emails only
 
 abmx statement dump <file.pdf> [--password-file F] [--json]
                                     positioned text dump (statement authoring aid)
 abmx statement check [--parser ID] [--password-file F] [-v]
                                     verify statement parsers and their arithmetic
+abmx statement samples [--label LABEL|PARSER] [--samples N] [--out DIR] [--json]
+                                    download PDF statements for parser authoring
 abmx statement import <file.pdf> [--parser ID] [--password-file F] [--dry-run] [--json]
                                     import one statement PDF by hand
 abmx statement sync [--dry-run] [--json] [--limit N]
@@ -90,6 +93,13 @@ key to each row.
 `--diff` (with `abmx receipt sync --dry-run`) additionally reads the ledger and
 reports rows that are already present, including any imported under a foreign
 `imported_id`.
+
+`abmx samples` downloads evidence for every enabled source: receipt emails and
+statement PDFs. It samples every valid label under the prefixes that is not in
+the matching `ignore` list, mapped or not. The source-specific `--label` and
+`--out` flags live on `abmx receipt samples` and `abmx statement samples`. Like
+sync, sampling ignores the `since` windows and writes `0600` artifacts under the
+XDG config directory (`samples/` and `statement-samples/`).
 
 `abmx statement import` is the manual path for a bank that only offers a portal
 or app download: the PDF stays local, there is no Gmail call, and the ledger's

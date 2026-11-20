@@ -1,8 +1,9 @@
 //! `abmx receipt samples`: download the evidence a parser author needs.
 //!
-//! Only labels mapped in `[receipts.accounts]` are sampled. The command never
-//! parses anything and never requires a parser corpus; it exists so an agent
-//! (or a human) can inspect real mail and write a spec from it.
+//! Every valid label under the prefix that is not in `[receipts].ignore` is
+//! sampled, mapped or not. The command never parses anything and never requires
+//! a parser corpus; it exists so an agent (or a human) can inspect real mail and
+//! write a spec from it.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -14,7 +15,7 @@ use serde::Serialize;
 
 use crate::config::Config;
 use crate::paths;
-use crate::receipts::{self, ManagedLabel};
+use crate::receipts;
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -55,6 +56,11 @@ pub struct LabelSamples {
     pub warnings: Vec<String>,
 }
 
+struct Target {
+    label: String,
+    parser_id: String,
+}
+
 pub fn download(
     config: &Config,
     fetcher: &GmailFetcher,
@@ -67,7 +73,22 @@ pub fn download(
         .collect();
     let plan = receipts::plan(&discovered, &config.receipts);
 
-    let mut targets: Vec<ManagedLabel> = plan.managed;
+    // Managed and unmanaged labels are both evidence. A label is excluded only
+    // by [receipts].ignore; the account mapping is a sync decision, not an
+    // authoring one.
+    let mut targets: Vec<Target> = plan
+        .managed
+        .iter()
+        .map(|label| Target {
+            label: label.label.clone(),
+            parser_id: label.parser_id.clone(),
+        })
+        .chain(plan.unmanaged.iter().map(|label| Target {
+            label: label.label.clone(),
+            parser_id: label.parser_id.clone(),
+        }))
+        .collect();
+
     if let Some(selector) = &options.label {
         let selector = selector.trim();
         targets.retain(|label| {
@@ -75,14 +96,24 @@ pub fn download(
                 || label.parser_id.eq_ignore_ascii_case(selector)
         });
         if targets.is_empty() {
-            bail!("no managed label matches `{selector}`");
+            if plan.ignored.iter().any(|label| {
+                label.label.eq_ignore_ascii_case(selector)
+                    || label.parser_id.eq_ignore_ascii_case(selector)
+            }) {
+                bail!("`{selector}` is in [receipts].ignore; remove it there to sample it");
+            }
+            bail!(
+                "no label under `{}` matches `{selector}`",
+                config.receipts.prefix
+            );
         }
     }
 
     if targets.is_empty() {
         bail!(
-            "no managed labels; run `abmx setup` to choose which labels to import\n  \
-             (only [receipts.accounts] entries are sampled)"
+            "no sampleable labels under `{}`; add a gmailctl label or remove it from \
+             [receipts].ignore",
+            config.receipts.prefix
         );
     }
 
@@ -121,7 +152,7 @@ pub fn download(
 
 fn download_label(
     fetcher: &GmailFetcher,
-    target: &ManagedLabel,
+    target: &Target,
     output: &Path,
     requested: usize,
 ) -> Result<LabelSamples> {
@@ -167,7 +198,9 @@ fn write_manifest(output: &Path, report: &SampleReport) -> Result<()> {
     write_private(&path, &json)
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+/// Write a sample artifact with `0600` permissions. Used by both the receipt
+/// and statement sample commands.
+pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -192,7 +225,8 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn restrict(path: &Path, mode: u32) -> Result<()> {
+/// Restrict a sample directory (`0700`).
+pub fn restrict(path: &Path, mode: u32) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

@@ -7,8 +7,14 @@ distinguished by `input = "pdf"`. Statements are imported by
 
 ## Authoring loop
 
-1. Get one or more PDFs for the same bank/template. Never commit them: they
-   contain PII.
+1. Get one or more PDFs for the same bank/template:
+
+   ```sh
+   abmx statement samples --label financial_statements/<id> --samples 3
+   ```
+
+   `--label` may name an unmapped label. Never commit the PDFs: they contain
+   PII.
 2. Dump the positioned text:
 
    ```sh

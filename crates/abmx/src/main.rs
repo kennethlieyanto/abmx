@@ -117,18 +117,12 @@ enum Command {
         limit: Option<usize>,
     },
 
-    /// Deprecated: use `abmx receipt samples`.
+    /// Download evidence for every enabled source: receipts then statements.
     Samples {
-        /// Restrict to one Gmail label name or parser id.
-        #[arg(long, value_name = "LABEL|PARSER")]
-        label: Option<String>,
         /// How many of the newest messages to download per label.
         #[arg(long, default_value_t = 3, value_name = "N")]
         samples: usize,
-        /// Output directory. Defaults to $XDG_CONFIG_HOME/abmx/samples.
-        #[arg(long, value_name = "DIR")]
-        out: Option<PathBuf>,
-        /// Machine-readable manifest.
+        /// Print the manifests as JSON on stdout.
         #[arg(long)]
         json: bool,
     },
@@ -196,7 +190,7 @@ enum ReceiptCommand {
         limit: Option<usize>,
     },
 
-    /// Download the newest messages for each managed label (parser evidence).
+    /// Download the newest messages for each non-ignored label (parser evidence).
     Samples {
         /// Restrict to one Gmail label name or parser id.
         #[arg(long, value_name = "LABEL|PARSER")]
@@ -363,22 +357,34 @@ fn run(cli: Cli) -> Result<i32> {
                 samples,
                 out,
                 json,
-            } => run_samples(&settings, label, samples, out, json),
+            } => match collect_receipt_samples(
+                &settings,
+                abmx::samples::Options {
+                    out,
+                    samples,
+                    label,
+                },
+            )? {
+                Some(report) => {
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&report)?);
+                    } else {
+                        print_receipt_samples(&report);
+                    }
+                    Ok(EXIT_OK)
+                }
+                None => {
+                    eprintln!("receipts are disabled ([receipts].enabled = false)");
+                    Ok(EXIT_OK)
+                }
+            },
         },
         Command::Sync {
             dry_run,
             json,
             limit,
         } => sync_all(&settings, dry_run, json, limit),
-        Command::Samples {
-            label,
-            samples,
-            out,
-            json,
-        } => {
-            eprintln!("note: `abmx samples` is now `abmx receipt samples`");
-            run_samples(&settings, label, samples, out, json)
-        }
+        Command::Samples { samples, json } => samples_all(&settings, samples, json),
         Command::Reset { purge, yes } => reset(&settings, purge, yes),
         Command::Accounts { json } => accounts(&settings, json),
         Command::Parser(cli) => parser_cli::run(cli),
@@ -1862,47 +1868,24 @@ fn accounts(settings: &Settings, json: bool) -> Result<i32> {
     Ok(EXIT_OK)
 }
 
-fn run_samples(
+fn collect_receipt_samples(
     settings: &Settings,
-    label: Option<String>,
-    count: usize,
-    out: Option<PathBuf>,
-    json: bool,
-) -> Result<i32> {
+    options: abmx::samples::Options,
+) -> Result<Option<abmx::samples::SampleReport>> {
     let (config, base, _) = load_config(settings)?;
     config.validate_receipts()?;
     if !config.receipts.enabled {
-        eprintln!("receipts are disabled ([receipts].enabled = false)");
-        return Ok(EXIT_OK);
-    }
-    if config.receipts.accounts.is_empty() {
-        bail!("no [receipts.accounts] entries; run `abmx setup` to choose which labels to import");
-    }
-    if config.receipts.since.is_none() {
-        eprintln!(
-            "warning: [receipts].since is not set; sync will scan every labelled message. \
-             Set a date or run `abmx setup`."
-        );
+        return Ok(None);
     }
 
     let fetcher = config
         .build_gmail(&base)
         .context("Gmail is not authorized; run `abmx setup` or `abmx auth gmail`")?;
-    let report = abmx::samples::download(
-        &config,
-        &fetcher,
-        &abmx::samples::Options {
-            out,
-            samples: count,
-            label,
-        },
-    )?;
+    let report = abmx::samples::download(&config, &fetcher, &options)?;
+    Ok(Some(report))
+}
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(EXIT_OK);
-    }
-
+fn print_receipt_samples(report: &abmx::samples::SampleReport) {
     println!(
         "samples: {} label(s) -> {}",
         report.labels.len(),
@@ -1926,7 +1909,67 @@ fn run_samples(
 
     println!();
     println!("next: author the parsers from these samples; see `abmx skill`");
-    Ok(EXIT_OK)
+}
+
+fn samples_all(settings: &Settings, count: usize, json: bool) -> Result<i32> {
+    let mut reports = serde_json::Map::new();
+    let mut tool_failed = false;
+
+    if !json {
+        eprintln!("== receipts ==");
+    }
+    match collect_receipt_samples(
+        settings,
+        abmx::samples::Options {
+            out: None,
+            samples: count,
+            label: None,
+        },
+    ) {
+        Ok(Some(report)) => {
+            if json {
+                reports.insert("receipts".to_owned(), serde_json::to_value(&report)?);
+            } else {
+                print_receipt_samples(&report);
+            }
+        }
+        Ok(None) => {
+            if !json {
+                eprintln!("receipts are disabled ([receipts].enabled = false)");
+            }
+        }
+        Err(error) => {
+            eprintln!("error: receipts: {error:#}");
+            tool_failed = true;
+        }
+    }
+
+    if !json {
+        eprintln!("\n== statements ==");
+    }
+    match statement_cli::statement_samples(settings.config.as_deref(), None, count, None) {
+        Ok(Some(report)) => {
+            if json {
+                reports.insert("statements".to_owned(), serde_json::to_value(&report)?);
+            } else {
+                statement_cli::print_sample_report(&report);
+            }
+        }
+        Ok(None) => {
+            if !json {
+                eprintln!("statements are disabled ([statements].enabled = false)");
+            }
+        }
+        Err(error) => {
+            eprintln!("error: statements: {error:#}");
+            tool_failed = true;
+        }
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&reports)?);
+    }
+    Ok(if tool_failed { EXIT_TOOL } else { EXIT_OK })
 }
 
 fn dump(path: &Path, json: bool) -> Result<i32> {

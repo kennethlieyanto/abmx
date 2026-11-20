@@ -71,8 +71,8 @@ History window
 - `All history` is available but warns: it scans every labelled message and is
   slow, and old templates may not match the parser.
 - The date is saved to `[receipts].since`. It bounds `abmx receipt sync` and
-  `abmx status --strict`. `abmx receipt samples` ignores it and always takes the newest
-  three messages per managed label.
+  `abmx status --strict`. `abmx samples` ignores it and always takes the newest
+  three messages per non-ignored label.
 
 ### 4. Gmail
 
@@ -126,7 +126,7 @@ For every accepted label it offers the open accounts and writes:
 "example.card_debit" = "<actual account uuid>"
 ```
 
-A parser does not have to exist yet. The next step is `abmx receipt samples` plus
+A parser does not have to exist yet. The next step is `abmx samples` plus
 [parser authoring](/guides/authoring/).
 
 ### 7. Statements
@@ -170,7 +170,7 @@ still an error — that is drift, not an absence of a decision.
 ## After setup
 
 ```bash
-abmx receipt samples                    # download evidence for the mapped labels
+abmx samples                            # download evidence for every labeled source
 abmx receipt sync --dry-run     # inspect the plan once parsers exist
 abmx status                     # full health check (Gmail, labels, accounts, sink)
 abmx status --offline           # skip network checks

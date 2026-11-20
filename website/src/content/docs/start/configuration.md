@@ -59,7 +59,7 @@ be a single parser id; dots are conventional, not required
 - `[receipts].ignore` records an explicit no from `abmx setup`.
 - `[receipts].since` adds Gmail's `after:` filter. Without it, every labelled
   message is considered on every run.
-- `abmx receipt samples` deliberately ignores `since`, so authoring evidence is never
+- `abmx samples` deliberately ignores `since`, so authoring evidence is never
   starved by the import window.
 
 ## Secrets

@@ -11,7 +11,7 @@ parser and a ledger account. The parser never inspects the sender or subject.
 
 ## Workflow
 
-1. **Run `abmx receipt samples`.** It downloads up to three messages per managed label
+1. **Run `abmx samples`.** It downloads up to three messages per non-ignored label
    into `$XDG_CONFIG_HOME/abmx/samples/<parser-id>/` (usually
    `~/.config/abmx/samples/<parser-id>/`). `manifest.json` records each label's
    count. Fewer than three is a warning; be conservative and do not invent a

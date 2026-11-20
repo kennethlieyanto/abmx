@@ -76,6 +76,32 @@ fetched 4, parsed 25 rows — new 25, already present 0, ambiguous 0 (added), fa
 
 A statement row is written `cleared`, because the bank has settled it.
 
+## Importing one PDF by hand
+
+When the bank only offers a portal or app download (BCA, for example), keep the
+file and import it directly:
+
+```bash
+abmx statement import ~/Downloads/bca-savings.pdf --parser bca.savings_statement
+```
+
+- `--parser` is optional when the file lives under `<dir>/<parser-id>/` or
+  `<corpus>/<parser-id>/fixtures/`.
+- The password comes from `[statements.passwords]`; `--password-file` overrides
+  it for one run.
+- There is no Gmail call, no label routing, and no state write. The ledger's
+  `imported_id` makes a repeated import a no-op.
+- `--dry-run` prints the plan; `--json` prints it as JSON.
+- The file never leaves the machine. Decryption happens in memory, and the
+  decrypted PDF is not written to disk.
+- It respects `[statements].enabled`, like `statement sync`.
+
+On Kubernetes this is a one-shot Job with the PDF mounted, or simply a command
+run on the machine that already has the file. A statement volume on the cluster
+only pays off when something else writes into it (a NAS share, Syncthing, a
+cloud sync client); a single manual upload is the same effort as emailing the
+PDF to yourself.
+
 ## What this release does not do
 
 - It does not flip existing rows that came from email to `cleared`. That is the

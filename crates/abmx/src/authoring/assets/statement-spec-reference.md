@@ -27,6 +27,15 @@ distinguished by `input = "pdf"`. Statements are imported by
    A statement is done only when every fixture is `strict`. There is no
    per-row heuristic: one arithmetic mismatch rejects the whole document.
 
+To import one finished PDF without Gmail:
+
+```sh
+abmx statement import statement.pdf --parser <parser-id>
+```
+
+The ledger deduplicates by `imported_id`, so repeating the import is safe; no
+state is written and the PDF never leaves the machine.
+
 ## What `strict` means
 
 The parser proves the document against its own numbers, per section:

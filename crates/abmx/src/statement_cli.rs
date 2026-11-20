@@ -16,7 +16,7 @@ use abmx::paths;
 use abmx::state::State;
 use abmx_core::{
     classify_window, ApplyOptions, FetchRequest, Fetcher, ImportRow, MessageKey, Plan, PlannedRow,
-    WindowMatch,
+    Report, Sink, WindowMatch,
 };
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
@@ -62,6 +62,26 @@ enum StatementCommand {
         json: bool,
     },
 
+    /// Import one statement PDF by hand.
+    ///
+    /// Useful when the bank does not email a statement; the file stays local.
+    Import {
+        /// The PDF statement.
+        path: PathBuf,
+        /// Parser id. Inferred from the parent directory when omitted.
+        #[arg(long, value_name = "ID")]
+        parser: Option<String>,
+        /// Password file. Falls back to [statements.passwords].
+        #[arg(long, value_name = "FILE")]
+        password_file: Option<PathBuf>,
+        /// Print the plan and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Print the plan as JSON on stdout.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Fetch statement PDFs, verify them, and import rows the ledger lacks.
     Sync {
         /// Print the plan and write nothing.
@@ -96,6 +116,21 @@ pub fn run(cli: StatementCli, config_path: Option<PathBuf>) -> Result<i32> {
             parser.as_deref(),
             password_file.as_deref(),
             verbose,
+            json,
+        ),
+        StatementCommand::Import {
+            path,
+            parser,
+            password_file,
+            dry_run,
+            json,
+        } => import(
+            config_path.as_deref(),
+            &parsers,
+            &path,
+            parser.as_deref(),
+            password_file.as_deref(),
+            dry_run,
             json,
         ),
         StatementCommand::Sync {
@@ -298,9 +333,7 @@ pub fn sync(
         );
     }
 
-    let dirs = parser_dirs(parsers, Some(&(config.clone(), base.clone())));
-    let registry = abmx_table::Registry::from_dirs(&dirs)
-        .map_err(|error| anyhow::anyhow!("loading statement parsers: {error}"))?;
+    let registry = statement_registry(parsers, &config, &base)?;
 
     for key in config.statements.accounts.keys() {
         let parser_id = key.split(':').next().unwrap_or(key);
@@ -391,7 +424,7 @@ pub fn sync(
             continue;
         };
 
-        let password = config.statement_password(&base, &parser_id)?;
+        let password = password_for(&config, &base, &parser_id, None)?;
         let attachments = abmx_mail::attachments(&message.bytes)
             .map_err(|error| anyhow::anyhow!("{}: {error}", message.key))?;
         let pdfs: Vec<&abmx_mail::Attachment> = attachments
@@ -441,49 +474,8 @@ pub fn sync(
         }
     }
 
-    // Read the ledger once, over every affected account and date.
     let sink = config.build_statement_sink(&base)?;
-    let accounts: BTreeSet<String> = plan.rows.iter().map(|row| row.account.clone()).collect();
-    let accounts: Vec<String> = accounts.into_iter().collect();
-
-    let mut present = 0usize;
-    let mut ambiguous = 0usize;
-
-    if !plan.rows.is_empty() {
-        let since = plan
-            .rows
-            .iter()
-            .map(|row| row.transaction.occurred_on)
-            .min()
-            .expect("non-empty rows")
-            - chrono::Duration::days(MATCH_WINDOW_DAYS);
-        let until = plan
-            .rows
-            .iter()
-            .map(|row| row.transaction.occurred_on)
-            .max()
-            .expect("non-empty rows")
-            + chrono::Duration::days(MATCH_WINDOW_DAYS);
-
-        let ledger = sink.snapshot(&accounts, since, until)?;
-        let mut kept = Vec::new();
-        for row in plan.rows.drain(..) {
-            let import = ImportRow {
-                tx_id: row.id.clone(),
-                account: row.account.clone(),
-                transaction: row.transaction.clone(),
-            };
-            match classify_window(&import, &ledger, MATCH_WINDOW_DAYS) {
-                WindowMatch::SameId | WindowMatch::Present => present += 1,
-                WindowMatch::New => kept.push(row),
-                WindowMatch::Ambiguous(_) => {
-                    ambiguous += 1;
-                    kept.push(row);
-                }
-            }
-        }
-        plan.rows = kept;
-    }
+    let (present, ambiguous) = dedupe_plan(sink.as_ref(), &mut plan)?;
 
     plan.stats.import = plan.rows.len();
     plan.stats.broken = 0;
@@ -536,19 +528,7 @@ pub fn sync(
         );
     }
 
-    let options = ApplyOptions {
-        dry_run,
-        chunk_size: config.actual_chunk_size(),
-    };
-    let rows = plan.import_rows();
-    let report = if rows.is_empty() {
-        abmx_core::Report {
-            dry_run,
-            ..abmx_core::Report::default()
-        }
-    } else {
-        sink.apply(&rows, &options)?
-    };
+    let report = apply_plan(sink.as_ref(), &config, &plan, dry_run)?;
 
     if silent {
         for error in &report.errors {
@@ -602,6 +582,128 @@ pub fn sync(
     Ok(Some((plan, code)))
 }
 
+/// Import one statement PDF by hand. No Gmail, no source scan, no state write:
+/// the ledger's `imported_id` makes it idempotent.
+fn import(
+    config_path: Option<&Path>,
+    parsers: &[PathBuf],
+    file: &Path,
+    parser_id: Option<&str>,
+    password_file: Option<&Path>,
+    dry_run: bool,
+    json: bool,
+) -> Result<i32> {
+    let path = paths::config_path(config_path)?;
+    let config = Config::load(&path)?;
+    let base = Config::base_dir(&path);
+    config.validate_statements()?;
+    if !config.statements.enabled {
+        eprintln!("statements are disabled ([statements].enabled = false); nothing to do");
+        return Ok(0);
+    }
+
+    let parser_id = match parser_id
+        .map(str::to_owned)
+        .or_else(|| infer_parser_id(file))
+    {
+        Some(id) => id,
+        None => bail!("no parser id: pass --parser <id>, or put the PDF under <dir>/<parser-id>/"),
+    };
+    let registry = statement_registry(parsers, &config, &base)?;
+    let Some(parser) = registry.find(&parser_id) else {
+        bail!("statement parser `{parser_id}` is not in the corpus");
+    };
+
+    let password = password_for(&config, &base, &parser_id, password_file)?;
+    let bytes = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
+
+    let document = match abmx_doc::load(&bytes, password.as_deref()) {
+        Ok(document) => document,
+        Err(error) => {
+            eprintln!("error: {}: {error}", file.display());
+            return Ok(EXIT_FAILED);
+        }
+    };
+    let transactions = match parser.parse(&document, Some(file.display().to_string())) {
+        Ok(transactions) => transactions,
+        Err(error) => {
+            eprintln!("error: {}: {error}", file.display());
+            return Ok(EXIT_FAILED);
+        }
+    };
+
+    let mut plan = Plan::new();
+    plan.stats.parsed = transactions.len();
+    plan_rows(
+        &config,
+        &mut plan,
+        &format!("file:{}", file.display()),
+        &parser_id,
+        transactions,
+    );
+
+    let sink = config.build_statement_sink(&base)?;
+    let (present, ambiguous) = dedupe_plan(sink.as_ref(), &mut plan)?;
+    plan.stats.import = plan.rows.len();
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&plan)?);
+    } else {
+        eprintln!(
+            "parsed {} rows — new {}, already present {}, ambiguous {} (added), failed {}",
+            plan.stats.parsed, plan.stats.import, present, ambiguous, plan.stats.failed,
+        );
+        for error in &plan.stats.errors {
+            eprintln!("error: {error}");
+        }
+        if !plan.rows.is_empty() {
+            eprintln!();
+            eprintln!(
+                "{:<12} {:>18} {:<28} description",
+                "date", "amount", "account"
+            );
+            for row in &plan.rows {
+                let transaction = &row.transaction;
+                eprintln!(
+                    "{:<12} {:>18} {:<28} {}",
+                    transaction.occurred_on,
+                    transaction.amount.decimal(),
+                    row.account_key,
+                    transaction.counterparty.as_deref().unwrap_or("-"),
+                );
+            }
+        }
+    }
+
+    let report = apply_plan(sink.as_ref(), &config, &plan, dry_run)?;
+    if !json {
+        if report.dry_run {
+            println!(
+                "dry run: {} row(s) would be added, {} already present",
+                report.added, present
+            );
+        } else {
+            println!("wrote {} row(s); {} already present", report.added, present);
+        }
+    }
+    if !report.errors.is_empty() {
+        eprintln!("{} row(s) failed", report.errors.len());
+        for error in &report.errors {
+            eprintln!(
+                "  {}: {}",
+                error.tx_id.as_deref().unwrap_or("-"),
+                error.message
+            );
+        }
+    }
+
+    Ok(if plan.stats.failed > 0 || !report.errors.is_empty() {
+        EXIT_FAILED
+    } else {
+        0
+    })
+}
+
 /// Turn parsed transactions into planned rows, resolving each section's account.
 fn plan_rows(
     config: &Config,
@@ -638,6 +740,105 @@ fn plan_rows(
         });
     }
     unmapped
+}
+
+fn statement_registry(
+    parsers: &[PathBuf],
+    config: &Config,
+    base: &Path,
+) -> Result<abmx_table::Registry> {
+    let dirs = parser_dirs(parsers, Some(&(config.clone(), base.to_path_buf())));
+    abmx_table::Registry::from_dirs(&dirs)
+        .map_err(|error| anyhow::anyhow!("loading statement parsers: {error}"))
+}
+
+fn password_for(
+    config: &Config,
+    base: &Path,
+    parser_id: &str,
+    password_file: Option<&Path>,
+) -> Result<Option<String>> {
+    if let Some(path) = password_file {
+        return read_password_file(path).map(Some);
+    }
+    config.statement_password(base, parser_id)
+}
+
+/// The parser id is the parent directory name; `fixtures/` is skipped so a
+/// corpus sample can be imported directly.
+fn infer_parser_id(path: &Path) -> Option<String> {
+    let parent = path.parent()?;
+    let mut name = parent.file_name()?.to_str()?;
+    if name == "fixtures" {
+        name = parent.parent()?.file_name()?.to_str()?;
+    }
+    abmx_parse::is_parser_id(name).then(|| name.to_owned())
+}
+
+/// Keep only rows the ledger does not already have. A unique match inside the
+/// posting-date window is the same event; an ambiguous match is added and
+/// reported rather than guessed.
+fn dedupe_plan(sink: &dyn Sink, plan: &mut Plan) -> Result<(usize, usize)> {
+    if plan.rows.is_empty() {
+        return Ok((0, 0));
+    }
+
+    let accounts: BTreeSet<String> = plan.rows.iter().map(|row| row.account.clone()).collect();
+    let accounts: Vec<String> = accounts.into_iter().collect();
+    let since = plan
+        .rows
+        .iter()
+        .map(|row| row.transaction.occurred_on)
+        .min()
+        .expect("non-empty rows")
+        - chrono::Duration::days(MATCH_WINDOW_DAYS);
+    let until = plan
+        .rows
+        .iter()
+        .map(|row| row.transaction.occurred_on)
+        .max()
+        .expect("non-empty rows")
+        + chrono::Duration::days(MATCH_WINDOW_DAYS);
+
+    let ledger = sink.snapshot(&accounts, since, until)?;
+    let mut present = 0usize;
+    let mut ambiguous = 0usize;
+    let mut kept = Vec::new();
+
+    for row in plan.rows.drain(..) {
+        let import = ImportRow {
+            tx_id: row.id.clone(),
+            account: row.account.clone(),
+            transaction: row.transaction.clone(),
+        };
+        match classify_window(&import, &ledger, MATCH_WINDOW_DAYS) {
+            WindowMatch::SameId | WindowMatch::Present => present += 1,
+            WindowMatch::New => kept.push(row),
+            WindowMatch::Ambiguous(_) => {
+                ambiguous += 1;
+                kept.push(row);
+            }
+        }
+    }
+
+    plan.rows = kept;
+    Ok((present, ambiguous))
+}
+
+fn apply_plan(sink: &dyn Sink, config: &Config, plan: &Plan, dry_run: bool) -> Result<Report> {
+    let options = ApplyOptions {
+        dry_run,
+        chunk_size: config.actual_chunk_size(),
+    };
+    let rows = plan.import_rows();
+    if rows.is_empty() {
+        Ok(Report {
+            dry_run,
+            ..Report::default()
+        })
+    } else {
+        sink.apply(&rows, &options).map_err(Into::into)
+    }
 }
 
 fn is_mapped(config: &Config, parser_id: &str) -> bool {
@@ -707,5 +908,30 @@ fn collect_pdfs(dir: &Path, out: &mut Vec<PathBuf>) {
         } else if path.extension().and_then(|ext| ext.to_str()) == Some("pdf") {
             out.push(path);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::infer_parser_id;
+    use std::path::Path;
+
+    #[test]
+    fn infers_a_parser_id_from_the_parent_or_corpus_directory() {
+        assert_eq!(
+            infer_parser_id(Path::new(
+                "/statements/mandiri.consolidated_statement/01.pdf"
+            ))
+            .as_deref(),
+            Some("mandiri.consolidated_statement")
+        );
+        assert_eq!(
+            infer_parser_id(Path::new("/corpus/bca.savings/fixtures/01.pdf")).as_deref(),
+            Some("bca.savings")
+        );
+        assert_eq!(
+            infer_parser_id(Path::new("/statements/.hidden/01.pdf")),
+            None
+        );
     }
 }

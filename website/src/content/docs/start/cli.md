@@ -33,6 +33,8 @@ abmx statement dump <file.pdf> [--password-file F] [--json]
                                     positioned text dump (statement authoring aid)
 abmx statement check [--parser ID] [--password-file F] [-v]
                                     verify statement parsers and their arithmetic
+abmx statement import <file.pdf> [--parser ID] [--password-file F] [--dry-run] [--json]
+                                    import one statement PDF by hand
 abmx statement sync [--dry-run] [--json] [--limit N]
                                     parse, verify, and add statement rows
 
@@ -88,6 +90,11 @@ key to each row.
 `--diff` (with `abmx receipt sync --dry-run`) additionally reads the ledger and
 reports rows that are already present, including any imported under a foreign
 `imported_id`.
+
+`abmx statement import` is the manual path for a bank that only offers a portal
+or app download: the PDF stays local, there is no Gmail call, and the ledger's
+`imported_id` makes a repeated import a no-op. `--parser` is inferred from a
+`<dir>/<parser-id>/` layout when omitted.
 
 `abmx receipt sync --from-dir` reads saved `.eml` files instead of calling
 Gmail; with a flat directory it needs `--label`, unless exactly one parser is

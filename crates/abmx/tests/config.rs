@@ -16,11 +16,11 @@ max_messages = 50
 [sink.file]
 path = "out/ledger.jsonl"
 
-[labels]
+[receipts]
 prefix = "receipt/"
 since = 2026-11-10
 
-[labels.accounts]
+[receipts.accounts]
 "example.card_debit" = "uuid-example"
 "example.qris_payment" = "uuid-wallet"
 "#;
@@ -56,9 +56,9 @@ fn labels_round_trip_and_encode_the_parser_id() {
     let path = write(dir.path());
     let config = Config::load(&path).unwrap();
 
-    assert_eq!(config.labels.prefix, "receipt/");
+    assert_eq!(config.receipts.prefix, "receipt/");
     assert_eq!(
-        config.labels.since,
+        config.receipts.since,
         chrono::NaiveDate::from_ymd_opt(2026, 11, 10)
     );
 
@@ -68,24 +68,24 @@ fn labels_round_trip_and_encode_the_parser_id() {
     assert_eq!(accounts.len(), 2);
 
     assert_eq!(
-        config.labels.parser_id("receipt/example.card_debit"),
+        config.receipts.parser_id("receipt/example.card_debit"),
         Some("example.card_debit".to_owned())
     );
     // The prefix is case-insensitive; the parser id is normalised to lower case.
     assert_eq!(
-        config.labels.parser_id("Receipt/Example.CARD_DEBIT"),
+        config.receipts.parser_id("Receipt/Example.CARD_DEBIT"),
         Some("example.card_debit".to_owned())
     );
-    assert_eq!(config.labels.parser_id("Receipt"), None);
-    assert_eq!(config.labels.parser_id("receipt/a/b"), None);
+    assert_eq!(config.receipts.parser_id("Receipt"), None);
+    assert_eq!(config.receipts.parser_id("receipt/a/b"), None);
     // Dots are conventional, not required: the gmailctl labels here use
     // `example-qris` as well as `example.card_debit`.
     assert_eq!(
-        config.labels.parser_id("receipt/example-qris"),
+        config.receipts.parser_id("receipt/example-qris"),
         Some("example-qris".to_owned())
     );
 
-    config.validate_labels().unwrap();
+    config.validate_receipts().unwrap();
 }
 
 #[test]
@@ -95,17 +95,17 @@ fn an_invalid_account_key_is_rejected() {
     std::fs::write(
         &path,
         r#"
-[labels]
+[receipts]
 prefix = "receipt/"
 
-[labels.accounts]
+[receipts.accounts]
 "a/b" = "uuid"
 "#,
     )
     .unwrap();
 
     let config = Config::load(&path).unwrap();
-    let error = config.validate_labels().unwrap_err().to_string();
+    let error = config.validate_receipts().unwrap_err().to_string();
     assert!(error.contains("not a parser id"), "got: {error}");
 }
 
@@ -116,17 +116,17 @@ fn an_empty_account_id_is_rejected() {
     std::fs::write(
         &path,
         r#"
-[labels]
+[receipts]
 prefix = "receipt/"
 
-[labels.accounts]
+[receipts.accounts]
 "example.card_debit" = ""
 "#,
     )
     .unwrap();
 
     let config = Config::load(&path).unwrap();
-    let error = config.validate_labels().unwrap_err().to_string();
+    let error = config.validate_receipts().unwrap_err().to_string();
     assert!(error.contains("empty account id"), "got: {error}");
 }
 
@@ -189,7 +189,7 @@ fn tilde_paths_expand() {
 #[test]
 fn the_starter_template_parses_and_has_no_placeholders() {
     let mut config: Config = toml::from_str(abmx::config::INIT_TEMPLATE).unwrap();
-    config.validate_labels().unwrap();
+    config.validate_receipts().unwrap();
     assert!(config.fetch.gmail.is_some());
 
     // Point the token at a path that cannot exist, so the ambient user token
@@ -208,32 +208,32 @@ fn ignore_entries_must_be_parser_ids_and_must_not_be_managed() {
     std::fs::write(
         &path,
         r#"
-[labels]
+[receipts]
 prefix = "receipt/"
 ignore = ["merchant.promo"]
 
-[labels.accounts]
+[receipts.accounts]
 "example.card_debit" = "uuid"
 "#,
     )
     .unwrap();
-    Config::load(&path).unwrap().validate_labels().unwrap();
+    Config::load(&path).unwrap().validate_receipts().unwrap();
 
     std::fs::write(
         &path,
         r#"
-[labels]
+[receipts]
 prefix = "receipt/"
 ignore = ["example.card_debit"]
 
-[labels.accounts]
+[receipts.accounts]
 "example.card_debit" = "uuid"
 "#,
     )
     .unwrap();
     let error = Config::load(&path)
         .unwrap()
-        .validate_labels()
+        .validate_receipts()
         .unwrap_err()
         .to_string();
     assert!(error.contains("both mapped"), "got: {error}");
@@ -241,7 +241,7 @@ ignore = ["example.card_debit"]
     std::fs::write(
         &path,
         r#"
-[labels]
+[receipts]
 prefix = "receipt/"
 ignore = ["a/b"]
 "#,
@@ -249,7 +249,7 @@ ignore = ["a/b"]
     .unwrap();
     let error = Config::load(&path)
         .unwrap()
-        .validate_labels()
+        .validate_receipts()
         .unwrap_err()
         .to_string();
     assert!(error.contains("not a parser id"), "got: {error}");
@@ -330,7 +330,7 @@ fn an_exported_token_bundle_supplies_the_client_id_and_secret() {
 [fetch.gmail]
 token = "gmail-credentials.json"
 
-[labels]
+[receipts]
 prefix = "receipt/"
 "#,
     )

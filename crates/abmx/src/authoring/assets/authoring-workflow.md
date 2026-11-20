@@ -11,7 +11,7 @@ parser and a ledger account. The parser never inspects the sender or subject.
 
 ## Workflow
 
-1. **Run `abmx samples`.** It downloads up to three messages per managed label
+1. **Run `abmx receipt samples`.** It downloads up to three messages per managed label
    into `$XDG_CONFIG_HOME/abmx/samples/<parser-id>/` (usually
    `~/.config/abmx/samples/<parser-id>/`). `manifest.json` records each label's
    count. Fewer than three is a warning; be conservative and do not invent a
@@ -53,7 +53,7 @@ parser and a ledger account. The parser never inspects the sender or subject.
 - If the samples are different templates, do not author; report the label as
   mislabeled.
 - Never invent a ledger account, a UUID, or an account mapping. The account is
-  already chosen by the user in `[labels.accounts]`.
+  already chosen by the user in `[receipts.accounts]`.
 - If a value is ambiguous, leave the optional field out rather than guessing.
 - Do not write into another parser's directory.
 
@@ -61,7 +61,7 @@ parser and a ledger account. The parser never inspects the sender or subject.
 
 1. Write `<corpus>/<parser-id>/config.toml` and copy the samples to
    `<corpus>/<parser-id>/fixtures/`.
-2. Confirm the `[labels.accounts]` entry already maps this parser id to the
+2. Confirm the `[receipts.accounts]` entry already maps this parser id to the
    ledger account. Do not change it unless the user asks.
 3. Run `abmx parser check --parser <parser-id> --parsers <corpus>`.
-4. Run `abmx status` and `abmx sync --dry-run`.
+4. Run `abmx status` and `abmx receipt sync --dry-run`.

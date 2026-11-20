@@ -4,7 +4,7 @@
 //! and the filter; abmx only reports whether that label has a parser, an
 //! account, and samples that parse strictly. There is no sender clustering and
 //! no amount heuristic. Sample downloads for parser authoring live in
-//! `abmx samples`, not here.
+//! `abmx receipt samples`, not here.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -12,7 +12,7 @@ use std::path::Path;
 use abmx_gmail::GmailFetcher;
 use anyhow::{Context as _, Result};
 
-use crate::config::LabelsSection;
+use crate::config::ReceiptsSection;
 
 use super::samples::{self, Sample};
 
@@ -22,7 +22,7 @@ pub enum LabelStatus {
     Ok,
     /// The label's remainder is not a valid parser id.
     BadLabel,
-    /// The parser id has no `[labels.accounts]` entry.
+    /// The parser id has no `[receipts.accounts]` entry.
     MissingAccount,
     /// The parser directory does not exist.
     MissingParser,
@@ -36,7 +36,7 @@ pub enum LabelStatus {
     Empty,
     /// The user declined this label in `abmx setup`.
     Ignored,
-    /// A `[labels.accounts]` entry has no matching Gmail label.
+    /// A `[receipts.accounts]` entry has no matching Gmail label.
     OrphanAccount,
 }
 
@@ -103,7 +103,7 @@ impl Default for Options {
 pub fn scan_gmail(
     fetcher: &GmailFetcher,
     parser: Option<&abmx_parser::Parser>,
-    labels: &LabelsSection,
+    labels: &ReceiptsSection,
     options: &Options,
     work_dir: &Path,
 ) -> Result<Inventory> {
@@ -172,7 +172,7 @@ pub fn scan_gmail(
                 status: LabelStatus::OrphanAccount,
                 messages: 0,
                 samples: Vec::new(),
-                notes: vec!["[labels.accounts] entry has no routed Gmail label".to_owned()],
+                notes: vec!["[receipts.accounts] entry has no routed Gmail label".to_owned()],
             });
         }
     }
@@ -183,7 +183,7 @@ pub fn scan_gmail(
 /// Decide whether a label's samples are healthy enough to trust.
 fn evaluate(
     parser: Option<&abmx_parser::Parser>,
-    labels: &LabelsSection,
+    labels: &ReceiptsSection,
     parser_id: Option<&str>,
     samples: &[Sample],
     notes: &mut Vec<String>,
@@ -202,7 +202,7 @@ fn evaluate(
 
     if !labels.accounts.contains_key(parser_id) {
         notes.push(format!(
-            "parser `{parser_id}` has no [labels.accounts] entry"
+            "parser `{parser_id}` has no [receipts.accounts] entry"
         ));
         return LabelStatus::MissingAccount;
     }

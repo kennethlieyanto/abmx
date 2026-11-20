@@ -62,7 +62,7 @@ impl FromIterator<(String, String)> for AccountMap {
 /// Why a labeled message was **not** imported.
 ///
 /// These are defects in the parser or the Gmail rule, never per-row judgement
-/// calls: the fix is always `abmx samples --label …`, a `[labels.accounts]`
+/// calls: the fix is always `abmx receipt samples --label …`, a `[receipts.accounts]`
 /// entry, or a gmailctl rule. Nothing is ever "approved" by a human.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "reason", rename_all = "snake_case")]
@@ -71,7 +71,7 @@ pub enum BrokenReason {
     Heuristic { warnings: Vec<String> },
     /// A zero amount almost always means the wrong block was matched.
     ZeroAmount,
-    /// No `[labels.accounts]` entry for this parser id.
+    /// No `[receipts.accounts]` entry for this parser id.
     UnmappedAccount { parser: String },
     /// The Gmail rule routed a transaction the bank reported as failed.
     BankDeclaredFailed,
@@ -96,7 +96,7 @@ impl BrokenReason {
             Self::Heuristic { warnings } => warnings.join("; "),
             Self::ZeroAmount => "amount is zero".to_owned(),
             Self::UnmappedAccount { parser } => {
-                format!("parser `{parser}` has no [labels.accounts] entry")
+                format!("parser `{parser}` has no [receipts.accounts] entry")
             }
             Self::BankDeclaredFailed => {
                 "the bank reported the transaction as failed; the Gmail rule should not route it"

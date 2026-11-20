@@ -56,6 +56,7 @@ export default defineConfig({
           items: [
             'guides/gmail',
             'guides/actual',
+            'guides/statements',
             'guides/authoring',
             {
               label: 'Deployment',
@@ -72,6 +73,7 @@ export default defineConfig({
           label: 'Reference',
           items: [
             'reference/parser-spec',
+            'reference/statement-spec',
             'reference/transaction',
             'reference/architecture',
             'reference/security',

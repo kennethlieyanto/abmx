@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use abmx::authoring::{self, author};
 use abmx::config::{Config, INIT_TEMPLATE};
 use abmx::fetchers::DirFetcher;
-use abmx::labels;
 use abmx::paths;
+use abmx::receipts;
 use abmx::state::State;
 use abmx::Runner;
 use abmx_core::{ApplyOptions, FetchRequest, Fetcher, LedgerMatch, Plan, Report, Sink};
@@ -14,6 +14,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
 mod parser_cli;
+mod statement_cli;
 
 /// Clean run.
 const EXIT_OK: i32 = 0;
@@ -26,7 +27,7 @@ const EXIT_FAILED: i32 = 2;
 #[command(
     name = "abmx",
     version,
-    about = "Sync bank transaction emails into an Actual Budget ledger",
+    about = "Sync bank transaction emails and statements into an Actual Budget ledger",
     long_about = "abmx fetches bank mail, parses it with a runtime parser corpus, decides \
                   what to import, and writes it to a ledger. It never parses a bank template \
                   in code and never guesses an account mapping."
@@ -97,7 +98,26 @@ enum Command {
         json: bool,
     },
 
-    /// Download the newest messages for each managed label (parser evidence).
+    /// Receipts: sync labelled mail and sample parser evidence.
+    Receipt {
+        #[command(subcommand)]
+        command: ReceiptCommand,
+    },
+
+    /// Sync every enabled source: receipts first, then statements.
+    Sync {
+        /// Print the plans and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Print the plans as JSON on stdout.
+        #[arg(long)]
+        json: bool,
+        /// Maximum unseen messages to fetch per source.
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+    },
+
+    /// Deprecated: use `abmx receipt samples`.
     Samples {
         /// Restrict to one Gmail label name or parser id.
         #[arg(long, value_name = "LABEL|PARSER")]
@@ -113,29 +133,7 @@ enum Command {
         json: bool,
     },
 
-    /// Fetch, parse, and write the ledger. The timer entrypoint.
-    Sync {
-        /// Read `.eml` files instead of using the configured fetcher.
-        #[arg(long, value_name = "DIR")]
-        from_dir: Option<PathBuf>,
-        /// With --from-dir, the label to tag every file with.
-        #[arg(long, value_name = "LABEL")]
-        label: Option<String>,
-        /// Print the plan and write nothing.
-        #[arg(long)]
-        dry_run: bool,
-        /// Print the plan as JSON on stdout.
-        #[arg(long)]
-        json: bool,
-        /// With --dry-run, also compare against the ledger.
-        #[arg(long, requires = "dry_run")]
-        diff: bool,
-        /// Maximum unseen messages to fetch in this run.
-        #[arg(long, value_name = "N")]
-        limit: Option<usize>,
-    },
-
-    /// Forget local state so the next sync re-fetches everything.
+    /// Forget local state so the next sync re-fetches receipts and statements.
     ///
     /// No ledger is modified. Rows deleted in a ledger come back on the next
     /// sync, because the ledger is a projection of the mailbox.
@@ -158,6 +156,9 @@ enum Command {
     /// Parser-corpus commands: parse, explain, inspect, verify fixtures.
     Parser(parser_cli::ParserCli),
 
+    /// Bank statements: dump, verify, and import PDF statements.
+    Statement(statement_cli::StatementCli),
+
     /// Print the parser-authoring skill to stdout.
     Skill,
 
@@ -166,6 +167,47 @@ enum Command {
         /// A `.eml` file or a directory of them.
         path: PathBuf,
         /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ReceiptCommand {
+    /// Fetch, parse, and write receipt rows.
+    Sync {
+        /// Read `.eml` files instead of using the configured fetcher.
+        #[arg(long, value_name = "DIR")]
+        from_dir: Option<PathBuf>,
+        /// With --from-dir, the label to tag every file with.
+        #[arg(long, value_name = "LABEL")]
+        label: Option<String>,
+        /// Print the plan and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Print the plan as JSON on stdout.
+        #[arg(long)]
+        json: bool,
+        /// With --dry-run, also compare against the ledger.
+        #[arg(long, requires = "dry_run")]
+        diff: bool,
+        /// Maximum unseen messages to fetch in this run.
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+    },
+
+    /// Download the newest messages for each managed label (parser evidence).
+    Samples {
+        /// Restrict to one Gmail label name or parser id.
+        #[arg(long, value_name = "LABEL|PARSER")]
+        label: Option<String>,
+        /// How many of the newest messages to download per label.
+        #[arg(long, default_value_t = 3, value_name = "N")]
+        samples: usize,
+        /// Output directory. Defaults to $XDG_CONFIG_HOME/abmx/samples.
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+        /// Machine-readable manifest.
         #[arg(long)]
         json: bool,
     },
@@ -293,23 +335,54 @@ fn run(cli: Cli) -> Result<i32> {
             check,
             json,
         } => status(&settings, offline, strict, check, json),
+        Command::Receipt { command } => match command {
+            ReceiptCommand::Sync {
+                from_dir,
+                label,
+                dry_run,
+                json,
+                diff,
+                limit,
+            } => match receipt_sync(
+                &settings,
+                ReceiptSyncOptions {
+                    from_dir,
+                    label,
+                    dry_run,
+                    json,
+                    diff,
+                    limit,
+                    silent: false,
+                },
+            )? {
+                Some((_, code)) => Ok(code),
+                None => Ok(EXIT_OK),
+            },
+            ReceiptCommand::Samples {
+                label,
+                samples,
+                out,
+                json,
+            } => run_samples(&settings, label, samples, out, json),
+        },
+        Command::Sync {
+            dry_run,
+            json,
+            limit,
+        } => sync_all(&settings, dry_run, json, limit),
         Command::Samples {
             label,
             samples,
             out,
             json,
-        } => run_samples(&settings, label, samples, out, json),
-        Command::Sync {
-            from_dir,
-            label,
-            dry_run,
-            json,
-            diff,
-            limit,
-        } => sync(&settings, from_dir, label, dry_run, json, diff, limit),
+        } => {
+            eprintln!("note: `abmx samples` is now `abmx receipt samples`");
+            run_samples(&settings, label, samples, out, json)
+        }
         Command::Reset { purge, yes } => reset(&settings, purge, yes),
         Command::Accounts { json } => accounts(&settings, json),
         Command::Parser(cli) => parser_cli::run(cli),
+        Command::Statement(cli) => statement_cli::run(cli, settings.config.clone()),
         Command::Skill => skill(),
         Command::Dump { path, json } => dump(&path, json),
     }
@@ -325,7 +398,7 @@ fn load_config(settings: &Settings) -> Result<(Config, PathBuf, PathBuf)> {
 }
 
 fn build_runner(config: &Config, base: &Path) -> Result<Runner> {
-    config.validate_labels()?;
+    config.validate_receipts()?;
 
     let options = config.parser_options(base);
     let (parser, _discovery) =
@@ -335,7 +408,7 @@ fn build_runner(config: &Config, base: &Path) -> Result<Runner> {
             | abmx_parser::Error::Parse(abmx_parse::Error::NoParsers { .. }) => anyhow::anyhow!(
                 "no parsers installed — nothing can be parsed yet.\n\n\
              download samples and ask an agent to author one:\n  \
-             abmx samples\n  \
+             abmx receipt samples\n  \
              mkdir -p ~/.agents/skills/abmx && abmx skill > ~/.agents/skills/abmx/SKILL.md\n  \
              then: \"help me create parser for all my transaction email, use abmx parser authoring skill\"\n\n\
              the repository's synthetic example is under examples/parsers/"
@@ -346,9 +419,9 @@ fn build_runner(config: &Config, base: &Path) -> Result<Runner> {
             ),
         })?;
 
-    for parser_id in config.labels.accounts.keys() {
+    for parser_id in config.receipts.accounts.keys() {
         if parser.registry().find(parser_id).is_none() {
-            bail!("[labels.accounts] names parser `{parser_id}`, which is not in the corpus");
+            bail!("[receipts.accounts] names parser `{parser_id}`, which is not in the corpus");
         }
     }
 
@@ -357,13 +430,13 @@ fn build_runner(config: &Config, base: &Path) -> Result<Runner> {
 
     Ok(Runner::new(
         parser,
-        config.labels.prefix.clone(),
+        config.receipts.prefix.clone(),
         config.account_map(),
         state,
     ))
 }
 
-/// Check the Gmail label inventory against `[labels.accounts]`.
+/// Check the Gmail label inventory against `[receipts.accounts]`.
 ///
 /// Only mapped labels are fetched. A discovered label with no account entry is
 /// unmanaged, not an error: the user may have declined it, or gmailctl may have
@@ -378,12 +451,12 @@ fn resolve_label_inventory(
         .into_iter()
         .map(|label| label.name)
         .collect();
-    let plan = labels::plan(&discovered, &config.labels);
+    let plan = receipts::plan(&discovered, &config.receipts);
 
     if !plan.orphans.is_empty() {
         bail!(
-            "[labels.accounts] maps parser(s) with no Gmail label:\n  {}\n\
-             add the gmailctl rule or remove the [labels.accounts] entry",
+            "[receipts.accounts] maps parser(s) with no Gmail label:\n  {}\n\
+             add the gmailctl rule or remove the [receipts.accounts] entry",
             plan.orphans.join("\n  ")
         );
     }
@@ -405,7 +478,7 @@ fn resolve_label_inventory(
 
     if plan.managed.is_empty() {
         bail!(
-            "no routed Gmail label is mapped in [labels.accounts]\n  \
+            "no routed Gmail label is mapped in [receipts.accounts]\n  \
              run `abmx setup` to choose a label and an account"
         );
     }
@@ -423,22 +496,22 @@ fn build_fetcher(
         let label = match label {
             Some(label) => label,
             None => {
-                if config.labels.accounts.len() == 1 {
-                    let parser = config.labels.accounts.keys().next().expect("one entry");
-                    format!("{}{}", config.labels.prefix, parser)
+                if config.receipts.accounts.len() == 1 {
+                    let parser = config.receipts.accounts.keys().next().expect("one entry");
+                    format!("{}{}", config.receipts.prefix, parser)
                 } else {
                     bail!("--from-dir needs --label unless exactly one parser is configured");
                 }
             }
         };
-        let Some(parser_id) = config.labels.parser_id(&label) else {
+        let Some(parser_id) = config.receipts.parser_id(&label) else {
             bail!(
                 "`{label}` has no parser id after `{}`",
-                config.labels.prefix
+                config.receipts.prefix
             );
         };
-        if !config.labels.accounts.contains_key(&parser_id) {
-            bail!("`{label}` has no [labels.accounts] entry");
+        if !config.receipts.accounts.contains_key(&parser_id) {
+            bail!("`{label}` has no [receipts.accounts] entry");
         }
         return Ok((
             Box::new(DirFetcher::labeled(dir, label.clone())),
@@ -493,7 +566,7 @@ fn init(path: Option<PathBuf>, force: bool) -> Result<i32> {
     );
     println!("  2. abmx auth gmail            (headless: --manual)");
     println!("  3. abmx status");
-    println!("  4. abmx sync --dry-run");
+    println!("  4. abmx receipt sync --dry-run");
 
     Ok(EXIT_OK)
 }
@@ -755,12 +828,13 @@ fn status(
     json: bool,
 ) -> Result<i32> {
     let (config, base, config_path) = load_config(settings)?;
-    config.validate_labels()?;
+    config.validate_receipts()?;
+    config.validate_statements()?;
 
     // Fetch network data once; the sections only present the result.
     let mut gmail: Option<abmx_gmail::GmailFetcher> = None;
     let mut gmail_build_error: Option<String> = None;
-    if !offline && config.fetch.gmail.is_some() {
+    if config.receipts.enabled && !offline && config.fetch.gmail.is_some() {
         match config.build_gmail(&base) {
             Ok(fetcher) => gmail = Some(fetcher),
             Err(error) => gmail_build_error = Some(format!("{error:#}")),
@@ -798,7 +872,7 @@ fn status(
 
     let plan = gmail_labels
         .as_deref()
-        .map(|found| labels::plan(found, &config.labels));
+        .map(|found| receipts::plan(found, &config.receipts));
     let accounts_by_id: Option<BTreeMap<&str, &abmx_core::SinkAccount>> =
         sink_accounts.as_ref().map(|accounts| {
             accounts
@@ -815,13 +889,18 @@ fn status(
     config_section.push(
         Status::Ok,
         format!(
-            "labels `{}`{}",
-            config.labels.prefix,
+            "receipts `{}`{}{}",
+            config.receipts.prefix,
             config
-                .labels
+                .receipts
                 .since
                 .map(|date| format!(", since {date}"))
-                .unwrap_or_else(|| ", all history".to_owned())
+                .unwrap_or_else(|| ", all history".to_owned()),
+            if config.receipts.enabled {
+                ""
+            } else {
+                " (disabled)"
+            }
         ),
     );
     sections.push(config_section);
@@ -852,152 +931,257 @@ fn status(
     };
     sections.push(corpus_section);
 
-    let mut labels_section = Section::new("labels");
-    if config.labels.accounts.is_empty() {
-        labels_section.hint(
-            Status::Fail,
-            "no [labels.accounts] entries",
-            "run `abmx setup` to choose which labels to import and where they go",
+    let mut labels_section = Section::new("receipts");
+    if !config.receipts.enabled {
+        labels_section.push(
+            Status::Skip,
+            "receipts disabled ([receipts].enabled = false)",
         );
-    }
-    for (parser_id, account) in &config.labels.accounts {
-        let managed = plan.as_ref().and_then(|plan| {
-            plan.managed
-                .iter()
-                .find(|label| label.parser_id == *parser_id)
-        });
-        let label = managed
-            .map(|managed| managed.label.clone())
-            .unwrap_or_else(|| format!("{}{}", config.labels.prefix, parser_id));
-
-        let parser_missing = parser
-            .as_ref()
-            .is_some_and(|parser| parser.registry().find(parser_id).is_none());
-        let account_missing = validate_accounts
-            && !account.trim().is_empty()
-            && accounts_by_id
-                .as_ref()
-                .is_some_and(|accounts| !accounts.contains_key(account.as_str()));
-        let label_missing = plan
-            .as_ref()
-            .is_some_and(|plan| plan.orphans.iter().any(|orphan| orphan == parser_id));
-
-        let account_display = accounts_by_id
-            .as_ref()
-            .and_then(|accounts| accounts.get(account.as_str()))
-            .map(|found| format!("{} ({account})", found.name))
-            .unwrap_or_else(|| account.clone());
-
-        let mut problems = Vec::new();
-        if account.trim().is_empty() {
-            problems.push("no account id".to_owned());
-        }
-        if parser_missing {
-            problems.push(format!("parser `{parser_id}` is missing"));
-        }
-        if account_missing {
-            problems.push(format!("account `{account}` is not in the sink"));
-        }
-        if label_missing {
-            problems.push("no Gmail label routes to it".to_owned());
-        }
-
-        if problems.is_empty() {
-            labels_section.push(Status::Ok, format!("{label} -> {account_display}"));
-        } else {
-            let mut hints = Vec::new();
-            if parser_missing {
-                hints.push(format!("author it: `abmx samples --label {label}`"));
-            }
-            if account_missing {
-                hints.push("run `abmx accounts` to list valid ids".to_owned());
-            }
-            if label_missing {
-                hints.push("fix the gmailctl rule or remove the mapping".to_owned());
-            }
+    } else {
+        if config.receipts.accounts.is_empty() {
             labels_section.hint(
                 Status::Fail,
-                format!("{label} -> {account_display}: {}", problems.join("; ")),
-                hints.join(" · "),
+                "no [receipts.accounts] entries",
+                "run `abmx setup` to choose which labels to import and where they go",
             );
         }
-    }
+        for (parser_id, account) in &config.receipts.accounts {
+            let managed = plan.as_ref().and_then(|plan| {
+                plan.managed
+                    .iter()
+                    .find(|label| label.parser_id == *parser_id)
+            });
+            let label = managed
+                .map(|managed| managed.label.clone())
+                .unwrap_or_else(|| format!("{}{}", config.receipts.prefix, parser_id));
 
-    if settings.verbose {
-        for parser_id in &config.labels.ignore {
-            labels_section.push(
-                Status::Skip,
-                format!("{}{} (ignored)", config.labels.prefix, parser_id),
-            );
-        }
-        if let Some(plan) = &plan {
-            for label in &plan.unmanaged {
-                labels_section.hint(
-                    Status::Skip,
-                    format!("{} is not managed", label.label),
-                    "run `abmx setup` to import it or decline it",
-                );
-            }
-            for label in &plan.invalid {
-                labels_section.hint(
-                    Status::Warn,
-                    format!("{label}: not a parser id after the prefix"),
-                    "rename the gmailctl label",
-                );
-            }
-        }
-    } else {
-        if !config.labels.ignore.is_empty() {
-            labels_section.push(
-                Status::Skip,
-                format!(
-                    "{} ignored label(s) (use -v to list)",
-                    config.labels.ignore.len()
-                ),
-            );
-        }
-        if let Some(plan) = &plan {
-            if !plan.unmanaged.is_empty() {
-                labels_section.push(
-                    Status::Skip,
-                    format!(
-                        "{} unmanaged Gmail label(s) (use -v to list)",
-                        plan.unmanaged.len()
-                    ),
-                );
-            }
-            if !plan.invalid.is_empty() {
-                labels_section.push(
-                    Status::Warn,
-                    format!(
-                        "{} Gmail label(s) with an invalid parser id (use -v to list)",
-                        plan.invalid.len()
-                    ),
-                );
-            }
-        }
-    }
+            let parser_missing = parser
+                .as_ref()
+                .is_some_and(|parser| parser.registry().find(parser_id).is_none());
+            let account_missing = validate_accounts
+                && !account.trim().is_empty()
+                && accounts_by_id
+                    .as_ref()
+                    .is_some_and(|accounts| !accounts.contains_key(account.as_str()));
+            let label_missing = plan
+                .as_ref()
+                .is_some_and(|plan| plan.orphans.iter().any(|orphan| orphan == parser_id));
 
-    if plan.is_none() {
-        if offline {
-            labels_section.push(Status::Skip, "Gmail label inventory skipped (offline)");
-        } else if config.fetch.gmail.is_some() {
-            if let Some(error) = &gmail_labels_error {
-                labels_section.hint(Status::Warn, "could not verify Gmail labels", error.clone());
+            let account_display = accounts_by_id
+                .as_ref()
+                .and_then(|accounts| accounts.get(account.as_str()))
+                .map(|found| format!("{} ({account})", found.name))
+                .unwrap_or_else(|| account.clone());
+
+            let mut problems = Vec::new();
+            if account.trim().is_empty() {
+                problems.push("no account id".to_owned());
+            }
+            if parser_missing {
+                problems.push(format!("parser `{parser_id}` is missing"));
+            }
+            if account_missing {
+                problems.push(format!("account `{account}` is not in the sink"));
+            }
+            if label_missing {
+                problems.push("no Gmail label routes to it".to_owned());
+            }
+
+            if problems.is_empty() {
+                labels_section.push(Status::Ok, format!("{label} -> {account_display}"));
             } else {
-                labels_section.push(Status::Skip, "Gmail label inventory unavailable (see auth)");
+                let mut hints = Vec::new();
+                if parser_missing {
+                    hints.push(format!("author it: `abmx receipt samples --label {label}`"));
+                }
+                if account_missing {
+                    hints.push("run `abmx accounts` to list valid ids".to_owned());
+                }
+                if label_missing {
+                    hints.push("fix the gmailctl rule or remove the mapping".to_owned());
+                }
+                labels_section.hint(
+                    Status::Fail,
+                    format!("{label} -> {account_display}: {}", problems.join("; ")),
+                    hints.join(" · "),
+                );
             }
         }
-    }
 
-    if !config.labels.accounts.is_empty() && config.labels.since.is_none() {
-        labels_section.hint(
-            Status::Warn,
-            "no [labels].since; sync scans every labelled message",
-            "set a date or run `abmx setup`",
-        );
+        if settings.verbose {
+            for parser_id in &config.receipts.ignore {
+                labels_section.push(
+                    Status::Skip,
+                    format!("{}{} (ignored)", config.receipts.prefix, parser_id),
+                );
+            }
+            if let Some(plan) = &plan {
+                for label in &plan.unmanaged {
+                    labels_section.hint(
+                        Status::Skip,
+                        format!("{} is not managed", label.label),
+                        "run `abmx setup` to import it or decline it",
+                    );
+                }
+                for label in &plan.invalid {
+                    labels_section.hint(
+                        Status::Warn,
+                        format!("{label}: not a parser id after the prefix"),
+                        "rename the gmailctl label",
+                    );
+                }
+            }
+        } else {
+            if !config.receipts.ignore.is_empty() {
+                labels_section.push(
+                    Status::Skip,
+                    format!(
+                        "{} ignored label(s) (use -v to list)",
+                        config.receipts.ignore.len()
+                    ),
+                );
+            }
+            if let Some(plan) = &plan {
+                if !plan.unmanaged.is_empty() {
+                    labels_section.push(
+                        Status::Skip,
+                        format!(
+                            "{} unmanaged Gmail label(s) (use -v to list)",
+                            plan.unmanaged.len()
+                        ),
+                    );
+                }
+                if !plan.invalid.is_empty() {
+                    labels_section.push(
+                        Status::Warn,
+                        format!(
+                            "{} Gmail label(s) with an invalid parser id (use -v to list)",
+                            plan.invalid.len()
+                        ),
+                    );
+                }
+            }
+        }
+
+        if plan.is_none() {
+            if offline {
+                labels_section.push(Status::Skip, "Gmail label inventory skipped (offline)");
+            } else if config.fetch.gmail.is_some() {
+                if let Some(error) = &gmail_labels_error {
+                    labels_section.hint(
+                        Status::Warn,
+                        "could not verify Gmail labels",
+                        error.clone(),
+                    );
+                } else {
+                    labels_section
+                        .push(Status::Skip, "Gmail label inventory unavailable (see auth)");
+                }
+            }
+        }
+
+        if !config.receipts.accounts.is_empty() && config.receipts.since.is_none() {
+            labels_section.hint(
+                Status::Warn,
+                "no [receipts].since; sync scans every labelled message",
+                "set a date or run `abmx setup`",
+            );
+        }
     }
     sections.push(labels_section);
+
+    let mut statements_section = Section::new("statements");
+    if !config.statements.enabled {
+        statements_section.push(
+            Status::Skip,
+            "statements disabled ([statements].enabled = false)",
+        );
+    } else {
+        statements_section.push(
+            Status::Ok,
+            format!(
+                "labels `{}`{}",
+                config.statements.prefix,
+                config
+                    .statements
+                    .since
+                    .map(|date| format!(", since {date}"))
+                    .unwrap_or_else(|| ", all history".to_owned())
+            ),
+        );
+        if config.statements.accounts.is_empty() {
+            statements_section.push(
+                Status::Skip,
+                "no statement parser is mapped (run `abmx setup`)",
+            );
+        } else {
+            let explicit = config.parser_options(&base).parsers;
+            let dirs = if explicit.is_empty() {
+                abmx_parser::discover(&abmx_parser::Options::default()).dirs
+            } else {
+                explicit
+            };
+            match abmx_table::Registry::from_dirs(&dirs) {
+                Ok(registry) => {
+                    for key in config.statements.accounts.keys() {
+                        let parser_id = key.split(':').next().unwrap_or(key);
+                        if registry.find(parser_id).is_none() {
+                            statements_section.hint(
+                                Status::Fail,
+                                format!("`{key}` has no statement parser"),
+                                "author one, then run `abmx statement check`",
+                            );
+                        }
+                    }
+                }
+                Err(error) => statements_section.hint(
+                    Status::Warn,
+                    "no statement parsers loaded",
+                    error.to_string(),
+                ),
+            }
+
+            for parser_id in config.statements.passwords.keys() {
+                match config.statement_password(&base, parser_id) {
+                    Ok(Some(_)) => statements_section
+                        .push(Status::Ok, format!("{parser_id}: password available")),
+                    Ok(None) => statements_section
+                        .push(Status::Warn, format!("{parser_id}: no password configured")),
+                    Err(error) => statements_section.hint(
+                        Status::Fail,
+                        format!("{parser_id}: {error}"),
+                        "fix [statements.passwords] or mount the secret",
+                    ),
+                }
+            }
+
+            if settings.verbose {
+                for parser_id in &config.statements.ignore {
+                    statements_section.push(
+                        Status::Skip,
+                        format!("{}{} (ignored)", config.statements.prefix, parser_id),
+                    );
+                }
+            } else if !config.statements.ignore.is_empty() {
+                statements_section.push(
+                    Status::Skip,
+                    format!(
+                        "{} ignored statement label(s) (use -v to list)",
+                        config.statements.ignore.len()
+                    ),
+                );
+            }
+
+            if config.statements.since.is_none() {
+                statements_section.hint(
+                    Status::Warn,
+                    "no [statements].since; every statement is fetched",
+                    "set a date or run `abmx setup`",
+                );
+            }
+        }
+    }
+    sections.push(statements_section);
 
     let mut state_section = Section::new("state");
     let state_path = config.state_path(&base);
@@ -1139,22 +1323,22 @@ fn status(
     }
     sections.push(auth_section);
 
-    if strict {
-        let mut strict_section = Section::new("strict labels");
+    if strict && config.receipts.enabled {
+        let mut strict_section = Section::new("strict receipts");
         match (&gmail, &parser) {
             (Some(fetcher), Some(parser)) => {
                 let work = tempfile::tempdir().context("creating a temporary sample directory")?;
                 let inventory = author::scan_gmail(
                     fetcher,
                     Some(parser),
-                    &config.labels,
+                    &config.receipts,
                     &author::Options::default(),
                     work.path(),
                 )?;
                 if inventory.labels.is_empty() && inventory.orphans.is_empty() {
                     strict_section.hint(
                         Status::Fail,
-                        format!("no `{}*` labels found", config.labels.prefix),
+                        format!("no `{}*` labels found", config.receipts.prefix),
                         "create a label and a gmailctl rule",
                     );
                 }
@@ -1173,7 +1357,7 @@ fn status(
                         strict_section.hint(
                             Status::Fail,
                             format!("{}: {}", report.label, report.status.as_str()),
-                            format!("run `abmx samples --label {}`", report.label),
+                            format!("run `abmx receipt samples --label {}`", report.label),
                         );
                     }
                 }
@@ -1255,7 +1439,7 @@ fn require_parsers(runner: &Runner) -> Result<()> {
         bail!(
             "no parsers installed — nothing can be parsed yet.\n\n\
              download samples and ask an agent to author one:\n  \
-             abmx samples\n  \
+             abmx receipt samples\n  \
              mkdir -p ~/.agents/skills/abmx && abmx skill > ~/.agents/skills/abmx/SKILL.md\n  \
              then: \"help me create parser for all my transaction email, use abmx parser authoring skill\""
         );
@@ -1263,26 +1447,115 @@ fn require_parsers(runner: &Runner) -> Result<()> {
     Ok(())
 }
 
-fn sync(
-    settings: &Settings,
+fn sync_all(settings: &Settings, dry_run: bool, json: bool, limit: Option<usize>) -> Result<i32> {
+    let mut exit = EXIT_OK;
+    let mut tool_failed = false;
+    let mut plans = serde_json::Map::new();
+    // In JSON mode each source stays quiet and the combined plan is printed at
+    // the end. In human mode the source summaries print in sequence.
+    let silent = json;
+
+    if !json {
+        eprintln!("== receipts ==");
+    }
+    match receipt_sync(
+        settings,
+        ReceiptSyncOptions {
+            from_dir: None,
+            label: None,
+            dry_run,
+            json: false,
+            diff: false,
+            limit,
+            silent,
+        },
+    ) {
+        Ok(Some((plan, code))) => {
+            exit = exit.max(code);
+            if json {
+                plans.insert("receipts".to_owned(), serde_json::to_value(&plan)?);
+            }
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("error: receipts: {error:#}");
+            tool_failed = true;
+        }
+    }
+
+    if !json {
+        eprintln!("\n== statements ==");
+    }
+    match statement_cli::sync(
+        settings.config.as_deref(),
+        &[],
+        dry_run,
+        false,
+        silent,
+        limit,
+    ) {
+        Ok(Some((plan, code))) => {
+            exit = exit.max(code);
+            if json {
+                plans.insert("statements".to_owned(), serde_json::to_value(&plan)?);
+            }
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("error: statements: {error:#}");
+            tool_failed = true;
+        }
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&plans)?);
+    }
+    if exit == EXIT_OK && tool_failed {
+        exit = EXIT_TOOL;
+    }
+    Ok(exit)
+}
+
+struct ReceiptSyncOptions {
     from_dir: Option<PathBuf>,
     label: Option<String>,
     dry_run: bool,
     json: bool,
     diff: bool,
     limit: Option<usize>,
-) -> Result<i32> {
+    /// Suppress the plan and summary so the combined `abmx sync` can print one
+    /// labelled report. Diagnostics still go to stderr.
+    silent: bool,
+}
+
+/// Sync receipts.
+fn receipt_sync(settings: &Settings, options: ReceiptSyncOptions) -> Result<Option<(Plan, i32)>> {
+    let ReceiptSyncOptions {
+        from_dir,
+        label,
+        dry_run,
+        json,
+        diff,
+        limit,
+        silent,
+    } = options;
     let (config, base, _) = load_config(settings)?;
-    config.validate_labels()?;
-    if config.labels.accounts.is_empty() {
+    config.validate_receipts()?;
+    if !config.receipts.enabled {
+        if !silent {
+            eprintln!("receipts are disabled ([receipts].enabled = false); nothing to do");
+        }
+        return Ok(None);
+    }
+    if config.receipts.accounts.is_empty() {
         bail!(
-            "no [labels.accounts] entries; route mail with `{prefix}<parser-id>` and map it to an Actual account",
-            prefix = config.labels.prefix
+            "no [receipts.accounts] entries; route mail with `{prefix}<parser-id>` and map it to an Actual account",
+            prefix = config.receipts.prefix
         );
     }
-    if from_dir.is_none() && config.labels.since.is_none() {
+    if from_dir.is_none() && config.receipts.since.is_none() {
         eprintln!(
-            "warning: [labels].since is not set; every labelled message in the mailbox \
+            "warning: [receipts].since is not set; every labelled message in the mailbox \
              will be scanned. Set a date or run `abmx setup`."
         );
     }
@@ -1315,7 +1588,7 @@ fn sync(
     // Building a sink is side-effect free, but a broken sink must not turn a
     // plain dry run into an error; a real sync still requires it.
     let sink = if dry_run {
-        if json {
+        if json || silent {
             None
         } else {
             config.build_sink(&base).ok()
@@ -1324,27 +1597,34 @@ fn sync(
         Some(config.build_sink(&base)?)
     };
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&plan)?);
+    if !silent {
+        if json {
+            println!("{}", serde_json::to_string_pretty(&plan)?);
+        } else {
+            summarize_plan(
+                &plan,
+                settings.quiet,
+                settings.verbose,
+                !dry_run,
+                sink.as_deref(),
+            );
+        }
     } else {
-        summarize_plan(
-            &plan,
-            settings.quiet,
-            settings.verbose,
-            !dry_run,
-            sink.as_deref(),
-        );
+        for error in &plan.stats.errors {
+            eprintln!("error: {error}");
+        }
     }
 
     if dry_run {
-        if diff {
+        if diff && !silent {
             diff_against_ledger(&config, &base, &plan)?;
         }
-        return Ok(if plan.stats.broken > 0 || plan.stats.failed > 0 {
+        let code = if plan.stats.broken > 0 || plan.stats.failed > 0 {
             EXIT_FAILED
         } else {
             EXIT_OK
-        });
+        };
+        return Ok(Some((plan, code)));
     }
 
     if plan.stats.broken > 0 || plan.stats.failed > 0 {
@@ -1352,15 +1632,26 @@ fn sync(
             "refusing to apply: {} labeled message(s) need a parser or account fix; nothing was written",
             plan.stats.broken + plan.stats.failed
         );
-        return Ok(EXIT_FAILED);
+        return Ok(Some((plan, EXIT_FAILED)));
     }
 
     let sink = sink.expect("a real sync builds the sink");
     let options = apply_options(&config, dry_run);
     let report = runner.apply(sink.as_ref(), &plan, &options)?;
 
-    summarize_report(&report);
-    Ok(exit_for_report(&report))
+    if !silent {
+        summarize_report(&report);
+    } else {
+        for error in &report.errors {
+            eprintln!(
+                "error: {}: {}",
+                error.tx_id.as_deref().unwrap_or("-"),
+                error.message
+            );
+        }
+    }
+    let code = exit_for_report(&report);
+    Ok(Some((plan, code)))
 }
 
 /// Compare the plan against what the ledger already holds.
@@ -1470,7 +1761,7 @@ fn reset(settings: &Settings, purge: bool, yes: bool) -> Result<i32> {
         return Ok(EXIT_OK);
     }
 
-    let what = format!("{messages} delivered message(s)");
+    let what = format!("{messages} delivered source(s) (receipt labels and statement attachments)");
     let question =
         format!("This clears abmx's local state only. No ledger is modified.\nclear {what}?");
     if !yes && !confirm(&question)? {
@@ -1481,8 +1772,9 @@ fn reset(settings: &Settings, purge: bool, yes: bool) -> Result<i32> {
     state.reset_progress()?;
     println!("cleared {what}");
     println!(
-        "No ledger was modified. The next `abmx sync` re-fetches and re-applies; \
-         rows deleted in a ledger are re-imported."
+        "No ledger was modified. The next sync re-fetches and re-parses. \
+         Existing ledger rows are not deleted; already-imported statement rows stay \
+         deduplicated by their ids."
     );
 
     Ok(EXIT_OK)
@@ -1521,7 +1813,7 @@ fn accounts(settings: &Settings, json: bool) -> Result<i32> {
     }
 
     let mapped: BTreeSet<&str> = config
-        .labels
+        .receipts
         .accounts
         .values()
         .map(String::as_str)
@@ -1550,13 +1842,13 @@ fn accounts(settings: &Settings, json: bool) -> Result<i32> {
     }
 
     println!();
-    if config.labels.accounts.is_empty() {
+    if config.receipts.accounts.is_empty() {
         println!(
-            "[labels.accounts] is empty; route mail with `{}<parser-id>` and map it to one of these ids.",
-            config.labels.prefix
+            "[receipts.accounts] is empty; route mail with `{}<parser-id>` and map it to one of these ids.",
+            config.receipts.prefix
         );
     } else {
-        for (parser_id, account) in &config.labels.accounts {
+        for (parser_id, account) in &config.receipts.accounts {
             let exists = accounts.iter().any(|candidate| candidate.id == *account);
             println!(
                 "{:<24} -> {} {}",
@@ -1578,13 +1870,17 @@ fn run_samples(
     json: bool,
 ) -> Result<i32> {
     let (config, base, _) = load_config(settings)?;
-    config.validate_labels()?;
-    if config.labels.accounts.is_empty() {
-        bail!("no [labels.accounts] entries; run `abmx setup` to choose which labels to import");
+    config.validate_receipts()?;
+    if !config.receipts.enabled {
+        eprintln!("receipts are disabled ([receipts].enabled = false)");
+        return Ok(EXIT_OK);
     }
-    if config.labels.since.is_none() {
+    if config.receipts.accounts.is_empty() {
+        bail!("no [receipts.accounts] entries; run `abmx setup` to choose which labels to import");
+    }
+    if config.receipts.since.is_none() {
         eprintln!(
-            "warning: [labels].since is not set; sync will scan every labelled message. \
+            "warning: [receipts].since is not set; sync will scan every labelled message. \
              Set a date or run `abmx setup`."
         );
     }
@@ -1717,7 +2013,7 @@ fn summarize_plan(
             .map(|entry| entry.label.as_str())
             .collect();
         for label in labels {
-            eprintln!("  next: abmx samples --label {label}");
+            eprintln!("  next: abmx receipt samples --label {label}");
         }
 
         if persisted {

@@ -19,22 +19,22 @@ contract.
 receipt                 merchant receipt (Grab, Pluxee, Google Play, ...)
 receipt/example.card_debit  a ledger movement; the suffix is the parser id
 receipt/example.journal_va  another parser, another template
-Financial Statements    statements, not imported (yet)
+Financial Statements    statements; imported by `abmx statement sync`
 Notifications           OTP, security alerts
 ```
 
-`[labels].prefix` selects the routed namespace; the remainder must be a single
+`[receipts].prefix` selects the routed namespace; the remainder must be a single
 parser id (dots are conventional, not required: `example-qris` and
 `example.card_debit` are both valid).
 
 ## The config
 
 ```toml
-[labels]
+[receipts]
 prefix = "receipt/"
 since  = 2026-11-01          # history window; omit to scan everything
 
-[labels.accounts]            # parser id -> Actual account uuid
+[receipts.accounts]            # parser id -> Actual account uuid
 "example.card_debit"       = "00000000-0000-0000-0000-000000000000"
 "example.journal_transfer" = "00000000-0000-0000-0000-000000000000"
 ```
@@ -46,10 +46,10 @@ There is no `[policy]`: a labeled row is either imported or the label is broken.
 ```bash
 abmx status          # config, corpus, labels, accounts, auth, Gmail, sink
 abmx status --offline # skip the Gmail and sink network checks
-abmx samples         # download up to 3 messages per managed label
+abmx receipt samples         # download up to 3 messages per managed label
 ```
 
-`abmx samples` writes:
+`abmx receipt samples` writes:
 
 ```text
 $XDG_CONFIG_HOME/abmx/samples/<parser-id>/01.eml
@@ -58,11 +58,11 @@ $XDG_CONFIG_HOME/abmx/samples/<parser-id>/03.eml
 $XDG_CONFIG_HOME/abmx/samples/manifest.json
 ```
 
-`[labels].since` bounds `sync` and `abmx status --strict`. `abmx samples`
+`[receipts].since` bounds `abmx receipt sync` and `abmx status --strict`. `abmx receipt samples`
 deliberately ignores it and always takes the newest three messages per managed
 label, so a quiet import window does not starve parser evidence.
 
-Only labels in `[labels.accounts]` are sampled. Ignored labels and labels with
+Only labels in `[receipts.accounts]` are sampled. Ignored labels and labels with
 no account entry are skipped. A label with fewer than three messages is a
 warning, not a failure; the agent should be conservative in that case.
 
@@ -123,7 +123,7 @@ has almost certainly matched the wrong block.
 | --- | --- | --- |
 | `ok` | parser exists, account mapped, newest samples strict | — |
 | `missing_parser` | no parser directory for the id | author it |
-| `missing_account` | no `[labels.accounts]` entry, so the label is unmanaged | run `abmx setup` or add the entry |
+| `missing_account` | no `[receipts.accounts]` entry, so the label is unmanaged | run `abmx setup` or add the entry |
 | `parse_failed` | at least one sample is not strict, non-zero, or is `failed` | update the parser (or the gmailctl rule for `failed`) |
 | `mixed_shapes` | the samples are different templates | fix the gmailctl rule; do **not** write a parser |
 | `insufficient_samples` | fewer than three messages | wait for more mail or lower the sample count |
@@ -138,7 +138,7 @@ has almost certainly matched the wrong block.
   mail stops being labeled and `abmx` never sees it. Fix the rule; `abmx` needs
   no change.
 - **Template changes** keep the same label, so the parser fails and the label
-  reports `parse_failed`. Run `abmx samples --label <label>` and ask the agent to
+  reports `parse_failed`. Run `abmx receipt samples --label <label>` and ask the agent to
   update the parser.
 - **Two layouts under one label** is `mixed_shapes`. The fix is a gmailctl rule
   that distinguishes them (a subject or a `has:` body fragment) and a second

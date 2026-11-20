@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use abmx::authoring::author::{self, LabelStatus};
-use abmx::config::LabelsSection;
+use abmx::config::ReceiptsSection;
 use abmx_gmail::auth::{Credentials, TokenStore};
 use abmx_gmail::{GmailConfig, GmailFetcher};
 use abmx_testkit::{MockServer, Response};
@@ -80,7 +80,7 @@ fn scan_takes_the_last_three_and_reports_missing_mapping() {
     let fetcher = fetcher(&server, dir.path());
     let options = author::Options::default();
 
-    let labels = LabelsSection::default();
+    let labels = ReceiptsSection::default();
     let inventory = author::scan_gmail(&fetcher, None, &labels, &options, dir.path()).unwrap();
 
     assert_eq!(inventory.labels.len(), 1);
@@ -112,9 +112,9 @@ fn an_ignored_label_is_not_sampled_and_needs_no_work() {
     );
 
     let fetcher = fetcher(&server, dir.path());
-    let labels = LabelsSection {
+    let labels = ReceiptsSection {
         ignore: vec!["example-qris".to_owned()],
-        ..LabelsSection::default()
+        ..ReceiptsSection::default()
     };
     let inventory = author::scan_gmail(
         &fetcher,
@@ -199,7 +199,7 @@ label = "Payment to"
     })
     .unwrap();
 
-    let mut labels = LabelsSection::default();
+    let mut labels = ReceiptsSection::default();
     labels
         .accounts
         .insert("example-qris".to_owned(), "uuid".to_owned());

@@ -7,10 +7,10 @@ config:
     [sink.file]
     path = "/data/ledger.jsonl"
 
-    [labels]
+    [receipts]
     prefix = "receipt/"
 
-    [labels.accounts]
+    [receipts.accounts]
     "test.bank" = "uuid-test"
 
 parsers:

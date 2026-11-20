@@ -25,11 +25,12 @@ chunk_size = 50
 cleared = "never"
 # notes_fields = ["description"]  # default; [] disables notes entirely
 
-[labels]
+[receipts]
+enabled = true               # false pauses receipts, keeping the mappings
 prefix = "receipt/"          # literal, case-insensitive
 since  = 2026-11-01          # history window; omit to scan everything
 
-[labels.accounts]                 # parser id -> Actual account uuid
+[receipts.accounts]                 # parser id -> Actual account uuid
 "example.card_debit"       = "<actual account uuid>"
 "example.journal_transfer" = "<actual account uuid>"
 ```
@@ -45,16 +46,20 @@ since  = 2026-11-01          # history window; omit to scan everything
 
 ## Labels
 
-`[labels].prefix` selects the routed namespace. The remainder of the label must
+`[receipts].enabled = false` pauses the receipt path without deleting its
+mappings: the receipt source is skipped and `abmx status` reports it as disabled.
+The same switch exists as `[statements].enabled` for the statement path.
+
+`[receipts].prefix` selects the routed namespace. The remainder of the label must
 be a single parser id; dots are conventional, not required
 (`example-qris` and `example.card_debit` are both valid).
 
-- Only labels with an entry in `[labels.accounts]` are fetched. A label under
+- Only labels with an entry in `[receipts.accounts]` are fetched. A label under
   the prefix with no entry is unmanaged and left alone.
-- `[labels].ignore` records an explicit no from `abmx setup`.
-- `[labels].since` adds Gmail's `after:` filter. Without it, every labelled
+- `[receipts].ignore` records an explicit no from `abmx setup`.
+- `[receipts].since` adds Gmail's `after:` filter. Without it, every labelled
   message is considered on every run.
-- `abmx samples` deliberately ignores `since`, so authoring evidence is never
+- `abmx receipt samples` deliberately ignores `since`, so authoring evidence is never
   starved by the import window.
 
 ## Secrets

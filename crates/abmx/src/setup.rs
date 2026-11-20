@@ -14,8 +14,8 @@ use crate::config::{Config, INIT_TEMPLATE};
 use crate::config_edit::{write_secret_file, ConfigDocument};
 use crate::credentials;
 use crate::gmail_auth;
-use crate::labels::{self, DiscoveredLabel};
 use crate::paths;
+use crate::receipts::{self, DiscoveredLabel};
 
 #[derive(Debug, Clone, Default)]
 pub struct Options {
@@ -86,14 +86,24 @@ fn setup(options: &Options) -> Result<()> {
     let gmail_ready = step_gmail(&path, &mut doc, options)?;
 
     // 5. Labels ------------------------------------------------------------
-    let discovered = step_labels(&path, &mut doc, options, gmail_ready)?;
+    let current = reload(&path)?.0;
+    let discovered = if current.receipts.enabled {
+        step_labels(&path, &mut doc, options, gmail_ready)?
+    } else {
+        log::info("receipts are disabled ([receipts].enabled = false); skipping labels")?;
+        None
+    };
 
     // 6. Accounts ----------------------------------------------------------
     step_accounts(&path, &mut doc, options, discovered.as_deref())?;
 
+    // 7. Statements --------------------------------------------------------
+    step_statements(&path, &mut doc, options, gmail_ready)?;
+
     // Done -----------------------------------------------------------------
     let (config, _) = reload(&path)?;
-    config.validate_labels()?;
+    config.validate_receipts()?;
+    config.validate_statements()?;
     summary(&path, &config)?;
     outro("Setup finished; rerun `abmx setup` whenever something changes")?;
     Ok(())
@@ -134,7 +144,7 @@ fn interrupted(error: &anyhow::Error) -> bool {
 fn step_discovery(path: &Path, doc: &mut ConfigDocument) -> Result<()> {
     log::step("Discovery rule")?;
     let (config, _) = reload(path)?;
-    let current = config.labels.prefix.clone();
+    let current = config.receipts.prefix.clone();
 
     log::info("labels starting with this prefix are discovered; the rest becomes the parser id")?;
 
@@ -154,7 +164,7 @@ fn step_discovery(path: &Path, doc: &mut ConfigDocument) -> Result<()> {
     log::info(format!("using `{prefix}`"))?;
 
     if prefix != current {
-        doc.set_string(&["labels", "prefix"], &prefix)?;
+        doc.set_string(&["receipts", "prefix"], &prefix)?;
         doc.save()?;
         log::success(format!("prefix set to `{prefix}`"))?;
     }
@@ -167,12 +177,12 @@ fn step_discovery(path: &Path, doc: &mut ConfigDocument) -> Result<()> {
 fn step_history(path: &Path, doc: &mut ConfigDocument) -> Result<()> {
     log::step("History window")?;
     let (config, _) = reload(path)?;
-    let current = config.labels.since;
+    let current = config.receipts.since;
     let today = chrono::Local::now().date_naive();
     let days_ago = |days: i64| (today - chrono::Duration::days(days)).to_string();
 
     log::info(
-        "only mail on/after this date is imported; `abmx samples` still takes the \
+        "only mail on/after this date is imported; `abmx receipt samples` still takes the \
          newest messages for authoring",
     )?;
 
@@ -240,12 +250,12 @@ fn step_history(path: &Path, doc: &mut ConfigDocument) -> Result<()> {
 
     match selected {
         Some(date) => {
-            doc.set_string(&["labels", "since"], &date.to_string())?;
+            doc.set_string(&["receipts", "since"], &date.to_string())?;
             doc.save()?;
             log::success(format!("fetching mail since {date}"))?;
         }
         None => {
-            doc.remove(&["labels", "since"])?;
+            doc.remove(&["receipts", "since"])?;
             doc.save()?;
             log::warning("history window cleared; every labelled message will be fetched")?;
         }
@@ -369,7 +379,7 @@ fn step_labels(
     options: &Options,
     gmail_ready: bool,
 ) -> Result<Option<Vec<String>>> {
-    log::step("Labels")?;
+    log::step("Receipts")?;
     if !gmail_ready {
         log::info("skipped: Gmail is not authorized")?;
         return Ok(None);
@@ -397,15 +407,15 @@ fn step_labels(
     spinner.stop(format!(
         "{} label(s) under `{}`",
         discovered.len(),
-        config.labels.prefix
+        config.receipts.prefix
     ));
 
     if discovered.is_empty() {
-        let plan = labels::plan(&discovered, &config.labels);
+        let plan = receipts::plan(&discovered, &config.receipts);
         for parser_id in &plan.orphans {
             log::warning(format!(
-                "`{}{parser_id}` is mapped in [labels.accounts] but no such Gmail label exists",
-                config.labels.prefix
+                "`{}{parser_id}` is mapped in [receipts.accounts] but no such Gmail label exists",
+                config.receipts.prefix
             ))?;
         }
         note(
@@ -419,23 +429,23 @@ fn step_labels(
                  ~/.gmailctl/config.jsonnet\n\
                  then run `gmailctl apply` and `abmx setup` again.\n\n\
                  See https://kennethlieyanto.github.io/abmx/guides/gmail/.",
-                config.labels.prefix, config.labels.prefix, config.labels.prefix
+                config.receipts.prefix, config.receipts.prefix, config.receipts.prefix
             ),
         )?;
         return Ok(Some(discovered));
     }
 
-    let plan = labels::plan(&discovered, &config.labels);
+    let plan = receipts::plan(&discovered, &config.receipts);
     for label in &plan.invalid {
         log::warning(format!(
             "`{label}`: the remainder after `{}` is not a parser id",
-            config.labels.prefix
+            config.receipts.prefix
         ))?;
     }
     for parser_id in &plan.orphans {
         log::warning(format!(
-            "`{}{parser_id}` is mapped in [labels.accounts] but no such Gmail label exists",
-            config.labels.prefix
+            "`{}{parser_id}` is mapped in [receipts.accounts] but no such Gmail label exists",
+            config.receipts.prefix
         ))?;
     }
     if !plan.managed.is_empty() {
@@ -494,7 +504,7 @@ fn step_accounts(
 
     // Do not demand a ledger when there is nothing to map.
     let (current, _) = reload(path)?;
-    let initial = labels::plan(discovered, &current.labels);
+    let initial = receipts::plan(discovered, &current.receipts);
     let nothing_to_do =
         initial.unmanaged.is_empty() && (!options.remap || initial.managed.is_empty());
     if nothing_to_do {
@@ -570,7 +580,7 @@ fn step_accounts(
         return Ok(());
     }
 
-    let plan = labels::plan(discovered, &config.labels);
+    let plan = receipts::plan(discovered, &config.receipts);
     let pending: Vec<&DiscoveredLabel> = plan.unmanaged.iter().collect();
 
     if pending.is_empty() && !options.remap {
@@ -628,6 +638,174 @@ fn step_accounts(
             doc.save()?;
             log::success(format!("{} -> {chosen}", label.label))?;
         }
+    }
+
+    Ok(())
+}
+
+/// Statement labels are a second namespace with the same parser-id convention.
+///
+/// The step is deliberately independent of the receipt mapping: a user may
+/// track receipts for an account and statements for a different one, or only
+/// statements.
+fn step_statements(
+    path: &Path,
+    doc: &mut ConfigDocument,
+    options: &Options,
+    gmail_ready: bool,
+) -> Result<()> {
+    log::step("Bank statements")?;
+
+    if !gmail_ready {
+        log::info("skipped: Gmail is not authorized yet")?;
+        return Ok(());
+    }
+
+    let (config, _) = reload(path)?;
+    if !config.statements.enabled {
+        log::info("statements are disabled ([statements].enabled = false)")?;
+        return Ok(());
+    }
+
+    let prefix: String = input("Statement label prefix")
+        .placeholder("financial_statements/")
+        .default_input(&config.statements.prefix)
+        .validate(|value: &String| {
+            if value.trim().is_empty() {
+                Err("the prefix is required")
+            } else {
+                Ok(())
+            }
+        })
+        .interact()?;
+    let prefix = prefix.trim().to_owned();
+    if prefix != config.statements.prefix {
+        doc.set_string(&["statements", "prefix"], &prefix)?;
+        doc.save()?;
+        log::success(format!("statement prefix set to `{prefix}`"))?;
+    }
+
+    let (config, base) = reload(path)?;
+    let gmail =
+        match config.build_gmail_with(&base, &config.statements.prefix, config.statements.since) {
+            Ok(gmail) => gmail,
+            Err(error) => {
+                log::warning(format!("could not build the Gmail fetcher: {error}"))?;
+                return Ok(());
+            }
+        };
+
+    let progress = spinner();
+    progress.start("Looking for statement labels");
+    let discovered = match gmail.routed_labels() {
+        Ok(labels) => {
+            let names: Vec<String> = labels.into_iter().map(|label| label.name).collect();
+            progress.stop(format!(
+                "{} label(s) under `{}`",
+                names.len(),
+                config.statements.prefix
+            ));
+            names
+        }
+        Err(error) => {
+            progress.error(format!("could not list Gmail labels: {error}"));
+            return Ok(());
+        }
+    };
+
+    let mut pending: Vec<String> = Vec::new();
+
+    for label in &discovered {
+        let Some(parser_id) = config.statements.parser_id(label) else {
+            continue;
+        };
+        let mapped = config.statements.accounts.contains_key(&parser_id)
+            || config.statements.accounts.keys().any(|key| {
+                key.split_once(':')
+                    .is_some_and(|(parser, _)| parser == parser_id)
+            });
+        if mapped && !options.remap {
+            continue;
+        }
+        if config.statements.is_ignored(&parser_id) && !options.review && !options.remap {
+            continue;
+        }
+
+        let import = confirm(format!("Import statements labelled `{label}`?")).interact()?;
+        if import {
+            doc.remove_statement_ignore(&parser_id)?;
+            doc.save()?;
+            pending.push(parser_id);
+        } else {
+            doc.add_statement_ignore(&parser_id)?;
+            doc.save()?;
+        }
+    }
+
+    if pending.is_empty() {
+        log::success("nothing to map")?;
+        return Ok(());
+    }
+
+    let sink = match config.build_statement_sink(&base) {
+        Ok(sink) => sink,
+        Err(error) => {
+            log::warning(format!("the ledger is not configured: {error}"))?;
+            log::info("rerun `abmx setup` once the ledger is reachable")?;
+            return Ok(());
+        }
+    };
+
+    let progress = spinner();
+    progress.start("Reading accounts");
+    let accounts = match sink.accounts() {
+        Ok(accounts) => {
+            progress.stop(format!("{} account(s)", accounts.len()));
+            accounts
+        }
+        Err(error) => {
+            progress.error(format!("could not read accounts: {error}"));
+            return Ok(());
+        }
+    };
+
+    let open: Vec<&SinkAccount> = accounts.iter().filter(|account| !account.closed).collect();
+    if open.is_empty() {
+        log::warning("every ledger account is closed; nothing to map")?;
+        return Ok(());
+    }
+
+    for parser_id in pending {
+        let mut prompt = select(format!("Statement account for `{parser_id}`")).filter_mode();
+        for account in &open {
+            let hint = if account.off_budget {
+                format!("{} · off-budget", account.id)
+            } else {
+                account.id.clone()
+            };
+            prompt = prompt.item(account.id.clone(), account.name.clone(), hint);
+        }
+        prompt = prompt.item(String::new(), "Skip for now", "");
+
+        let chosen: String = prompt.interact()?;
+        if chosen.is_empty() {
+            log::info(format!("skipped `{parser_id}`"))?;
+            continue;
+        }
+        doc.set_statement_account(&parser_id, &chosen)?;
+        doc.save()?;
+
+        let password_file: String =
+            input(format!("Password file for `{parser_id}` (empty if none)"))
+                .placeholder("/run/secrets/abmx/statement")
+                .default_input("")
+                .interact()?;
+        if !password_file.trim().is_empty() {
+            doc.set_statement_password_file(&parser_id, password_file.trim())?;
+            doc.save()?;
+        }
+
+        log::success(format!("{parser_id} -> {chosen}"))?;
     }
 
     Ok(())
@@ -794,21 +972,32 @@ fn summary(path: &Path, config: &Config) -> Result<()> {
     }
 
     lines.push(format!(
-        "labels: {} managed, {} ignored (prefix `{}`)",
-        config.labels.accounts.len(),
-        config.labels.ignore.len(),
-        config.labels.prefix
+        "receipts: {} managed, {} ignored (prefix `{}`{})",
+        config.receipts.accounts.len(),
+        config.receipts.ignore.len(),
+        config.receipts.prefix,
+        if config.receipts.enabled {
+            ""
+        } else {
+            ", disabled"
+        }
+    ));
+    lines.push(format!(
+        "statements: {} managed, {} ignored (prefix `{}`)",
+        config.statements.accounts.len(),
+        config.statements.ignore.len(),
+        config.statements.prefix
     ));
     lines.push(format!(
         "window: {}",
         config
-            .labels
+            .receipts
             .since
             .map(|date| format!("since {date}"))
             .unwrap_or_else(|| "all history".to_owned())
     ));
-    if config.labels.accounts.is_empty() {
-        lines.push("        nothing is imported until a label is mapped".to_owned());
+    if config.receipts.accounts.is_empty() {
+        lines.push("        nothing is imported until a receipt label is mapped".to_owned());
     } else {
         lines.push(format!(
             "        samples go to {}",
@@ -818,14 +1007,14 @@ fn summary(path: &Path, config: &Config) -> Result<()> {
 
     note("Summary", lines.join("\n"))?;
 
-    if !config.labels.accounts.is_empty() {
+    if !config.receipts.accounts.is_empty() {
         note(
             "Author a parser with AI",
-            "1. abmx samples\n\
+            "1. abmx receipt samples\n\
              2. mkdir -p ~/.agents/skills/abmx && abmx skill > ~/.agents/skills/abmx/SKILL.md\n\
              3. prompt your agent:\n\
                 \"help me create parser for all my transaction email, use abmx parser authoring skill\"\n\
-             4. abmx sync --dry-run",
+             4. abmx receipt sync --dry-run",
         )?;
     }
 

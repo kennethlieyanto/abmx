@@ -50,7 +50,7 @@ state**. Copying the stages would give symmetry but the wrong abstraction —
 | Parser            | Sync                | Difference                                                     |
 | ----------------- | ------------------- | -------------------------------------------------------------- |
 | input             | **Fetcher**         | same role, transport varies per user                           |
-| label routing     | gmailctl + `[labels.accounts]` | the label names the parser; the config maps it to an account |
+| label routing     | gmailctl + `[receipts.accounts]` | the label names the parser; the config maps it to an account |
 | parser spec       | `abmx-parser`       | not reimplemented                                              |
 | extraction result | `abmx-tx` contract  | the shared vocabulary between the halves                       |
 | output schema     | **Policy → Sink**   | the decision and the write are separate                        |
@@ -76,7 +76,7 @@ pub trait Fetcher {
   always the parser's job.
 - **Label-tagged messages.** Each `RawMessage` carries the `receipt/*` label that
   selected it, so the caller chooses the parser from the label and the account
-  from `[labels.accounts]` without guessing.
+  from `[receipts.accounts]` without guessing.
 
 ### Classification
 
@@ -109,7 +109,7 @@ pub trait Sink {
 - **Partial success is a `Report`, not an error.** A sink that imported 49 of 50
   rows should say so. The Actual sink bisects a failing chunk into single rows so
   one bad row cannot cost the rest.
-- **`snapshot()` is the read side.** `abmx sync --dry-run --diff` needs to know
+- **`snapshot()` is the read side.** `abmx receipt sync --dry-run --diff` needs to know
   what the ledger already holds, and only the sink knows how to ask. The method
   is read-only by contract, and a sink that cannot answer returns an error rather
   than an empty list, so "no matches" is never confused with "I cannot see".
@@ -155,11 +155,11 @@ are checked before applying.
 ## Label discipline
 
 There is no cursor. Every run lists the account's labels, keeps the `receipt/*`
-ones that are mapped in `[labels.accounts]`, paginates the message ids under
+ones that are mapped in `[receipts.accounts]`, paginates the message ids under
 each one, and drops ids already recorded in state before downloading raw bodies.
 
 ```text
-list labels ──► keep [labels.accounts] ────────► list messages per label
+list labels ──► keep [receipts.accounts] ────────► list messages per label
       │                                      │
       │ mapped id has no Gmail label         ▼
       └──────────── abort ─────────── drop seen ids, fetch raw
@@ -235,5 +235,6 @@ migration, not a silent reinterpretation of old rows.
 - An async runtime.
 - A second binary. The parser is a library plus an `abmx parser` command group;
   it is not a separate product with its own release cadence.
-- Generic input framing. The extension point for non-email sources is the
-  `Transaction` schema, not the parser's input layer.
+- One parser language for mail and statements. Mail is region-based; a
+  statement is a table with a running balance. They share the corpus, the
+  `Transaction` contract, and the authoring loop, not an input layer.

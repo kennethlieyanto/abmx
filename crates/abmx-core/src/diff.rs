@@ -194,3 +194,157 @@ mod tests {
         assert!(!matched.is_new());
     }
 }
+
+/// How a statement row relates to the ledger when the date may differ.
+///
+/// Email notifications carry the transaction date; a statement carries the
+/// posting date. Matching on the exact date alone leaves duplicates behind, and
+/// matching on amount alone can collapse two real purchases. The conservative
+/// rule is: a unique candidate inside the window is the same event; anything
+/// ambiguous is reported and left to the caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowMatch {
+    /// The ledger already has this exact `imported_id`.
+    SameId,
+    /// Exactly one ledger row matches inside the window.
+    Present,
+    /// Nothing plausible matches; the row is new.
+    New,
+    /// More than one ledger row matches; matching would be a guess.
+    Ambiguous(usize),
+}
+
+impl WindowMatch {
+    pub fn is_present(&self) -> bool {
+        matches!(self, Self::SameId | Self::Present)
+    }
+}
+
+/// Classify one row against the ledger with a posting-date tolerance.
+pub fn classify_window(row: &ImportRow, ledger: &[LedgerRow], window_days: i64) -> WindowMatch {
+    if ledger.iter().any(|candidate| {
+        candidate.account == row.account
+            && candidate.imported_id.as_deref() == Some(row.tx_id.as_str())
+    }) {
+        return WindowMatch::SameId;
+    }
+
+    let Some(wanted) = cents(
+        row.transaction.amount.amount_minor,
+        row.transaction.currency_exponent,
+    ) else {
+        return WindowMatch::New;
+    };
+
+    let date = row.transaction.occurred_on;
+    let window = window_days.unsigned_abs() as i64;
+
+    let mut matches = 0usize;
+    for candidate in ledger {
+        if candidate.account != row.account || candidate.cents() != Some(wanted) {
+            continue;
+        }
+        let delta = candidate.date.signed_duration_since(date).num_days().abs();
+        if delta <= window {
+            matches += 1;
+        }
+    }
+
+    match matches {
+        0 => WindowMatch::New,
+        1 => WindowMatch::Present,
+        count => WindowMatch::Ambiguous(count),
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+    use abmx_parser::{Extraction, Kind, Money, Source, Status};
+
+    fn row(tx_id: &str, date: &str, amount_minor: i64) -> ImportRow {
+        ImportRow {
+            tx_id: tx_id.into(),
+            account: "acc-1".into(),
+            transaction: abmx_tx::Transaction {
+                source: Source::default(),
+                id: tx_id.into(),
+                parser: "test.bank".into(),
+                parser_version: 1,
+                bank: "test".into(),
+                account: "test".into(),
+                kind: Kind::Unknown,
+                status: Status::Settled,
+                amount: Money {
+                    amount_minor,
+                    currency: "IDR".into(),
+                },
+                currency_exponent: 0,
+                amount_decimal: amount_minor.to_string(),
+                occurred_at: chrono::DateTime::parse_from_rfc3339("2026-01-05T00:00:00+07:00")
+                    .unwrap(),
+                occurred_on: NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap(),
+                timezone: "Asia/Jakarta".into(),
+                counterparty: None,
+                counterparty_account: None,
+                account_last4: None,
+                reference_id: None,
+                channel: None,
+                description: None,
+                extra: Default::default(),
+                extraction: Extraction::Strict,
+                warnings: vec![],
+            },
+        }
+    }
+
+    fn ledger(date: &str, amount_minor: i64, imported_id: Option<&str>) -> LedgerRow {
+        LedgerRow {
+            account: "acc-1".into(),
+            date: NaiveDate::parse_from_str(date, "%Y-%m-%d").unwrap(),
+            amount_minor,
+            currency_exponent: 2,
+            payee: None,
+            imported_id: imported_id.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn the_same_id_wins_over_everything() {
+        let ledger = vec![ledger("2026-01-07", -400_000, Some("stmt_1"))];
+        assert_eq!(
+            classify_window(&row("stmt_1", "2026-01-05", -4_000), &ledger, 3),
+            WindowMatch::SameId
+        );
+    }
+
+    #[test]
+    fn a_posting_date_a_couple_of_days_later_still_matches() {
+        let ledger = vec![ledger("2026-01-07", -400_000, Some("mail_1"))];
+        assert_eq!(
+            classify_window(&row("stmt_1", "2026-01-05", -4_000), &ledger, 3),
+            WindowMatch::Present
+        );
+    }
+
+    #[test]
+    fn two_candidates_are_ambiguous_not_guessed() {
+        let ledger = vec![
+            ledger("2026-01-05", -400_000, None),
+            ledger("2026-01-06", -400_000, None),
+        ];
+        assert_eq!(
+            classify_window(&row("stmt_1", "2026-01-05", -4_000), &ledger, 3),
+            WindowMatch::Ambiguous(2)
+        );
+    }
+
+    #[test]
+    fn a_different_amount_is_new() {
+        let ledger = vec![ledger("2026-01-05", -400_001, None)];
+        assert_eq!(
+            classify_window(&row("stmt_1", "2026-01-05", -4_000), &ledger, 3),
+            WindowMatch::New
+        );
+    }
+}

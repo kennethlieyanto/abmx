@@ -49,12 +49,32 @@ impl ConfigDocument {
             path.to_path_buf()
         };
 
-        Ok(Self {
+        let mut config = Self {
             path: path.to_path_buf(),
             write_path,
             doc,
             dirty: false,
-        })
+        };
+        config.migrate_receipts()?;
+        Ok(config)
+    }
+
+    /// Rename the pre-rename `[labels]` table to `[receipts]`.
+    ///
+    /// Reading still accepts `[labels]` through a serde alias, but the editor
+    /// must not leave both names in one file: the alias would make the
+    /// duplicate field ambiguous on the next load.
+    pub fn migrate_receipts(&mut self) -> Result<bool> {
+        let table = self.doc.as_table_mut();
+        if table.contains_key("receipts") || !table.contains_key("labels") {
+            return Ok(false);
+        }
+        let Some(item) = table.remove("labels") else {
+            return Ok(false);
+        };
+        table.insert("receipts", item);
+        self.dirty = true;
+        Ok(true)
     }
 
     pub fn path(&self) -> &Path {
@@ -125,14 +145,14 @@ impl ConfigDocument {
     }
 
     pub fn set_account(&mut self, parser_id: &str, account: &str) -> Result<()> {
-        let table = self.table(&["labels", "accounts"])?;
+        let table = self.table(&["receipts", "accounts"])?;
         table.insert(parser_id, value(account));
         self.dirty = true;
         Ok(())
     }
 
     pub fn remove_account(&mut self, parser_id: &str) -> Result<bool> {
-        let table = self.table(&["labels", "accounts"])?;
+        let table = self.table(&["receipts", "accounts"])?;
         let removed = table.remove(parser_id).is_some();
         if removed {
             self.dirty = true;
@@ -140,10 +160,61 @@ impl ConfigDocument {
         Ok(removed)
     }
 
+    pub fn set_statement_account(&mut self, parser_id: &str, account: &str) -> Result<()> {
+        let table = self.table(&["statements", "accounts"])?;
+        table.insert(parser_id, value(account));
+        self.dirty = true;
+        Ok(())
+    }
+
+    pub fn add_statement_ignore(&mut self, parser_id: &str) -> Result<()> {
+        let array = self.array(&["statements", "ignore"])?;
+        let exists = array.iter().any(|item| {
+            item.as_str()
+                .is_some_and(|existing| existing.eq_ignore_ascii_case(parser_id))
+        });
+        if !exists {
+            array.push(parser_id);
+            self.dirty = true;
+        }
+        Ok(())
+    }
+
+    pub fn remove_statement_ignore(&mut self, parser_id: &str) -> Result<bool> {
+        let array = self.array(&["statements", "ignore"])?;
+        let before = array.len();
+        let keep: Vec<Value> = array
+            .iter()
+            .filter(|item| {
+                !item
+                    .as_str()
+                    .is_some_and(|existing| existing.eq_ignore_ascii_case(parser_id))
+            })
+            .cloned()
+            .collect();
+        if keep.len() == before {
+            return Ok(false);
+        }
+        let mut replacement = Array::new();
+        for item in keep {
+            replacement.push(item);
+        }
+        *array = replacement;
+        self.dirty = true;
+        Ok(true)
+    }
+
+    /// Point a statement parser at a password file. The secret itself is never
+    /// written into the config.
+    pub fn set_statement_password_file(&mut self, parser_id: &str, path: &str) -> Result<()> {
+        self.set(&["statements", "passwords", parser_id, "file"], value(path))?;
+        Ok(())
+    }
+
     /// Remember an explicit "no" from setup. Order is preserved and duplicates
     /// are case-insensitive.
     pub fn add_ignore(&mut self, parser_id: &str) -> Result<()> {
-        let array = self.array(&["labels", "ignore"])?;
+        let array = self.array(&["receipts", "ignore"])?;
         let exists = array.iter().any(|item| {
             item.as_str()
                 .is_some_and(|existing| existing.eq_ignore_ascii_case(parser_id))
@@ -156,7 +227,7 @@ impl ConfigDocument {
     }
 
     pub fn remove_ignore(&mut self, parser_id: &str) -> Result<bool> {
-        let array = self.array(&["labels", "ignore"])?;
+        let array = self.array(&["receipts", "ignore"])?;
         let before = array.len();
         let keep: Vec<Value> = array
             .iter()
@@ -182,7 +253,7 @@ impl ConfigDocument {
 
     pub fn ignore_entries(&self) -> Vec<String> {
         self.doc
-            .get("labels")
+            .get("receipts")
             .and_then(Item::as_table)
             .and_then(|labels| labels.get("ignore"))
             .and_then(Item::as_array)
@@ -302,6 +373,13 @@ fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
 mod tests {
     use super::*;
 
+    const OLD_LABELS: &str = r#"[labels]
+prefix = "receipt/"
+
+[labels.accounts]
+"example.card_debit" = "uuid-old"
+"#;
+
     const EXISTING: &str = r#"# keep this comment
 [general]
 parsers = []
@@ -311,15 +389,32 @@ parsers = []
 client_id = "old.apps.googleusercontent.com"
 max_messages = 50
 
-[labels]
+[receipts]
 prefix = "receipt/"
 
-[labels.accounts]
+[receipts.accounts]
 "example.card_debit" = "uuid-old"
 
 [unknown]
 future = "field"
 "#;
+
+    #[test]
+    fn migrates_labels_to_receipts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abmx.toml");
+        std::fs::write(&path, OLD_LABELS).unwrap();
+
+        let mut doc = ConfigDocument::open_or_template(&path).unwrap();
+        assert!(doc.is_dirty());
+        assert!(doc.save().unwrap());
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[receipts]"));
+        assert!(text.contains("[receipts.accounts]"));
+        assert!(!text.contains("[labels]"));
+        assert!(text.contains("\"example.card_debit\" = \"uuid-old\""));
+    }
 
     #[test]
     fn edits_preserve_comments_and_unknown_keys() {

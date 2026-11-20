@@ -14,7 +14,7 @@ fn config(dir: &Path, token: &str) -> PathBuf {
 [fetch.gmail]
 token = "{token}"
 
-[labels]
+[receipts]
 prefix = "receipt/"
 "#
         ),

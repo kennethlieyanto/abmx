@@ -23,11 +23,11 @@ budget_sync_id = "…"
 data_dir = "/data/cache/actual"
 timeout_secs = 300
 
-[labels]
+[receipts]
 prefix = "receipt/"
 since = 2026-11-01
 
-[labels.accounts]
+[receipts.accounts]
 "example.card_debit" = "<actual account uuid>"
 ```
 

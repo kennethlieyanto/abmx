@@ -59,7 +59,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- else if .Values.config.data -}}
 {{- printf "%s-config" (include "abmx.fullname" .) -}}
 {{- else -}}
-{{- fail "set config.existingConfigMap or config.data; the chart does not guess [labels], account mappings, or the Actual server" -}}
+{{- fail "set config.existingConfigMap or config.data; the chart does not guess [receipts], account mappings, or the Actual server" -}}
 {{- end -}}
 {{- end -}}
 

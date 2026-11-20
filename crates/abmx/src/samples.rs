@@ -1,6 +1,6 @@
-//! `abmx samples`: download the evidence a parser author needs.
+//! `abmx receipt samples`: download the evidence a parser author needs.
 //!
-//! Only labels mapped in `[labels.accounts]` are sampled. The command never
+//! Only labels mapped in `[receipts.accounts]` are sampled. The command never
 //! parses anything and never requires a parser corpus; it exists so an agent
 //! (or a human) can inspect real mail and write a spec from it.
 
@@ -13,8 +13,8 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use crate::config::Config;
-use crate::labels::{self, ManagedLabel};
 use crate::paths;
+use crate::receipts::{self, ManagedLabel};
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -65,7 +65,7 @@ pub fn download(
         .into_iter()
         .map(|label| label.name)
         .collect();
-    let plan = labels::plan(&discovered, &config.labels);
+    let plan = receipts::plan(&discovered, &config.receipts);
 
     let mut targets: Vec<ManagedLabel> = plan.managed;
     if let Some(selector) = &options.label {
@@ -82,7 +82,7 @@ pub fn download(
     if targets.is_empty() {
         bail!(
             "no managed labels; run `abmx setup` to choose which labels to import\n  \
-             (only [labels.accounts] entries are sampled)"
+             (only [receipts.accounts] entries are sampled)"
         );
     }
 
@@ -98,8 +98,8 @@ pub fn download(
     let mut warnings = Vec::new();
     for parser_id in &plan.orphans {
         warnings.push(format!(
-            "`{}{parser_id}` is mapped in [labels.accounts] but no such Gmail label exists",
-            config.labels.prefix
+            "`{}{parser_id}` is mapped in [receipts.accounts] but no such Gmail label exists",
+            config.receipts.prefix
         ));
     }
 

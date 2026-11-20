@@ -4,7 +4,7 @@ description: What abmx setup asks, what it writes, and when to rerun it.
 ---
 
 `abmx setup` is the attended quickstart. It walks through the pieces that must be
-true before `abmx sync` can import anything:
+true before `abmx receipt sync` can import anything:
 
 1. a config file exists and has a discovery prefix and history window;
 2. Gmail is authorized;
@@ -50,7 +50,7 @@ Gmail label prefix › receipt/
 - The rest of the label must be a parser id: `receipt/example.card_debit` becomes
   `example.card_debit`. Nested labels such as `receipt/2026/example` are not
   parser ids.
-- The value is saved to `[labels].prefix`.
+- The value is saved to `[receipts].prefix`.
 
 ### 3. History window
 
@@ -70,8 +70,8 @@ History window
   their current `since`.
 - `All history` is available but warns: it scans every labelled message and is
   slow, and old templates may not match the parser.
-- The date is saved to `[labels].since`. It bounds `abmx sync` and
-  `abmx status --strict`. `abmx samples` ignores it and always takes the newest
+- The date is saved to `[receipts].since`. It bounds `abmx receipt sync` and
+  `abmx status --strict`. `abmx receipt samples` ignores it and always takes the newest
   three messages per managed label.
 
 ### 4. Gmail
@@ -91,7 +91,7 @@ gmailctl: the client identifies the app, the token identifies the user. See
 
 ### 5. Labels
 
-Setup lists every Gmail label under `[labels].prefix`. For each label that is
+Setup lists every Gmail label under `[receipts].prefix`. For each label that is
 neither mapped nor declined, it asks:
 
 ```text
@@ -99,7 +99,7 @@ Import transactions labelled `receipt/example.card_debit`?
 ```
 
 - **Yes** leaves the label to be mapped in the next step.
-- **No** records the parser id in `[labels].ignore`, so the question is not
+- **No** records the parser id in `[receipts].ignore`, so the question is not
   asked again unless you pass `--review`.
 
 Labels whose suffix is not a parser id (for example `receipt/some/thing`) are
@@ -108,7 +108,7 @@ reported and skipped; rename the gmailctl label.
 If there are no routed labels at all, setup prints an example gmailctl rule and
 stops this step. abmx never creates Gmail labels or filters.
 
-Existing `[labels.accounts]` entries with no Gmail label under the new prefix are
+Existing `[receipts.accounts]` entries with no Gmail label under the new prefix are
 reported as warnings, so a prefix change is visible before `sync` hard-fails on
 them.
 
@@ -122,12 +122,21 @@ instead. It then validates the connection by listing accounts.
 For every accepted label it offers the open accounts and writes:
 
 ```toml
-[labels.accounts]
+[receipts.accounts]
 "example.card_debit" = "<actual account uuid>"
 ```
 
-A parser does not have to exist yet. The next step is `abmx samples` plus
+A parser does not have to exist yet. The next step is `abmx receipt samples` plus
 [parser authoring](/guides/authoring/).
+
+### 7. Statements
+
+The last step asks for the statement label prefix (`financial_statements/` by
+default), lists the labels under it, and offers each one. Accepting a label
+maps its parser id to a ledger account; declining records it in
+`[statements].ignore` so setup does not ask again. When a PDF is encrypted, the
+step asks for a password file — the password itself is never written into the
+config. Rerun with `--review` to revisit declined labels.
 
 ## Secrets
 
@@ -150,20 +159,20 @@ ABMX_ACTUAL_BUDGET_PASSWORD
 
 ## What "managed" means
 
-`[labels.accounts]` is the single source of truth. A label under the prefix with
+`[receipts.accounts]` is the single source of truth. A label under the prefix with
 no account entry is **unmanaged**: it is not fetched, not parsed, and not an
 error. `sync` prints a one-line note when such labels exist.
 
-`[labels].ignore` remembers an explicit no. Both lists are validated as parser
+`[receipts].ignore` remembers an explicit no. Both lists are validated as parser
 ids and may not overlap. A *configured* account with no matching Gmail label is
 still an error — that is drift, not an absence of a decision.
 
 ## After setup
 
 ```bash
-abmx samples                    # download evidence for the mapped labels
-abmx sync --dry-run             # inspect the plan once parsers exist
+abmx receipt samples                    # download evidence for the mapped labels
+abmx receipt sync --dry-run     # inspect the plan once parsers exist
 abmx status                     # full health check (Gmail, labels, accounts, sink)
 abmx status --offline           # skip network checks
-abmx sync                       # import
+abmx receipt sync               # import
 ```

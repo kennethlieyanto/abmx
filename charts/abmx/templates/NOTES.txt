@@ -6,7 +6,7 @@ Before the first run:
    - an existing ConfigMap with a `config.toml` key, referenced by
      `config.existingConfigMap`, or
    - `config.data` with the TOML inline.
-   The chart has no defaults for [labels], accounts, or the Actual server.
+   The chart has no defaults for [receipts], accounts, or the Actual server.
 
 2. Provide the Gmail credential bundle from `abmx auth export`:
    kubectl -n {{ .Release.Namespace }} create secret generic abmx-gmail-auth \

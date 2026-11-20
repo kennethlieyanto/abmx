@@ -103,12 +103,12 @@ fn the_authoring_skill_is_one_self_contained_document() {
     let text = authoring::skill::render_authoring().unwrap();
     assert!(text.starts_with("---\nname: abmx parser authoring"));
     assert!(text.contains("description:"));
-    assert!(text.contains("abmx samples"));
+    assert!(text.contains("abmx receipt samples"));
     assert!(text.contains("samples/<parser-id>"));
     assert!(text.contains("# bank parser spec reference"));
     assert!(text.contains("## Verifying a parser"));
     assert!(text.contains("# Parser authoring pitfalls"));
-    assert!(text.contains("[labels.accounts]"));
+    assert!(text.contains("[receipts.accounts]"));
     assert!(
         !text.contains("references/"),
         "the skill must not link references"

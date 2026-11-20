@@ -40,7 +40,7 @@ config:
   # Existing ConfigMap with a `config.toml` key. Use this in GitOps.
   existingConfigMap: ""
   # Raw TOML used only when existingConfigMap is empty. Rendered through `tpl`.
-  # There are no chart defaults for [labels], accounts, or the Actual server.
+  # There are no chart defaults for [receipts], accounts, or the Actual server.
   data: ""
 
 parsers:

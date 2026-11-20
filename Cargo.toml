@@ -18,6 +18,8 @@ abmx-parser = { path = "crates/abmx-parser" }
 abmx-gmail = { path = "crates/abmx-gmail" }
 abmx-actual = { path = "crates/abmx-actual" }
 abmx-file = { path = "crates/abmx-file" }
+abmx-doc = { path = "crates/abmx-doc" }
+abmx-table = { path = "crates/abmx-table" }
 abmx-testkit = { path = "crates/abmx-testkit" }
 
 anyhow = "1"
@@ -27,6 +29,7 @@ clap = { version = "4", features = ["derive"] }
 cliclack = "0.5"
 html5ever = "0.27"
 libc = "0.2"
+lopdf = "0.47"
 mail-parser = "0.11"
 markup5ever_rcdom = "0.3"
 rand = "0.8"

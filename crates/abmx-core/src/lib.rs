@@ -21,7 +21,7 @@ pub mod plan;
 pub mod policy;
 pub mod sink;
 
-pub use diff::{classify, LedgerMatch, LedgerRow};
+pub use diff::{classify, classify_window, LedgerMatch, LedgerRow, WindowMatch};
 pub use error::{Error, Result};
 pub use fetcher::{FetchBatch, FetchRequest, Fetcher, MessageKey, RawMessage};
 pub use money::cents;

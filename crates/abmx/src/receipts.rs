@@ -1,14 +1,14 @@
 //! Deciding what a set of discovered Gmail labels means for abmx.
 //!
-//! `[labels.accounts]` is the only source of truth for what abmx manages. A
+//! `[receipts.accounts]` is the only source of truth for what abmx manages. A
 //! label under the prefix that has no account entry is *unmanaged*, not a
 //! configuration error: gmailctl may create labels ahead of time, and the user
-//! may simply not want some of them imported. `[labels].ignore` remembers an
+//! may simply not want some of them imported. `[receipts].ignore` remembers an
 //! explicit "no" so `abmx setup` does not ask again.
 
 use std::collections::BTreeSet;
 
-use crate::config::LabelsSection;
+use crate::config::ReceiptsSection;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedLabel {
@@ -16,7 +16,7 @@ pub struct ManagedLabel {
     pub label: String,
     /// The decoder ring: the remainder after the prefix.
     pub parser_id: String,
-    /// The `[labels.accounts]` value.
+    /// The `[receipts.accounts]` value.
     pub account: String,
 }
 
@@ -36,7 +36,7 @@ pub struct LabelPlan {
     pub ignored: Vec<DiscoveredLabel>,
     /// Labels under the prefix whose remainder is not a parser id.
     pub invalid: Vec<String>,
-    /// `[labels.accounts]` entries with no matching Gmail label.
+    /// `[receipts.accounts]` entries with no matching Gmail label.
     pub orphans: Vec<String>,
 }
 
@@ -55,7 +55,7 @@ impl LabelPlan {
 }
 
 /// Classify labels discovered under the configured prefix.
-pub fn plan(discovered: &[String], labels: &LabelsSection) -> LabelPlan {
+pub fn plan(discovered: &[String], labels: &ReceiptsSection) -> LabelPlan {
     let mut plan = LabelPlan::default();
     let mut seen = BTreeSet::new();
 
@@ -104,8 +104,9 @@ pub fn plan(discovered: &[String], labels: &LabelsSection) -> LabelPlan {
 mod tests {
     use super::*;
 
-    fn labels() -> LabelsSection {
-        LabelsSection {
+    fn labels() -> ReceiptsSection {
+        ReceiptsSection {
+            enabled: true,
             prefix: "receipt/".to_owned(),
             since: None,
             accounts: [
@@ -124,7 +125,7 @@ mod tests {
 
     #[test]
     fn the_default_prefix_is_receipt_slash() {
-        assert_eq!(LabelsSection::default().prefix, "receipt/");
+        assert_eq!(ReceiptsSection::default().prefix, "receipt/");
     }
 
     #[test]

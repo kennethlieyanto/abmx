@@ -145,7 +145,7 @@ Scope: `https://www.googleapis.com/auth/gmail.readonly`. Nothing else.
 
 | Call | When |
 | --- | --- |
-| `users.labels.list` | discover labels under `[labels].prefix` |
+| `users.labels.list` | discover labels under `[receipts].prefix` |
 | `users.messages.list?labelIds=…&q=-in:spam -in:trash` | every message under a configured label, fully paginated |
 | `users.messages.get?id=…&format=raw` | each new message |
 
@@ -162,14 +162,14 @@ message under each managed one:
 labelIds=<label id>  q=-in:spam -in:trash
 ```
 
-- Only labels with an entry in `[labels.accounts]` are fetched. A label under
-  the prefix with no entry is unmanaged and is left alone; `[labels].ignore`
+- Only labels with an entry in `[receipts.accounts]` are fetched. A label under
+  the prefix with no entry is unmanaged and is left alone; `[receipts].ignore`
   records an explicit "no" from `abmx setup`.
 - A message carrying two managed `receipt/*` labels is an error; the routing is
   ambiguous.
-- `[labels].since` adds Gmail's `after:` filter to the sync query. Without it
+- `[receipts].since` adds Gmail's `after:` filter to the sync query. Without it
   there is no date bound, so every labelled message is fetched and parsed.
-  `abmx samples` is the exception: it uses a label search without the window,
+  `abmx receipt samples` is the exception: it uses a label search without the window,
   so authoring evidence is unaffected.
 - `--limit N` caps the number of **unseen** messages fetched in one run; it is
   useful for a smoke test, not as a long-term window.
@@ -183,13 +183,13 @@ labelIds=<label id>  q=-in:spam -in:trash
 
 Labels are the routing identity, not a hint. The user applies exactly one
 `receipt/<id>` label to tracked mail (a Gmail filter is the usual way), and
-`[labels.accounts]` maps the parser id to a ledger account.
+`[receipts.accounts]` maps the parser id to a ledger account.
 
 ```bash
-abmx samples --label receipt/example-qris
+abmx receipt samples --label receipt/example-qris
 ```
 
-`abmx samples` downloads up to three messages per managed label into
+`abmx receipt samples` downloads up to three messages per managed label into
 `$XDG_CONFIG_HOME/abmx/samples/<parser-id>/` with `0600` permissions and writes
 `manifest.json`. It never parses, never needs a parser, and never touches the
 state database. Fewer than three samples is a warning; if the samples are
@@ -236,7 +236,7 @@ You do not need OAuth to test the pipeline. Save a few real `.eml` files (or
 export them) and run against those — same parser, same policy, same plan:
 
 ```bash
-abmx sync --dry-run --from-dir ./saved-emails --label "receipt/<id>"
+abmx receipt sync --dry-run --from-dir ./saved-emails --label "receipt/<id>"
 ```
 
 With a flat directory, `--label` is required unless exactly one parser is

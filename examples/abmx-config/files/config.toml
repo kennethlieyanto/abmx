@@ -14,11 +14,11 @@ data_dir = "/data/cache/actual"
 timeout_secs = 300
 cleared = "never"
 
-[labels]
+[receipts]
 prefix = "receipt/"
 since = 2026-11-01
 
-[labels.accounts]
+[receipts.accounts]
 # One entry per parser id you want to import. Find account UUIDs with
 # `abmx accounts` against your Actual server.
 # "example.card_debit" = "<actual account uuid>"

@@ -19,13 +19,18 @@ pub struct Config {
     pub fetch: FetchSection,
     #[serde(default)]
     pub sink: SinkSection,
+    #[serde(default, alias = "labels")]
+    pub receipts: ReceiptsSection,
     #[serde(default)]
-    pub labels: LabelsSection,
+    pub statements: StatementsSection,
 }
 
 /// How a `receipt/<parser>` Gmail label becomes an import.
 #[derive(Debug, Clone, Deserialize)]
-pub struct LabelsSection {
+pub struct ReceiptsSection {
+    /// Set to false to pause receipts without deleting the mappings.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
     /// Literal (case-insensitive) label prefix. The remainder must be a parser id.
     pub prefix: String,
     /// Ignore mail received before this date.
@@ -40,7 +45,7 @@ pub struct LabelsSection {
     pub ignore: Vec<String>,
 }
 
-impl LabelsSection {
+impl ReceiptsSection {
     /// The parser id encoded in a label, when the remainder is valid.
     pub fn parser_id(&self, label: &str) -> Option<String> {
         let prefix = self.prefix.to_ascii_lowercase();
@@ -56,6 +61,79 @@ impl LabelsSection {
             .iter()
             .any(|ignored| ignored.eq_ignore_ascii_case(parser_id))
     }
+}
+
+/// Statement routing: a second label namespace with the same parser-id
+/// convention as receipts.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StatementsSection {
+    /// Set to false to pause statements without deleting the mappings.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    /// Literal (case-insensitive) label prefix. The remainder is the parser id.
+    #[serde(default = "default_statements_prefix")]
+    pub prefix: String,
+    /// Ignore statements received before this date.
+    #[serde(default, deserialize_with = "deserialize_since")]
+    pub since: Option<chrono::NaiveDate>,
+    /// Parser id (or `parser:section`) -> sink account id.
+    #[serde(default)]
+    pub accounts: BTreeMap<String, String>,
+    /// Parser ids the user declined to import in `abmx setup`.
+    #[serde(default)]
+    pub ignore: Vec<String>,
+    /// Parser id -> password reference. Only statements need one.
+    #[serde(default)]
+    pub passwords: BTreeMap<String, PasswordRef>,
+}
+
+fn default_statements_prefix() -> String {
+    "financial_statements/".to_owned()
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+impl Default for StatementsSection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            prefix: default_statements_prefix(),
+            since: None,
+            accounts: BTreeMap::new(),
+            ignore: Vec::new(),
+            passwords: BTreeMap::new(),
+        }
+    }
+}
+
+impl StatementsSection {
+    /// The parser id encoded in a statement label, when the remainder is valid.
+    pub fn parser_id(&self, label: &str) -> Option<String> {
+        let prefix = self.prefix.to_ascii_lowercase();
+        let lower = label.to_ascii_lowercase();
+        let rest = lower.strip_prefix(&prefix)?;
+        abmx_parse::is_parser_id(rest).then(|| rest.to_owned())
+    }
+
+    pub fn is_ignored(&self, parser_id: &str) -> bool {
+        self.ignore
+            .iter()
+            .any(|ignored| ignored.eq_ignore_ascii_case(parser_id))
+    }
+}
+
+/// Where a statement password comes from. The secret is never a literal in the
+/// config: the config is often committed, and the file may be a mounted Secret.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PasswordRef {
+    /// Read the password from this file (`0600`, trailing newline tolerated).
+    #[serde(default)]
+    pub file: Option<PathBuf>,
+    /// Or from this environment variable.
+    #[serde(default)]
+    pub env: Option<String>,
 }
 
 /// Accept both a TOML date (`since = 2026-11-10`) and a string.
@@ -87,9 +165,10 @@ where
     }
 }
 
-impl Default for LabelsSection {
+impl Default for ReceiptsSection {
     fn default() -> Self {
         Self {
+            enabled: true,
             prefix: "receipt/".to_owned(),
             since: None,
             accounts: BTreeMap::new(),
@@ -231,16 +310,20 @@ impl Config {
     }
 
     pub fn account_map(&self) -> AccountMap {
-        AccountMap::from(self.labels.accounts.clone())
+        AccountMap::from(self.receipts.accounts.clone())
+    }
+
+    pub fn statement_account_map(&self) -> AccountMap {
+        AccountMap::from(self.statements.accounts.clone())
     }
 
     /// Validate the label contract before a mailbox is touched.
-    pub fn validate_labels(&self) -> Result<()> {
-        if self.labels.prefix.trim().is_empty() {
-            bail!("[labels].prefix must not be empty");
+    pub fn validate_receipts(&self) -> Result<()> {
+        if self.receipts.prefix.trim().is_empty() {
+            bail!("[receipts].prefix must not be empty");
         }
         let mut problems = Vec::new();
-        for (parser, account) in &self.labels.accounts {
+        for (parser, account) in &self.receipts.accounts {
             if !abmx_parse::is_parser_id(parser) {
                 problems.push(format!(
                     "`{parser}` is not a parser id (expected `bank.type`)"
@@ -250,28 +333,98 @@ impl Config {
                 problems.push(format!("`{parser}` has an empty account id"));
             }
         }
-        for parser in &self.labels.ignore {
+        for parser in &self.receipts.ignore {
             if !abmx_parse::is_parser_id(parser) {
-                problems.push(format!("`{parser}` in [labels].ignore is not a parser id"));
+                problems.push(format!(
+                    "`{parser}` in [receipts].ignore is not a parser id"
+                ));
             }
             if self
-                .labels
+                .receipts
                 .accounts
                 .keys()
                 .any(|mapped| mapped.eq_ignore_ascii_case(parser))
             {
                 problems.push(format!(
-                    "`{parser}` is both mapped in [labels.accounts] and ignored"
+                    "`{parser}` is both mapped in [receipts.accounts] and ignored"
                 ));
             }
         }
         if !problems.is_empty() {
             bail!(
-                "[labels] entries must be consistent parser ids:\n  {}",
+                "[receipts] entries must be consistent parser ids:\n  {}",
                 problems.join("\n  ")
             );
         }
         Ok(())
+    }
+
+    /// Validate the statement contract before a statement is fetched.
+    pub fn validate_statements(&self) -> Result<()> {
+        if self.statements.prefix.trim().is_empty() {
+            bail!("[statements].prefix must not be empty");
+        }
+        let mut problems = Vec::new();
+        for key in self.statements.accounts.keys() {
+            let valid = match key.split_once(':') {
+                Some((parser, section)) => {
+                    abmx_parse::is_parser_id(parser) && !section.trim().is_empty()
+                }
+                None => abmx_parse::is_parser_id(key),
+            };
+            if !valid {
+                problems.push(format!(
+                    "`{key}` is not a statement parser id or `<parser>:<section>`"
+                ));
+            }
+        }
+        for parser in &self.statements.ignore {
+            if !abmx_parse::is_parser_id(parser) {
+                problems.push(format!(
+                    "`{parser}` in [statements].ignore is not a parser id"
+                ));
+            }
+            if self.statements.accounts.contains_key(parser) {
+                problems.push(format!(
+                    "`{parser}` is both mapped in [statements.accounts] and ignored"
+                ));
+            }
+        }
+        for (parser, password) in &self.statements.passwords {
+            if password.file.is_none() && password.env.is_none() {
+                problems.push(format!(
+                    "[statements.passwords].\"{parser}\" needs `file` or `env`"
+                ));
+            }
+        }
+        if !problems.is_empty() {
+            bail!(
+                "[statements] entries must be consistent:\n  {}",
+                problems.join("\n  ")
+            );
+        }
+        Ok(())
+    }
+
+    /// Resolve the password for a statement parser, if one is configured.
+    pub fn statement_password(&self, base: &Path, parser_id: &str) -> Result<Option<String>> {
+        let Some(reference) = self.statements.passwords.get(parser_id) else {
+            return Ok(None);
+        };
+
+        let value = if let Some(name) = &reference.env {
+            std::env::var(name)
+                .with_context(|| format!("[statements.passwords] env `{name}` is not set"))?
+        } else if let Some(path) = &reference.file {
+            let path = paths::resolve_path(base, path);
+            std::fs::read_to_string(&path).with_context(|| {
+                format!("reading the statement password from {}", path.display())
+            })?
+        } else {
+            bail!("[statements.passwords] entry for `{parser_id}` has neither `file` nor `env`");
+        };
+
+        Ok(Some(strip_trailing_newline(value)))
     }
 
     pub fn state_path(&self, base: &Path) -> PathBuf {
@@ -501,7 +654,25 @@ impl Config {
     /// Build the configured sink. `[sink.actual]` wins over `[sink.file]` when
     /// both are present.
     pub fn build_sink(&self, base: &Path) -> Result<Box<dyn Sink>> {
-        if let Some(config) = self.actual_sink_config(base)? {
+        self.build_sink_with(base, None)
+    }
+
+    /// The statement path constructs the sink cleared: a statement is
+    /// settlement-grade evidence, so its rows are already reconciled. The
+    /// receipt path keeps the configured policy.
+    pub fn build_statement_sink(&self, base: &Path) -> Result<Box<dyn Sink>> {
+        self.build_sink_with(base, Some(ClearedPolicy::Always))
+    }
+
+    fn build_sink_with(
+        &self,
+        base: &Path,
+        cleared: Option<ClearedPolicy>,
+    ) -> Result<Box<dyn Sink>> {
+        if let Some(mut config) = self.actual_sink_config(base)? {
+            if let Some(cleared) = cleared {
+                config.cleared = cleared;
+            }
             let notes = self
                 .sink
                 .actual
@@ -532,9 +703,19 @@ impl Config {
             .max(1)
     }
 
-    /// Build the Gmail fetcher. Routing comes from `[labels]`, not from the
+    /// Build the Gmail fetcher. Routing comes from `[receipts]`, not from the
     /// parser corpus.
     pub fn build_gmail(&self, base: &Path) -> Result<GmailFetcher> {
+        self.build_gmail_with(base, &self.receipts.prefix, self.receipts.since)
+    }
+
+    /// A Gmail fetcher for a second label namespace (statements).
+    pub fn build_gmail_with(
+        &self,
+        base: &Path,
+        prefix: &str,
+        since: Option<chrono::NaiveDate>,
+    ) -> Result<GmailFetcher> {
         let Some(gmail) = &self.fetch.gmail else {
             bail!("no fetcher configured: add [fetch.gmail] or use --from-dir");
         };
@@ -545,8 +726,8 @@ impl Config {
         let mut config = GmailConfig::new(credentials.client_id, token_path);
         config.client_secret = credentials.client_secret;
         config.max_messages = gmail.max_messages.unwrap_or(10_000);
-        config.prefix = self.labels.prefix.clone();
-        config.since = self.labels.since;
+        config.prefix = prefix.to_owned();
+        config.since = since;
 
         GmailFetcher::new(config).map_err(Into::into)
     }
@@ -630,10 +811,12 @@ max_messages = 10000
 
 # Gmail labels are the routing contract. The user (via gmailctl) applies
 # one `receipt/<parser-id>` label per tracked message; the remainder after
-# the prefix is the parser id. Only parser ids in [labels.accounts] are fetched.
+# the prefix is the parser id. Only parser ids in [receipts.accounts] are fetched.
 # Plain `receipt` and other labels are ignored.
 # Run `abmx accounts` to see what Actual calls the accounts.
-[labels]
+[receipts]
+# Set to false to pause receipts without deleting the mappings.
+enabled = true
 prefix = "receipt/"
 # Recommended. Without it, sync scans every labelled message in the mailbox,
 # which is slow and may include templates the parser has not seen.
@@ -642,14 +825,81 @@ prefix = "receipt/"
 # about again.
 # ignore = ["merchant.promo"]
 
-[labels.accounts]
+[receipts.accounts]
 # "example.card_debit"       = "00000000-0000-0000-0000-000000000000"
 # "example.journal_transfer" = "00000000-0000-0000-0000-000000000000"
+
+# Bank statements are a second label namespace with the same parser-id
+# convention. They are imported by `abmx statement sync` (or the combined `abmx sync`),
+# and their rows are marked cleared because the bank has already settled them.
+# [statements]
+# enabled = true
+# prefix = "financial_statements/"
+# since = 2026-01-01
+# ignore = ["example.portfolio_summary"]
+# [statements.accounts]
+# "example.consolidated_statement"       = "00000000-0000-0000-0000-000000000000"
+# Multi-product documents map a section: "example.consolidated_statement:savings".
+# [statements.passwords]
+# "example.consolidated_statement" = { file = "/run/secrets/abmx/statement" }
 "#;
+
+fn strip_trailing_newline(mut value: String) -> String {
+    if value.ends_with('\n') {
+        value.pop();
+        if value.ends_with('\r') {
+            value.pop();
+        }
+    }
+    value
+}
 
 fn non_empty_env(name: &str) -> Option<String> {
     std::env::var(name)
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_old_labels_table_still_loads() {
+        let config: Config = toml::from_str(
+            r#"
+[labels]
+prefix = "receipt/"
+
+[labels.accounts]
+"example.card_debit" = "uuid"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.receipts.accounts.get("example.card_debit"),
+            Some(&"uuid".to_owned())
+        );
+    }
+
+    #[test]
+    fn sections_default_to_enabled_and_can_be_disabled() {
+        let config: Config = toml::from_str(
+            r#"
+[receipts]
+prefix = "receipt/"
+
+[receipts.accounts]
+
+[statements]
+enabled = false
+"#,
+        )
+        .unwrap();
+
+        assert!(config.receipts.enabled);
+        assert!(!config.statements.enabled);
+    }
 }

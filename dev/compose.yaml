@@ -1,0 +1,16 @@
+# A throwaway Actual Budget server for development.
+#
+# Never point abmx at your real server while testing statements: `importTransactions`
+# writes to the budget. This server keeps its data in a Docker volume so
+# `just dev-reset` can throw the whole thing away.
+services:
+  actual:
+    image: actualbudget/actual-server:latest
+    ports:
+      - "5006:5006"
+    volumes:
+      - actual-data:/data
+    restart: unless-stopped
+
+volumes:
+  actual-data:

@@ -162,7 +162,7 @@ impl GmailFetcher {
         self.message_ids(&id)
     }
 
-    /// The newest `limit` messages under a label name, for `abmx samples`.
+    /// The newest `limit` messages under a label name, for `abmx receipt samples`.
     ///
     /// Sampling is authoring evidence, not a sync. It deliberately ignores
     /// `[labels].since`: a quiet import window must not starve a parser of

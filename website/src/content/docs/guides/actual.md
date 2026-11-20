@@ -114,7 +114,7 @@ pass-through, not a second implementation.
 `[sink.actual].notes_fields` is just `["description"]`; set it to `[]` to disable
 notes entirely, or add fields such as `reference_id`, `channel`, or `parser`.
 
-`abmx sync --dry-run` previews the notes in its table (a `-` means the import
+`abmx receipt sync --dry-run` previews the notes in its table (a `-` means the import
 will omit the `notes` key).
 
 Six decisions worth knowing:
@@ -144,14 +144,14 @@ That id is a hash of the email's `Message-ID`, so it is stable across parser
 changes and re-runs. Actual's `importTransactions` will never add the same
 `imported_id` twice.
 
-### Seeing what will happen first: `abmx sync --dry-run --diff`
+### Seeing what will happen first: `abmx receipt sync --dry-run --diff`
 
 `importTransactions` reconciles by `imported_id` **and** by a fuzzy
 amount/date/payee match. That second path is where surprises live: a row that
 already exists under a *different* importer's id (a CSV import, a bank sync) can
 end up duplicated instead of reconciled.
 
-`abmx sync --dry-run --diff` reads the ledger for the plan's date window and
+`abmx receipt sync --dry-run --diff` reads the ledger for the plan's date window and
 classifies every row before anything is written:
 
 ```text
@@ -200,7 +200,7 @@ Two consequences:
 
   ```bash
   abmx reset      # forget cursors + delivered messages
-  abmx sync       # rebuild from the mailbox
+  abmx receipt sync  # rebuild from the mailbox
   ```
 
   `abmx reset` never touches the ledger — it only clears local state.
@@ -238,7 +238,7 @@ cleared until you un-clear them in Actual.
 
 ## `dryRun`
 
-`abmx sync --dry-run` sets `dryRun: true` in the request rather than skipping the
+`abmx receipt sync --dry-run` sets `dryRun: true` in the request rather than skipping the
 call. Actual tells you what it *would* have added, so a dry run still validates
 the account ids and the payload.
 
@@ -278,7 +278,7 @@ Update by installing a new `abmx`: Nix `nix flake update`, container pull, or
 | `the Actual helper timed out` | slow budget sync | raise `timeout_secs` |
 | amounts are 100× too big | you are not using abmx's sink | do not hand-write the `amount` field |
 | rows appear twice | a sink other than `importTransactions` was used | `abmx` always uses the reconciling import |
-| `account not found` | mapping points at a deleted account | `abmx accounts`, then fix `[labels.accounts]` |
+| `account not found` | mapping points at a deleted account | `abmx accounts`, then fix `[receipts.accounts]` |
 
 Set `ABMX_ACTUAL_DEBUG=1` to forward the library's own log (it is quiet by
 default) to stderr.

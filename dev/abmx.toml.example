@@ -1,0 +1,47 @@
+# Development config for the throwaway Actual server in `dev/compose.yaml`.
+#
+# Copy to `dev/abmx.toml`, then:
+#   1. just dev-up
+#   2. open http://localhost:5006 and create a budget
+#   3. Settings -> General -> Security -> API keys, create a key
+#   4. copy the Sync ID from Settings -> Show advanced settings
+#   5. run `just dev-accounts` to find the account UUIDs
+#
+# Do not put real secrets in this file: it is for the local stub only.
+
+[general]
+# Point this at your private parser corpus.
+parsers = ["../statement-samples/corpus"]
+state = "./state.db"
+
+[fetch.gmail]
+# Reuse your normal Gmail token; statements are fetched as attachments.
+token = "~/.local/state/abmx/gmail-credentials.json"
+# credentials_file = "~/gmail-client.json"
+
+[sink.actual]
+server_url = "http://localhost:5006"
+budget_sync_id = "00000000-0000-0000-0000-000000000000"
+api_key_file = "actual-api-key"
+data_dir = "./actual-cache"
+# The statement path always clears its own rows; this policy only affects
+# receipts.
+cleared = "never"
+
+[receipts]
+enabled = true
+prefix = "receipt/"
+since = 2026-01-01
+
+[receipts.accounts]
+
+[statements]
+enabled = true
+prefix = "financial_statements/"
+since = 2026-01-01
+
+[statements.accounts]
+# "mandiri.consolidated_statement" = "<uuid from `just dev-accounts`>"
+
+[statements.passwords]
+# "mandiri.consolidated_statement" = { file = "mandiri-statement.password" }

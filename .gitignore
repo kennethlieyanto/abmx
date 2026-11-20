@@ -17,6 +17,17 @@ result
 /sample/
 redact.toml
 
+# Real bank statements (PII) and their password. Never commit these.
+/statement-samples/
+
+# Local development sandbox (see dev/README.md)
+/dev/abmx.toml
+/dev/state.db
+/dev/state.db-*
+/dev/actual-cache/
+/dev/actual-api-key
+/dev/*.password
+
 # Local plan output (`abmx sync` dry runs contain real transactions)
 /plan
 /plan.json

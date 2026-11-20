@@ -34,7 +34,7 @@ pub enum ParserCommand {
     Parse {
         path: PathBuf,
 
-        /// Parser id. Labels choose this in `abmx sync`; here it is explicit.
+        /// Parser id. Labels choose this in `abmx receipt sync`; here it is explicit.
         #[arg(long, value_name = "ID")]
         parser: String,
 

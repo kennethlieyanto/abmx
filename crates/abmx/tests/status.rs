@@ -19,12 +19,12 @@ parsers = ["{}"]
 [sink.file]
 path = "ledger.jsonl"
 
-[labels]
+[receipts]
 prefix = "receipt/"
 since = 2026-11-01
 ignore = ["merchant.promo"]
 
-[labels.accounts]
+[receipts.accounts]
 "example.card_debit" = "uuid-example"
 "#,
             parsers.display()

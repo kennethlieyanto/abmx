@@ -37,10 +37,13 @@ the whole point here is to see a transaction the day it happens.
 | Balances               | usually not captured                                     | opening + closing         |
 | Parsing cost           | stable HTML labels                                       | PDF/CSV/Excel, fragile    |
 
-So email is the live path, and statements are the reconciliation path. Statement
-import is planned, not implemented: when it lands it will backfill missed rows
-and anchor per-account balances. Until then, `abmx` clears nothing
-automatically — Actual's `cleared` flag stays yours to set against a statement.
+So email is the live path, and statements are the reconciliation path.
+`abmx statement sync` reads a monthly PDF, proves it against its own opening,
+closing, credit, and debit totals, and adds the rows the ledger does not already
+have — including the credits that never generate an email. Statement rows are
+written `cleared`, because the bank has settled them. Flipping rows that came
+from email to `cleared` is the next step; until then those keep Actual's
+`cleared` flag untouched.
 
 ## Routing is explicit
 
@@ -49,7 +52,7 @@ Two places own routing, and nothing else does:
 - **gmailctl** labels the mail. A tracked message carries exactly one
   `receipt/<parser-id>` label; merchant receipts keep the plain `receipt` label
   and are never imported.
-- **`[labels.accounts]`** maps that parser id to an Actual account. That table is
+- **`[receipts.accounts]`** maps that parser id to an Actual account. That table is
   the *only* definition of what abmx manages: labels without an entry are not
   fetched at all, so a half-configured mailbox is never a sync failure.
 
@@ -67,7 +70,7 @@ Three independent layers, because they fail in different ways:
    re-download or re-parse it. This is an optimisation for idempotent sinks and a
    requirement for sinks that have no idempotency key.
 3. **Label scan + state** — every run lists the mapped labels under
-   `[labels].prefix`, drops messages already recorded as delivered, then
+   `[receipts].prefix`, drops messages already recorded as delivered, then
    downloads and parses only the remaining ones. Mail labeled late is picked up
    on the next run; a broken row is never marked delivered, so it is retried
    after the parser is fixed.
@@ -76,8 +79,8 @@ Three independent layers, because they fail in different ways:
 
 | Primitive   | Responsibility                    | Ships with                 |
 | ----------- | --------------------------------- | -------------------------- |
-| **Fetcher** | a source of raw RFC 5322 bytes    | Gmail API, local directory |
-| **Policy**  | `Transaction` → import or broken  | one pure function          |
+| **Fetcher** | a source of raw mail or document bytes | Gmail API, local directory |
+| **Policy**  | a row → import, broken, or proven | receipts: one pure function; statements: arithmetic |
 | **Sink**    | decided rows → the ledger         | Actual Budget, JSONL file  |
 | **State**   | delivered messages                | SQLite                     |
 

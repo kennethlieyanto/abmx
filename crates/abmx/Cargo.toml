@@ -18,6 +18,9 @@ path = "src/main.rs"
 [dependencies]
 abmx-actual.workspace = true
 abmx-core.workspace = true
+abmx-doc.workspace = true
+abmx-mail.workspace = true
+abmx-table.workspace = true
 abmx-file.workspace = true
 abmx-gmail.workspace = true
 abmx-parse.workspace = true

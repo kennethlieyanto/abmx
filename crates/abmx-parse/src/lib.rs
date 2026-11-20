@@ -5,9 +5,9 @@
 //! Nothing here performs I/O beyond reading spec files, so the parsing path is a
 //! pure function and easy to test.
 
-mod date;
+pub mod date;
 mod field;
-mod number;
+pub mod number;
 mod spec;
 
 pub use spec::SpecSummary;
@@ -151,7 +151,9 @@ impl Registry {
             let mut in_dir: HashMap<String, PathBuf> = HashMap::new();
 
             for path in paths {
-                let parser = load_one(&path)?;
+                let Some(parser) = load_one(&path)? else {
+                    continue;
+                };
                 let id = parser.id.clone();
 
                 if let Some(first) = in_dir.insert(id.clone(), path.clone()) {
@@ -500,11 +502,27 @@ fn collect_specs(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Error> {
     Ok(())
 }
 
-fn load_one(path: &Path) -> Result<Parser, Error> {
+fn load_one(path: &Path) -> Result<Option<Parser>, Error> {
     let text = std::fs::read_to_string(path).map_err(|source| Error::Io {
         path: path.to_path_buf(),
         source,
     })?;
+
+    // The same corpus holds statement specs (`input = "pdf"`). They belong to
+    // the table engine; skipping them here keeps one directory layout without
+    // teaching the email engine about PDFs.
+    let claimed = toml::from_str::<toml::Value>(&text)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("input")
+                .and_then(|input| input.as_str())
+                .map(str::to_owned)
+        })
+        .is_some_and(|input| input != "email");
+    if claimed {
+        return Ok(None);
+    }
 
     let spec: ParserSpec = toml::from_str(&text).map_err(|err| Error::Spec {
         path: path.to_path_buf(),
@@ -527,10 +545,12 @@ fn load_one(path: &Path) -> Result<Parser, Error> {
         });
     }
 
-    compile(spec, path, id).map_err(|message| Error::Spec {
-        path: path.to_path_buf(),
-        message,
-    })
+    compile(spec, path, id)
+        .map(Some)
+        .map_err(|message| Error::Spec {
+            path: path.to_path_buf(),
+            message,
+        })
 }
 
 fn compile(spec: ParserSpec, path: &Path, id: String) -> Result<Parser, String> {

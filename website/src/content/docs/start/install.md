@@ -59,7 +59,7 @@ config, state, and secrets mounted.
 2. **An Actual server** — your existing Actual server (`:5006` by default), a
    budget, and either a budget-scoped API key or the server password. See
    [Actual Budget](/guides/actual/).
-3. **Parsers** — nothing to install. `abmx samples` downloads evidence and an
+3. **Parsers** — nothing to install. `abmx receipt samples` downloads evidence and an
    agent writes parsers under `~/.config/abmx/parsers/<id>/`. If you already have
    a corpus, point at it with `--parsers`, `$ABMX_PARSERS`, or
    `[general].parsers`.

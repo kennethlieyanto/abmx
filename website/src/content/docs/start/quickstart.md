@@ -6,8 +6,8 @@ description: From a fresh install to imported transactions in four commands.
 ```bash
 abmx setup                      # config + Gmail + labels + accounts, interactively
 abmx status                     # config, corpus, labels, accounts, auth
-abmx sync --dry-run             # see the plan, write nothing
-abmx sync                       # import everything mapped
+abmx receipt sync --dry-run             # see the plan, write nothing
+abmx receipt sync               # import everything mapped
 ```
 
 `abmx setup` is idempotent: rerun it whenever you add a label, change accounts,
@@ -41,16 +41,16 @@ file is documented in [Configuration](/start/configuration/).
 1. **gmailctl labels the mail.** A tracked message carries exactly one
    `receipt/<parser-id>` label. Merchant receipts keep the plain `receipt` label
    and are never imported. OTP, security, promos, and statements go elsewhere.
-2. **`[labels.accounts]` maps the parser id to an Actual account.** Only mapped
+2. **`[receipts.accounts]` maps the parser id to an Actual account.** Only mapped
    ids are fetched, so unmanaged labels are left alone rather than aborting the
    run.
 
 ```toml
-[labels]
+[receipts]
 prefix = "receipt/"
 since  = 2026-11-01          # history window; omitting it scans all labelled mail
 
-[labels.accounts]
+[receipts.accounts]
 "example.card_debit" = "<actual account uuid>"
 ```
 
@@ -64,7 +64,7 @@ was authored against.
 the parser:
 
 ```bash
-abmx samples        # up to 3 newest messages per managed label
+abmx receipt samples        # up to 3 newest messages per managed label
 mkdir -p ~/.agents/skills/abmx && abmx skill > ~/.agents/skills/abmx/SKILL.md
 ```
 
@@ -90,16 +90,16 @@ label, the reason, and the next command:
 ```text
 broken (2), not imported:
   receipt/example.journal_va   parse_failed   amount: no value matched
-  next: abmx samples --label receipt/example.journal_va
+  next: abmx receipt samples --label receipt/example.journal_va
   nothing was written to the ledger
 ```
 
-Fix the parser or the Gmail rule, then run `abmx sync` again. A broken row is
+Fix the parser or the Gmail rule, then run `abmx receipt sync` again. A broken row is
 never marked delivered, so it is retried.
 
 ## Put it on a timer
 
-Once `abmx sync` is clean, run it periodically. `sync` only fetches mapped
+Once `abmx receipt sync` is clean, run it periodically. `receipt sync` only fetches mapped
 labels, so unmanaged ones are left alone rather than aborting the run. See
 [NixOS](/guides/deployment/nixos/),
 [Kubernetes](/guides/deployment/kubernetes/), or

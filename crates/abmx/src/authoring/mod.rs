@@ -17,6 +17,7 @@ pub use verify::{VerifyOutcome, VerifyReport, VerifySample};
 
 mod assets {
     pub const SPEC_REFERENCE: &str = include_str!("assets/spec-reference.md");
+    pub const STATEMENT_REFERENCE: &str = include_str!("assets/statement-spec-reference.md");
     pub const AUTHORING_WORKFLOW: &str = include_str!("assets/authoring-workflow.md");
     pub const PITFALLS: &str = include_str!("assets/pitfalls.md");
 

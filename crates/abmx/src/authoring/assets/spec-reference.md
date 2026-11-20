@@ -9,10 +9,10 @@ Routing is **not** in the spec. gmailctl applies `receipt/<id>`; the main
 `abmx.toml` maps that parser id to a ledger account:
 
 ```toml
-[labels]
+[receipts]
 prefix = "receipt/"
 
-[labels.accounts]
+[receipts.accounts]
 "example-qris" = "<actual-account-uuid>"
 ```
 
@@ -143,7 +143,7 @@ label's configured ledger account, not a parser field.
 - One label owns one template. If the three samples for a label are different
   shapes, the label is wrong; fix the Gmail label/filter instead of writing a
   parser that guesses between them.
-- Every routed label with mail must have a `[labels.accounts]` entry and a parser.
+- Every routed label with mail must have a `[receipts.accounts]` entry and a parser.
 
 ## Versioning rules
 

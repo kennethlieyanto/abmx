@@ -1,4 +1,4 @@
-//! `abmx samples`: download the newest messages for every managed label.
+//! `abmx receipt samples`: download the newest messages for every managed label.
 
 use std::path::Path;
 
@@ -31,11 +31,11 @@ fn config(dir: &Path) -> Config {
 [sink.file]
 path = "ledger.jsonl"
 
-[labels]
+[receipts]
 prefix = "receipt/"
 ignore = ["ignored.one"]
 
-[labels.accounts]
+[receipts.accounts]
 "example.card_debit" = "uuid-example"
 "#,
     )

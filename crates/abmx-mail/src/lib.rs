@@ -5,7 +5,7 @@
 
 use abmx_tx::{Address, NormalizedEmail, Source};
 use chrono::{FixedOffset, NaiveDate, TimeZone};
-use mail_parser::MessageParser;
+use mail_parser::{MessageParser, MimeHeaders, PartType};
 
 mod html;
 
@@ -25,6 +25,66 @@ pub enum MailError {
 ///
 /// `file` is only used for identity when there is no Message-ID header (local
 /// fixtures, mostly).
+/// One attachment from a message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Attachment {
+    pub name: Option<String>,
+    pub content_type: Option<String>,
+    pub bytes: Vec<u8>,
+}
+
+impl Attachment {
+    /// True when the part is a PDF, by MIME type or by file name.
+    ///
+    /// Banks are inconsistent here: some set `application/pdf`, some send
+    /// `application/octet-stream` with a `.pdf` name, some do both.
+    pub fn is_pdf(&self) -> bool {
+        self.content_type
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("application/pdf"))
+            || self
+                .name
+                .as_deref()
+                .is_some_and(|value| value.to_ascii_lowercase().ends_with(".pdf"))
+    }
+}
+
+/// Every attachment in a message, decoded.
+///
+/// This is how an emailed e-statement reaches `abmx-doc`; the message body is
+/// irrelevant. Attachment order is the MIME order, which is stable for a given
+/// message, so `#att:<index>` is a usable identity.
+pub fn attachments(bytes: &[u8]) -> Result<Vec<Attachment>, MailError> {
+    let message = MessageParser::new().parse(bytes).ok_or(MailError::Parse)?;
+    let mut out = Vec::new();
+
+    for part in message.attachments() {
+        let bytes = match &part.body {
+            PartType::Binary(data) | PartType::InlineBinary(data) => data.to_vec(),
+            _ => continue,
+        };
+
+        let content_type = part
+            .content_type()
+            .and_then(|content_type| content_type.c_subtype.as_ref().map(|_| content_type))
+            .map(|content_type| {
+                format!(
+                    "{}/{}",
+                    content_type.c_type,
+                    content_type.c_subtype.as_deref().unwrap_or("octet-stream")
+                )
+            });
+
+        out.push(Attachment {
+            name: part.attachment_name().map(str::to_owned),
+            content_type,
+            bytes,
+        });
+    }
+
+    Ok(out)
+}
+
 pub fn parse_eml(bytes: &[u8], file: Option<String>) -> Result<NormalizedEmail, MailError> {
     let message = MessageParser::new().parse(bytes).ok_or(MailError::Parse)?;
 

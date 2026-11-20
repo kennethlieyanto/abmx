@@ -96,6 +96,11 @@ date and the email `Date:` header carries no meaning and is not checked.
 The Actual sink uses this id as `imported_id`; see
 [Actual Budget](/guides/actual/#imported_id-is-the-parsers-id).
 
+Statement rows use a `stmt_` prefix and derive their id from the document and
+the row's content (including the running balance), not from mail metadata. The
+same statement re-downloaded produces the same ids; see
+[Statement spec](/reference/statement-spec/#identity).
+
 ## Money
 
 `amount_minor` is authoritative. To render it:

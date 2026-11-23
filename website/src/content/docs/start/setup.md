@@ -108,9 +108,9 @@ History window
   their current `since`.
 - `All history` is available but warns: it scans every labelled message and is
   slow, and old templates may not match the parser.
-- The date is saved to `[receipts].since`. It bounds `abmx receipt sync` and
-  `abmx status --strict`. `abmx samples` ignores it and always takes the newest
-  three messages per non-ignored label.
+- The date is saved to `[receipts].since`. It bounds `abmx receipt sync`.
+  `abmx samples` ignores it and always takes the newest three messages per
+  non-ignored label.
 
 ### 6. Receipt labels
 

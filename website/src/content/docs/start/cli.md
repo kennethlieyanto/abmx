@@ -11,7 +11,7 @@ abmx auth export [--out FILE] [--stdout] [--force]
                                     write a portable credential bundle
 abmx auth import --file FILE        install an exported bundle locally
 abmx auth logout [--no-revoke]      revoke the refresh token, then remove it locally
-abmx status [--offline] [--strict] [--check] [--json]
+abmx status [--offline] [--check] [--json]
                                     full health check; --offline skips network
 abmx reset [--purge] [--yes]        forget delivered receipts and statements
 abmx accounts [--json]              sink accounts and how [receipts.accounts] maps onto them

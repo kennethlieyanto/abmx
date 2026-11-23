@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use abmx::authoring::{self, author};
+use abmx::authoring;
 use abmx::config::Config;
 use abmx::fetchers::DirFetcher;
 use abmx::labels;
@@ -80,9 +80,6 @@ enum Command {
         /// Skip network checks (Gmail and sink accounts).
         #[arg(long)]
         offline: bool,
-        /// Verify the newest messages under every routed label.
-        #[arg(long, conflicts_with = "offline")]
-        strict: bool,
         /// Exit nonzero when anything needs attention.
         #[arg(long)]
         check: bool,
@@ -341,10 +338,9 @@ fn run(cli: Cli) -> Result<i32> {
         },
         Command::Status {
             offline,
-            strict,
             check,
             json,
-        } => status(&settings, offline, strict, check, json),
+        } => status(&settings, offline, check, json),
         Command::Receipt { command } => match command {
             ReceiptCommand::Sync {
                 from_dir,
@@ -1077,13 +1073,7 @@ fn render_sections(sections: &[Section]) -> (usize, usize, usize) {
     (failures, warnings, skipped)
 }
 
-fn status(
-    settings: &Settings,
-    offline: bool,
-    strict: bool,
-    check: bool,
-    json: bool,
-) -> Result<i32> {
+fn status(settings: &Settings, offline: bool, check: bool, json: bool) -> Result<i32> {
     let (config, base, config_path) = load_config(settings)?;
     config.validate_receipts()?;
     config.validate_statements()?;
@@ -1435,57 +1425,6 @@ fn status(
         }
     }
     sections.push(auth_section);
-
-    if strict && config.receipts.enabled {
-        let mut strict_section = Section::new("strict receipts");
-        match (&gmail, &parser) {
-            (Some(fetcher), Some(parser)) => {
-                let work = tempfile::tempdir().context("creating a temporary sample directory")?;
-                let inventory = author::scan_gmail(
-                    fetcher,
-                    Some(parser),
-                    &config.receipts,
-                    &author::Options::default(),
-                    work.path(),
-                )?;
-                if inventory.labels.is_empty() && inventory.orphans.is_empty() {
-                    strict_section.hint(
-                        Status::Fail,
-                        format!("no `{}*` labels found", config.receipts.prefix),
-                        "create a label and a gmailctl rule",
-                    );
-                }
-                for report in inventory.labels.iter().chain(inventory.orphans.iter()) {
-                    if report.status == author::LabelStatus::Ok {
-                        strict_section.push(Status::Ok, report.label.clone());
-                    } else if report.status == author::LabelStatus::Ignored {
-                        strict_section.push(Status::Skip, format!("{}: ignored", report.label));
-                    } else if report.status == author::LabelStatus::MissingAccount {
-                        strict_section.hint(
-                            Status::Skip,
-                            format!("{}: not managed", report.label),
-                            "run `abmx setup` to import it or decline it",
-                        );
-                    } else {
-                        strict_section.hint(
-                            Status::Fail,
-                            format!("{}: {}", report.label, report.status.as_str()),
-                            format!("run `abmx receipt samples --label {}`", report.label),
-                        );
-                    }
-                }
-            }
-            (None, Some(_)) => strict_section.hint(
-                Status::Skip,
-                "Gmail is not available",
-                gmail_build_error
-                    .as_deref()
-                    .unwrap_or("run `abmx setup` or `abmx auth login`"),
-            ),
-            (_, None) => strict_section.push(Status::Skip, "no parser corpus"),
-        }
-        sections.push(strict_section);
-    }
 
     let (failures, warnings, skipped) = count_sections(&sections);
 

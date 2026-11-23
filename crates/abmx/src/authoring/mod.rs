@@ -5,13 +5,11 @@
 //! here calls a model or changes a ledger; the output is text and files the user
 //! chooses to hand to an agent.
 
-pub mod author;
 pub mod dump;
 pub mod samples;
 pub mod skill;
 pub mod verify;
 
-pub use author::{Inventory, LabelReport, LabelStatus};
 pub use samples::{Sample, SampleFailure, SampleGroup, SampleSet};
 pub use verify::{VerifyOutcome, VerifyReport, VerifySample};
 

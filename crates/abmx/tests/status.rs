@@ -84,6 +84,17 @@ fn offline_status_merges_label_checks_and_omits_network_sections() {
 }
 
 #[test]
+fn strict_is_no_longer_a_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = config(dir.path());
+
+    let output = run(&config, &["status", "--strict"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unexpected argument"), "{stderr}");
+}
+
+#[test]
 fn online_is_no_longer_a_flag() {
     let dir = tempfile::tempdir().unwrap();
     let config = config(dir.path());

@@ -1,13 +1,34 @@
 :root {
-  --sl-color-accent-low: #ccfbf1;
-  --sl-color-accent: #0f766e;
-  --sl-color-accent-high: #134e4a;
+  /* Actual Budget purple. */
+  --sl-color-accent-low: #efeaff;
+  --sl-color-accent: #6c5ce7;
+  --sl-color-accent-high: #3a2a9e;
+
+  /* Ferris rust, used only for small accents. */
+  --abmx-rust: #f74c00;
 }
 
 :root[data-theme='dark'] {
-  --sl-color-accent-low: #042f2e;
-  --sl-color-accent: #2dd4bf;
-  --sl-color-accent-high: #99f6e4;
+  --sl-color-accent-low: #2a2350;
+  --sl-color-accent: #8b7cf0;
+  --sl-color-accent-high: #dcd6ff;
+}
+
+/* Ferris-orange accents --------------------------------------------------- */
+
+::selection {
+  background: rgba(247, 76, 0, 0.22);
+}
+
+.sl-markdown-content a:hover:not(:where(.not-content *)) {
+  text-decoration: underline;
+  text-decoration-color: var(--abmx-rust);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 0.15em;
+}
+
+.sl-markdown-content blockquote:not(:where(.not-content *)) {
+  border-inline-start: 2px solid var(--abmx-rust);
 }
 
 /* Landing page ------------------------------------------------------------ */
@@ -38,6 +59,7 @@
 .landing-section > h2 {
   padding-top: 2rem;
   border-top: 1px solid var(--sl-color-hairline);
+  border-top-color: color-mix(in srgb, var(--abmx-rust) 35%, var(--sl-color-hairline));
 }
 
 .lead {
@@ -67,7 +89,7 @@
 }
 
 .why-list li::marker {
-  color: var(--sl-color-accent);
+  color: var(--abmx-rust);
 }
 
 @media (min-width: 50rem) {

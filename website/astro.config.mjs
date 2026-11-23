@@ -46,6 +46,7 @@ export default defineConfig({
       components: {
         Header: './src/components/Header.astro',
         Hero: './src/components/Hero.astro',
+        ThemeSelect: './src/components/ThemeToggle.astro',
       },
       plugins: [starlightLinksValidator()],
       sidebar: [

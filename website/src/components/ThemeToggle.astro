@@ -1,0 +1,101 @@
+---
+// Replaces Starlight's three-way theme <select> with a single light/dark
+// toggle. Starlight's ThemeProvider has already resolved the initial theme
+// into <html data-theme>, so the icon can be chosen with CSS and the script
+// only has to flip it.
+import { Icon } from '@astrojs/starlight/components';
+---
+
+<button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch to dark theme">
+  <Icon name="moon" class="theme-toggle__moon" />
+  <Icon name="sun" class="theme-toggle__sun" />
+</button>
+
+<script>
+  const root = document.documentElement;
+  const buttons = document.querySelectorAll<HTMLButtonElement>('[data-theme-toggle]');
+
+  const storedTheme = (): string | null => {
+    try {
+      return localStorage.getItem('starlight-theme');
+    } catch {
+      return null;
+    }
+  };
+
+  const isDark = (): boolean => root.dataset.theme === 'dark';
+
+  const updateButtons = (): void => {
+    const label = isDark() ? 'Switch to light theme' : 'Switch to dark theme';
+    for (const button of buttons) {
+      button.setAttribute('aria-label', label);
+      button.setAttribute('title', label);
+    }
+  };
+
+  for (const button of buttons) {
+    button.addEventListener('click', () => {
+      const next = isDark() ? 'light' : 'dark';
+      root.dataset.theme = next;
+      try {
+        localStorage.setItem('starlight-theme', next);
+      } catch {
+        // Storage can fail in private mode; the current page still switches.
+      }
+      updateButtons();
+    });
+  }
+
+  // Keep following the OS until the user makes an explicit choice.
+  matchMedia('(prefers-color-scheme: light)').addEventListener('change', (event) => {
+    if (storedTheme()) return;
+    root.dataset.theme = event.matches ? 'light' : 'dark';
+    updateButtons();
+  });
+
+  updateButtons();
+</script>
+
+<style>
+  .theme-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    font-size: 1rem;
+    padding: 0;
+    border: 0;
+    border-radius: 0.375rem;
+    background: transparent;
+    color: var(--sl-color-gray-2);
+    cursor: pointer;
+  }
+
+  .theme-toggle:hover {
+    color: var(--sl-color-white);
+    background: var(--sl-color-gray-6);
+  }
+
+  .theme-toggle:focus-visible {
+    outline: 2px solid var(--sl-color-accent);
+    outline-offset: 2px;
+  }
+
+  /* Show the theme the button will switch to. */
+  .theme-toggle :global(.theme-toggle__moon) {
+    display: block;
+  }
+
+  .theme-toggle :global(.theme-toggle__sun) {
+    display: none;
+  }
+
+  :global([data-theme='dark']) .theme-toggle :global(.theme-toggle__sun) {
+    display: block;
+  }
+
+  :global([data-theme='dark']) .theme-toggle :global(.theme-toggle__moon) {
+    display: none;
+  }
+</style>

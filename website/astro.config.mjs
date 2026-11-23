@@ -53,7 +53,6 @@ export default defineConfig({
         {
           label: 'Start here',
           items: [
-            'start/introduction',
             'start/install',
             'start/quickstart',
             'start/setup',

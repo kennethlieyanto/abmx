@@ -52,6 +52,29 @@
   font-size: var(--sl-text-sm);
 }
 
+/* Homepage --------------------------------------------------------------- */
+
+.home-intro {
+  max-width: 48rem;
+  margin: 0;
+  text-align: center;
+}
+
+.home-intro > p {
+  font-size: var(--sl-text-lg);
+  color: var(--sl-color-gray-2);
+}
+
+.home-actions {
+  margin-top: 1.75rem;
+}
+
+@media (min-width: 50rem) {
+  .home-intro {
+    text-align: start;
+  }
+}
+
 .landing-section {
   margin-top: 3.5rem;
 }

@@ -3,13 +3,6 @@ title: Quickstart
 description: From a fresh install to imported transactions in four commands.
 ---
 
-```bash
-abmx setup                      # config + Gmail + labels + accounts, interactively
-abmx status                     # config, corpus, labels, accounts, auth
-abmx receipt sync --dry-run             # see the plan, write nothing
-abmx receipt sync               # import everything mapped
-```
-
 `abmx setup` is idempotent: rerun it whenever you add a label, change accounts,
 or move to a new machine. Every step it has already completed is skipped. See
 [Setup](/start/setup/) for exactly what it asks.

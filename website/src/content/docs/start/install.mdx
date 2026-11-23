@@ -1,0 +1,52 @@
+---
+title: Install
+description: Install abmx with the shell installer, Nix, or the container image.
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Node 22+ is only needed when importing into Actual Budget. The full setup also
+needs a [Gmail OAuth client](/guides/gmail/) and an
+[Actual server](/guides/actual/).
+
+<Tabs>
+  <TabItem label="curl">
+    The recommended path on Linux and macOS; no Rust or Nix required.
+
+    ```bash
+    curl -fsSL https://kennethlieyanto.github.io/abmx/install.sh | sh
+    ```
+
+    Installs `abmx` to `~/.local/bin` and the Actual helper to
+    `~/.local/share/abmx/actual-helper/`, then runs `npm ci` there when Node 22+
+    is available. If `~/.local/bin` is not on `PATH`, the installer prints the
+    line to add. Rerun the same command to upgrade; your config, state, and
+    parsers are left alone.
+  </TabItem>
+  <TabItem label="Nix">
+    The flake bundles the Actual helper and Node:
+
+    ```bash
+    nix profile install github:kennethlieyanto/abmx
+    ```
+
+    Or run it without installing:
+
+    ```bash
+    nix run github:kennethlieyanto/abmx -- --version
+    ```
+  </TabItem>
+  <TabItem label="Docker">
+    The image contains the binary and the helper:
+
+    ```bash
+    docker build -t abmx .
+    docker run --rm abmx --version
+    ```
+
+    See [Docker](/guides/deployment/docker/) for config, state, and secrets.
+  </TabItem>
+</Tabs>
+
+`abmx` ships no bank parsers. `abmx samples` collects evidence and writes a
+parser under `~/.config/abmx/parsers/`; see [Authoring](/guides/authoring/).

@@ -45,8 +45,8 @@ file is documented in [Configuration](/start/configuration/).
    `receipt/<parser-id>` label. Merchant receipts keep the plain `receipt` label
    and are never imported. OTP, security, promos, and statements go elsewhere.
 2. **`[receipts.accounts]` maps the parser id to an Actual account.** Only mapped
-   ids are fetched, so unmanaged labels are left alone rather than aborting the
-   run.
+   ids are fetched, so `sync` leaves unmanaged labels alone; `abmx status`
+   reports them as failures until they are mapped or ignored.
 
 ```toml
 [receipts]

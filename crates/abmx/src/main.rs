@@ -725,7 +725,7 @@ fn auth_import(settings: &Settings, file: &Path, force: bool) -> Result<i32> {
     Ok(EXIT_OK)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Status {
     Ok,
     Warn,
@@ -779,6 +779,275 @@ impl Section {
             hint: Some(hint.into()),
         });
     }
+
+    fn extend(&mut self, lines: impl IntoIterator<Item = Line>) {
+        self.lines.extend(lines);
+    }
+}
+
+impl Line {
+    fn new(status: Status, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+            hint: None,
+        }
+    }
+
+    fn with_hint(status: Status, message: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+            hint: Some(hint.into()),
+        }
+    }
+}
+
+/// Which label namespace a section is rendering. Receipts and statements share
+/// the same route grammar; only the parser kind, section names, and hints differ.
+#[derive(Clone, Copy)]
+enum RouteKind {
+    Receipts,
+    Statements,
+}
+
+impl RouteKind {
+    fn input(self) -> abmx_parser::InputKind {
+        match self {
+            Self::Receipts => abmx_parser::InputKind::Mail,
+            Self::Statements => abmx_parser::InputKind::Statement,
+        }
+    }
+
+    fn accounts_section(self) -> &'static str {
+        match self {
+            Self::Receipts => "[receipts.accounts]",
+            Self::Statements => "[statements.accounts]",
+        }
+    }
+
+    fn ignore_section(self) -> &'static str {
+        match self {
+            Self::Receipts => "[receipts].ignore",
+            Self::Statements => "[statements].ignore",
+        }
+    }
+
+    fn samples_command(self) -> &'static str {
+        match self {
+            Self::Receipts => "abmx receipt samples",
+            Self::Statements => "abmx statement samples",
+        }
+    }
+
+    fn ignored_count(self) -> &'static str {
+        match self {
+            Self::Receipts => "ignored label(s)",
+            Self::Statements => "ignored statement label(s)",
+        }
+    }
+}
+
+fn labels_under(labels: &[abmx_gmail::GmailLabel], prefix: &str) -> Vec<String> {
+    let prefix = prefix.to_ascii_lowercase();
+    let mut names: Vec<String> = labels
+        .iter()
+        .filter(|label| label.name.to_ascii_lowercase().starts_with(&prefix))
+        .map(|label| label.name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
+fn parser_problem(
+    parser: Option<&abmx_parser::Parser>,
+    kind: abmx_parser::InputKind,
+    parser_id: &str,
+) -> Option<String> {
+    let parser = parser?;
+    let Some(script) = parser.registry().find(parser_id) else {
+        return Some(format!("parser `{parser_id}` is missing"));
+    };
+    if script.input() != kind {
+        let noun = match kind {
+            abmx_parser::InputKind::Mail => "receipt",
+            abmx_parser::InputKind::Statement => "statement",
+        };
+        return Some(format!("parser `{parser_id}` is not a {noun} parser"));
+    }
+    None
+}
+
+/// Render every configured route and every discovered label for one namespace.
+///
+/// A label is healthy only when it is ignored, or it has the expected parser
+/// and a mapping. Anything else is a failure the user must fix.
+#[allow(clippy::too_many_arguments)]
+fn route_lines(
+    kind: RouteKind,
+    prefix: &str,
+    accounts: &BTreeMap<String, String>,
+    ignore: &[String],
+    plan: Option<&labels::LabelPlan>,
+    parser: Option<&abmx_parser::Parser>,
+    accounts_by_id: Option<&BTreeMap<&str, &abmx_core::SinkAccount>>,
+    validate_accounts: bool,
+    offline: bool,
+    gmail_configured: bool,
+    gmail_error: Option<&str>,
+    verbose: bool,
+) -> Vec<Line> {
+    let mut lines = Vec::new();
+
+    if accounts.is_empty() {
+        lines.push(Line::with_hint(
+            Status::Skip,
+            format!("no {} entries", kind.accounts_section()),
+            "run `abmx setup` to choose which labels to import and where they go",
+        ));
+    }
+
+    for (key, account) in accounts {
+        let parser_id = labels::key_parser_id(key);
+        let section = key.split_once(':').map(|(_, section)| section);
+        let managed = plan.and_then(|plan| {
+            plan.managed
+                .iter()
+                .find(|label| label.parser_id.as_str() == parser_id)
+        });
+        let label = managed
+            .map(|managed| managed.label.clone())
+            .unwrap_or_else(|| format!("{prefix}{parser_id}"));
+        let display = match section {
+            Some(section) => format!("{label} [{section}]"),
+            None => label.clone(),
+        };
+
+        let parser_problem = parser_problem(parser, kind.input(), parser_id);
+        let account_missing = validate_accounts
+            && !account.trim().is_empty()
+            && accounts_by_id.is_some_and(|accounts| !accounts.contains_key(account.as_str()));
+        let label_missing =
+            plan.is_some_and(|plan| plan.orphans.iter().any(|orphan| orphan == parser_id));
+
+        let account_display = accounts_by_id
+            .and_then(|accounts| accounts.get(account.as_str()))
+            .map(|found| format!("{} ({account})", found.name))
+            .unwrap_or_else(|| account.clone());
+
+        let mut problems = Vec::new();
+        if account.trim().is_empty() {
+            problems.push("no account id".to_owned());
+        }
+        if let Some(problem) = &parser_problem {
+            problems.push(problem.clone());
+        }
+        if account_missing {
+            problems.push(format!("account `{account}` is not in the sink"));
+        }
+        if label_missing {
+            problems.push("no Gmail label routes to it".to_owned());
+        }
+
+        if problems.is_empty() {
+            lines.push(Line::new(
+                Status::Ok,
+                format!("{display} -> {account_display}"),
+            ));
+        } else {
+            let mut hints = Vec::new();
+            if parser_problem.is_some() {
+                hints.push(format!(
+                    "author it: `{} --label {label}`",
+                    kind.samples_command()
+                ));
+            }
+            if account_missing {
+                hints.push("run `abmx accounts` to list valid ids".to_owned());
+            }
+            if label_missing {
+                hints.push("fix the gmailctl rule or remove the mapping".to_owned());
+            }
+            lines.push(Line::with_hint(
+                Status::Fail,
+                format!("{display} -> {account_display}: {}", problems.join("; ")),
+                hints.join(" · "),
+            ));
+        }
+    }
+
+    if let Some(plan) = plan {
+        for label in &plan.unmanaged {
+            let mut problems = vec![format!("no `{}` entry", kind.accounts_section())];
+            let problem = parser_problem(parser, kind.input(), &label.parser_id);
+            if let Some(problem) = &problem {
+                problems.push(problem.clone());
+            }
+
+            let mut hints = vec![format!(
+                "run `abmx setup` to map it, or add it to `{}`",
+                kind.ignore_section()
+            )];
+            if problem.is_some() {
+                hints.push(format!(
+                    "author it: `{} --label {}`",
+                    kind.samples_command(),
+                    label.label
+                ));
+            }
+            lines.push(Line::with_hint(
+                Status::Fail,
+                format!("{}: {}", label.label, problems.join("; ")),
+                hints.join(" · "),
+            ));
+        }
+
+        for label in &plan.invalid {
+            lines.push(Line::with_hint(
+                Status::Fail,
+                format!("{label}: not a parser id after `{prefix}`"),
+                "rename the gmailctl label",
+            ));
+        }
+    }
+
+    if verbose {
+        for parser_id in ignore {
+            lines.push(Line::new(
+                Status::Skip,
+                format!("{prefix}{parser_id} (ignored)"),
+            ));
+        }
+    } else if !ignore.is_empty() {
+        lines.push(Line::new(
+            Status::Skip,
+            format!("{} {} (use -v to list)", ignore.len(), kind.ignored_count()),
+        ));
+    }
+
+    if plan.is_none() {
+        if offline {
+            lines.push(Line::new(
+                Status::Skip,
+                "Gmail label inventory skipped (offline)",
+            ));
+        } else if gmail_configured {
+            if let Some(error) = gmail_error {
+                lines.push(Line::with_hint(
+                    Status::Warn,
+                    "could not verify Gmail labels",
+                    error,
+                ));
+            } else {
+                lines.push(Line::new(
+                    Status::Skip,
+                    "Gmail label inventory unavailable (see auth)",
+                ));
+            }
+        }
+    }
+
+    lines
 }
 
 fn render_sections(sections: &[Section]) -> (usize, usize, usize) {
@@ -822,7 +1091,10 @@ fn status(
     // Fetch network data once; the sections only present the result.
     let mut gmail: Option<abmx_gmail::GmailFetcher> = None;
     let mut gmail_build_error: Option<String> = None;
-    if config.receipts.enabled && !offline && config.fetch.gmail.is_some() {
+    if (config.receipts.enabled || config.statements.enabled)
+        && !offline
+        && config.fetch.gmail.is_some()
+    {
         match config.build_gmail(&base) {
             Ok(fetcher) => gmail = Some(fetcher),
             Err(error) => gmail_build_error = Some(format!("{error:#}")),
@@ -830,11 +1102,17 @@ fn status(
     }
 
     let mut gmail_labels: Option<Vec<String>> = None;
+    let mut statement_labels: Option<Vec<String>> = None;
     let mut gmail_labels_error: Option<String> = None;
     if let Some(fetcher) = &gmail {
-        match fetcher.routed_labels() {
+        match fetcher.labels() {
             Ok(found) => {
-                gmail_labels = Some(found.into_iter().map(|label| label.name).collect());
+                if config.receipts.enabled {
+                    gmail_labels = Some(labels_under(&found, &config.receipts.prefix));
+                }
+                if config.statements.enabled {
+                    statement_labels = Some(labels_under(&found, &config.statements.prefix));
+                }
             }
             Err(error) => gmail_labels_error = Some(error.to_string()),
         }
@@ -861,6 +1139,9 @@ fn status(
     let plan = gmail_labels
         .as_deref()
         .map(|found| labels::plan(found, &config.receipts));
+    let statement_plan = statement_labels
+        .as_deref()
+        .map(|found| labels::plan_statements(found, &config.statements));
     let accounts_by_id: Option<BTreeMap<&str, &abmx_core::SinkAccount>> =
         sink_accounts.as_ref().map(|accounts| {
             accounts
@@ -885,6 +1166,23 @@ fn status(
                 .map(|date| format!(", since {date}"))
                 .unwrap_or_else(|| ", all history".to_owned()),
             if config.receipts.enabled {
+                ""
+            } else {
+                " (disabled)"
+            }
+        ),
+    );
+    config_section.push(
+        Status::Ok,
+        format!(
+            "statements `{}`{}{}",
+            config.statements.prefix,
+            config
+                .statements
+                .since
+                .map(|date| format!(", since {date}"))
+                .unwrap_or_else(|| ", all history".to_owned()),
+            if config.statements.enabled {
                 ""
             } else {
                 " (disabled)"
@@ -926,147 +1224,20 @@ fn status(
             "receipts disabled ([receipts].enabled = false)",
         );
     } else {
-        if config.receipts.accounts.is_empty() {
-            labels_section.hint(
-                Status::Fail,
-                "no [receipts.accounts] entries",
-                "run `abmx setup` to choose which labels to import and where they go",
-            );
-        }
-        for (parser_id, account) in &config.receipts.accounts {
-            let managed = plan.as_ref().and_then(|plan| {
-                plan.managed
-                    .iter()
-                    .find(|label| label.parser_id == *parser_id)
-            });
-            let label = managed
-                .map(|managed| managed.label.clone())
-                .unwrap_or_else(|| format!("{}{}", config.receipts.prefix, parser_id));
-
-            let parser_missing = parser
-                .as_ref()
-                .is_some_and(|parser| parser.registry().find(parser_id).is_none());
-            let account_missing = validate_accounts
-                && !account.trim().is_empty()
-                && accounts_by_id
-                    .as_ref()
-                    .is_some_and(|accounts| !accounts.contains_key(account.as_str()));
-            let label_missing = plan
-                .as_ref()
-                .is_some_and(|plan| plan.orphans.iter().any(|orphan| orphan == parser_id));
-
-            let account_display = accounts_by_id
-                .as_ref()
-                .and_then(|accounts| accounts.get(account.as_str()))
-                .map(|found| format!("{} ({account})", found.name))
-                .unwrap_or_else(|| account.clone());
-
-            let mut problems = Vec::new();
-            if account.trim().is_empty() {
-                problems.push("no account id".to_owned());
-            }
-            if parser_missing {
-                problems.push(format!("parser `{parser_id}` is missing"));
-            }
-            if account_missing {
-                problems.push(format!("account `{account}` is not in the sink"));
-            }
-            if label_missing {
-                problems.push("no Gmail label routes to it".to_owned());
-            }
-
-            if problems.is_empty() {
-                labels_section.push(Status::Ok, format!("{label} -> {account_display}"));
-            } else {
-                let mut hints = Vec::new();
-                if parser_missing {
-                    hints.push(format!("author it: `abmx receipt samples --label {label}`"));
-                }
-                if account_missing {
-                    hints.push("run `abmx accounts` to list valid ids".to_owned());
-                }
-                if label_missing {
-                    hints.push("fix the gmailctl rule or remove the mapping".to_owned());
-                }
-                labels_section.hint(
-                    Status::Fail,
-                    format!("{label} -> {account_display}: {}", problems.join("; ")),
-                    hints.join(" · "),
-                );
-            }
-        }
-
-        if settings.verbose {
-            for parser_id in &config.receipts.ignore {
-                labels_section.push(
-                    Status::Skip,
-                    format!("{}{} (ignored)", config.receipts.prefix, parser_id),
-                );
-            }
-            if let Some(plan) = &plan {
-                for label in &plan.unmanaged {
-                    labels_section.hint(
-                        Status::Skip,
-                        format!("{} is not managed", label.label),
-                        "run `abmx setup` to import it or decline it",
-                    );
-                }
-                for label in &plan.invalid {
-                    labels_section.hint(
-                        Status::Warn,
-                        format!("{label}: not a parser id after the prefix"),
-                        "rename the gmailctl label",
-                    );
-                }
-            }
-        } else {
-            if !config.receipts.ignore.is_empty() {
-                labels_section.push(
-                    Status::Skip,
-                    format!(
-                        "{} ignored label(s) (use -v to list)",
-                        config.receipts.ignore.len()
-                    ),
-                );
-            }
-            if let Some(plan) = &plan {
-                if !plan.unmanaged.is_empty() {
-                    labels_section.push(
-                        Status::Skip,
-                        format!(
-                            "{} unmanaged Gmail label(s) (use -v to list)",
-                            plan.unmanaged.len()
-                        ),
-                    );
-                }
-                if !plan.invalid.is_empty() {
-                    labels_section.push(
-                        Status::Warn,
-                        format!(
-                            "{} Gmail label(s) with an invalid parser id (use -v to list)",
-                            plan.invalid.len()
-                        ),
-                    );
-                }
-            }
-        }
-
-        if plan.is_none() {
-            if offline {
-                labels_section.push(Status::Skip, "Gmail label inventory skipped (offline)");
-            } else if config.fetch.gmail.is_some() {
-                if let Some(error) = &gmail_labels_error {
-                    labels_section.hint(
-                        Status::Warn,
-                        "could not verify Gmail labels",
-                        error.clone(),
-                    );
-                } else {
-                    labels_section
-                        .push(Status::Skip, "Gmail label inventory unavailable (see auth)");
-                }
-            }
-        }
+        labels_section.extend(route_lines(
+            RouteKind::Receipts,
+            &config.receipts.prefix,
+            &config.receipts.accounts,
+            &config.receipts.ignore,
+            plan.as_ref(),
+            parser.as_ref(),
+            accounts_by_id.as_ref(),
+            validate_accounts,
+            offline,
+            config.fetch.gmail.is_some(),
+            gmail_labels_error.as_deref(),
+            settings.verbose,
+        ));
 
         if !config.receipts.accounts.is_empty() && config.receipts.since.is_none() {
             labels_section.hint(
@@ -1085,88 +1256,42 @@ fn status(
             "statements disabled ([statements].enabled = false)",
         );
     } else {
-        statements_section.push(
-            Status::Ok,
-            format!(
-                "labels `{}`{}",
-                config.statements.prefix,
-                config
-                    .statements
-                    .since
-                    .map(|date| format!(", since {date}"))
-                    .unwrap_or_else(|| ", all history".to_owned())
-            ),
-        );
-        if config.statements.accounts.is_empty() {
-            statements_section.push(
-                Status::Skip,
-                "no statement parser is mapped (run `abmx setup`)",
-            );
-        } else {
-            let explicit = config.parser_options(&base).parsers;
-            let dirs = if explicit.is_empty() {
-                abmx_parser::discover(&abmx_parser::Options::default()).dirs
-            } else {
-                explicit
-            };
-            match abmx_parser::Registry::from_dirs(&dirs) {
-                Ok(registry) => {
-                    for key in config.statements.accounts.keys() {
-                        let parser_id = key.split(':').next().unwrap_or(key);
-                        if registry.find(parser_id).is_none() {
-                            statements_section.hint(
-                                Status::Fail,
-                                format!("`{key}` has no statement parser"),
-                                "author one, then run `abmx statement check`",
-                            );
-                        }
-                    }
+        statements_section.extend(route_lines(
+            RouteKind::Statements,
+            &config.statements.prefix,
+            &config.statements.accounts,
+            &config.statements.ignore,
+            statement_plan.as_ref(),
+            parser.as_ref(),
+            accounts_by_id.as_ref(),
+            validate_accounts,
+            offline,
+            config.fetch.gmail.is_some(),
+            gmail_labels_error.as_deref(),
+            settings.verbose,
+        ));
+
+        for parser_id in config.statements.passwords.keys() {
+            match config.statement_password(&base, parser_id) {
+                Ok(Some(_)) => {
+                    statements_section.push(Status::Ok, format!("{parser_id}: password available"))
                 }
+                Ok(None) => statements_section
+                    .push(Status::Warn, format!("{parser_id}: no password configured")),
                 Err(error) => statements_section.hint(
-                    Status::Warn,
-                    "no statement parsers loaded",
-                    error.to_string(),
+                    Status::Fail,
+                    format!("{parser_id}: {error}"),
+                    "fix [statements.passwords] or mount the secret",
                 ),
             }
+        }
 
-            for parser_id in config.statements.passwords.keys() {
-                match config.statement_password(&base, parser_id) {
-                    Ok(Some(_)) => statements_section
-                        .push(Status::Ok, format!("{parser_id}: password available")),
-                    Ok(None) => statements_section
-                        .push(Status::Warn, format!("{parser_id}: no password configured")),
-                    Err(error) => statements_section.hint(
-                        Status::Fail,
-                        format!("{parser_id}: {error}"),
-                        "fix [statements.passwords] or mount the secret",
-                    ),
-                }
-            }
-
-            if settings.verbose {
-                for parser_id in &config.statements.ignore {
-                    statements_section.push(
-                        Status::Skip,
-                        format!("{}{} (ignored)", config.statements.prefix, parser_id),
-                    );
-                }
-            } else if !config.statements.ignore.is_empty() {
-                statements_section.push(
-                    Status::Skip,
-                    format!(
-                        "{} ignored statement label(s) (use -v to list)",
-                        config.statements.ignore.len()
-                    ),
-                );
-            }
-
-            if config.statements.since.is_none() {
-                statements_section.hint(
-                    Status::Warn,
-                    "no [statements].since; every statement is fetched",
-                    "set a date or run `abmx setup`",
-                );
-            }
+        if !config.statements.accounts.is_empty() && config.statements.since.is_none() {
+            statements_section.hint(
+                Status::Warn,
+                "no [statements].since; every statement is fetched",
+                "set a date or run `abmx setup`",
+            );
         }
     }
     sections.push(statements_section);
@@ -2160,4 +2285,342 @@ fn skill(command: Option<SkillCommand>) -> Result<i32> {
         }
     }
     Ok(EXIT_OK)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MAIL_PARSER: &str = r#"
+fn meta() {
+    #{
+        bank: "example",
+        currency: "USD",
+        tz: "UTC",
+        offset: "+00:00",
+        number: "en",
+        kind: "purchase",
+        labels: ["Amount"],
+        api: 1,
+        version: 1,
+    }
+}
+
+fn parse_mail(ctx) {
+    #{ amount: ctx.money_in("Amount", "en") }
+}
+"#;
+
+    const STATEMENT_PARSER: &str = r#"
+fn meta() {
+    #{
+        bank: "example",
+        currency: "IDR",
+        tz: "Asia/Jakarta",
+        offset: "+07:00",
+        number: "en",
+        api: 1,
+        version: 1,
+    }
+}
+
+fn parse_statement(doc) {
+    #{ period: doc.month("PERIODE"), sections: [] }
+}
+"#;
+
+    fn accounts(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
+        entries
+            .iter()
+            .map(|(key, account)| ((*key).to_owned(), (*account).to_owned()))
+            .collect()
+    }
+
+    fn parser(dir: &Path) -> abmx_parser::Parser {
+        let corpus = dir.join("corpus");
+        for (id, source) in [
+            ("example.card_debit", MAIL_PARSER),
+            ("example.savings_statement", STATEMENT_PARSER),
+        ] {
+            let dir = corpus.join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("parser.rhai"), source).unwrap();
+        }
+        let (parser, _) = abmx_parser::Parser::load(&abmx_parser::Options {
+            parsers: vec![corpus],
+        })
+        .unwrap();
+        parser
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render(
+        kind: RouteKind,
+        prefix: &str,
+        accounts: &BTreeMap<String, String>,
+        ignore: &[String],
+        plan: Option<&labels::LabelPlan>,
+        parser: Option<&abmx_parser::Parser>,
+        offline: bool,
+        verbose: bool,
+    ) -> Vec<Line> {
+        route_lines(
+            kind, prefix, accounts, ignore, plan, parser, None, false, offline, true, None, verbose,
+        )
+    }
+
+    #[test]
+    fn a_mapped_statement_renders_like_a_receipt() {
+        let plan = labels::LabelPlan {
+            managed: vec![labels::ManagedLabel {
+                label: "financial_statements/example.savings_statement".to_owned(),
+                parser_id: "example.savings_statement".to_owned(),
+                account: "uuid-example".to_owned(),
+            }],
+            ..Default::default()
+        };
+        let lines = render(
+            RouteKind::Statements,
+            "financial_statements/",
+            &accounts(&[("example.savings_statement", "uuid-example")]),
+            &[],
+            Some(&plan),
+            None,
+            true,
+            false,
+        );
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].status, Status::Ok);
+        assert_eq!(
+            lines[0].message,
+            "financial_statements/example.savings_statement -> uuid-example"
+        );
+    }
+
+    #[test]
+    fn section_keys_show_the_section_in_the_route() {
+        let lines = render(
+            RouteKind::Statements,
+            "financial_statements/",
+            &accounts(&[("example.savings_statement:credit_card", "uuid-example")]),
+            &[],
+            None,
+            None,
+            true,
+            false,
+        );
+
+        assert_eq!(
+            lines[0].message,
+            "financial_statements/example.savings_statement [credit_card] -> uuid-example"
+        );
+    }
+
+    #[test]
+    fn a_non_ignored_unmapped_label_fails() {
+        let plan = labels::LabelPlan {
+            unmanaged: vec![labels::DiscoveredLabel {
+                label: "financial_statements/new.bank".to_owned(),
+                parser_id: "new.bank".to_owned(),
+            }],
+            ..Default::default()
+        };
+        let lines = render(
+            RouteKind::Statements,
+            "financial_statements/",
+            &accounts(&[]),
+            &[],
+            Some(&plan),
+            None,
+            false,
+            false,
+        );
+
+        let fail = lines
+            .iter()
+            .find(|line| line.status == Status::Fail)
+            .expect("unmanaged label must fail");
+        assert!(
+            fail.message.contains("no `[statements.accounts]` entry"),
+            "{}",
+            fail.message
+        );
+        assert!(
+            fail.hint
+                .as_deref()
+                .is_some_and(|hint| hint.contains("add it to `[statements].ignore`")),
+            "{:?}",
+            fail.hint
+        );
+    }
+
+    #[test]
+    fn an_invalid_label_fails() {
+        let plan = labels::LabelPlan {
+            invalid: vec!["financial_statements/bad/name".to_owned()],
+            ..Default::default()
+        };
+        let lines = render(
+            RouteKind::Statements,
+            "financial_statements/",
+            &accounts(&[]),
+            &[],
+            Some(&plan),
+            None,
+            false,
+            false,
+        );
+
+        let fail = lines
+            .iter()
+            .find(|line| line.status == Status::Fail)
+            .expect("invalid label must fail");
+        assert_eq!(
+            fail.message,
+            "financial_statements/bad/name: not a parser id after `financial_statements/`"
+        );
+    }
+
+    #[test]
+    fn ignored_labels_stay_skips() {
+        let ignore = vec!["merchant.promo".to_owned()];
+        let lines = render(
+            RouteKind::Receipts,
+            "receipt/",
+            &accounts(&[("example.card_debit", "uuid-example")]),
+            &ignore,
+            None,
+            None,
+            true,
+            false,
+        );
+        assert!(lines.iter().any(|line| line.status == Status::Skip
+            && line.message == "1 ignored label(s) (use -v to list)"));
+
+        let verbose = render(
+            RouteKind::Receipts,
+            "receipt/",
+            &accounts(&[("example.card_debit", "uuid-example")]),
+            &ignore,
+            None,
+            None,
+            true,
+            true,
+        );
+        assert!(verbose.iter().any(|line| line.status == Status::Skip
+            && line.message == "receipt/merchant.promo (ignored)"));
+    }
+
+    #[test]
+    fn a_mapping_without_a_label_fails() {
+        let plan = labels::LabelPlan {
+            orphans: vec!["example.card_debit".to_owned()],
+            ..Default::default()
+        };
+        let lines = render(
+            RouteKind::Receipts,
+            "receipt/",
+            &accounts(&[("example.card_debit", "uuid-example")]),
+            &[],
+            Some(&plan),
+            None,
+            false,
+            false,
+        );
+
+        let fail = lines
+            .iter()
+            .find(|line| line.status == Status::Fail)
+            .expect("orphan mapping must fail");
+        assert!(
+            fail.message.contains("no Gmail label routes to it"),
+            "{}",
+            fail.message
+        );
+    }
+
+    #[test]
+    fn the_parser_must_match_the_namespace_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let parser = parser(dir.path());
+
+        let receipt_side = render(
+            RouteKind::Receipts,
+            "receipt/",
+            &accounts(&[("example.savings_statement", "uuid-example")]),
+            &[],
+            None,
+            Some(&parser),
+            true,
+            false,
+        );
+        let fail = receipt_side
+            .iter()
+            .find(|line| line.status == Status::Fail)
+            .expect("a statement parser cannot satisfy a receipt mapping");
+        assert!(
+            fail.message
+                .contains("parser `example.savings_statement` is not a receipt parser"),
+            "{}",
+            fail.message
+        );
+
+        let statement_side = render(
+            RouteKind::Statements,
+            "financial_statements/",
+            &accounts(&[("example.card_debit", "uuid-example")]),
+            &[],
+            None,
+            Some(&parser),
+            true,
+            false,
+        );
+        let fail = statement_side
+            .iter()
+            .find(|line| line.status == Status::Fail)
+            .expect("a mail parser cannot satisfy a statement mapping");
+        assert!(
+            fail.message
+                .contains("parser `example.card_debit` is not a statement parser"),
+            "{}",
+            fail.message
+        );
+
+        let missing = render(
+            RouteKind::Statements,
+            "financial_statements/",
+            &accounts(&[("missing.parser", "uuid-example")]),
+            &[],
+            None,
+            Some(&parser),
+            true,
+            false,
+        );
+        let fail = missing
+            .iter()
+            .find(|line| line.status == Status::Fail)
+            .expect("a missing parser must fail");
+        assert!(
+            fail.message.contains("parser `missing.parser` is missing"),
+            "{}",
+            fail.message
+        );
+    }
+
+    #[test]
+    fn offline_without_an_inventory_reports_the_skip() {
+        let lines = render(
+            RouteKind::Statements,
+            "financial_statements/",
+            &accounts(&[("example.savings_statement", "uuid-example")]),
+            &[],
+            None,
+            None,
+            true,
+            false,
+        );
+        assert!(lines.iter().any(|line| line.status == Status::Skip
+            && line.message == "Gmail label inventory skipped (offline)"));
+    }
 }

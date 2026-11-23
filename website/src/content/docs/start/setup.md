@@ -197,8 +197,9 @@ ABMX_ACTUAL_BUDGET_PASSWORD
 ## What "managed" means
 
 `[receipts.accounts]` is the single source of truth. A label under the prefix with
-no account entry is **unmanaged**: it is not fetched, not parsed, and not an
-error. `sync` prints a one-line note when such labels exist.
+no account entry is **unmanaged**: `sync` does not fetch or parse it, but
+`abmx status` reports it as a failure until it is mapped or added to
+`[receipts].ignore`. `sync` prints a one-line note when such labels exist.
 
 `[receipts].ignore` remembers an explicit no. Both lists are validated as parser
 ids and may not overlap. A *configured* account with no matching Gmail label is

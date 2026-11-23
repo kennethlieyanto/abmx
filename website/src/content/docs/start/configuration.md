@@ -55,7 +55,8 @@ be a single parser id; dots are conventional, not required
 (`example-qris` and `example.card_debit` are both valid).
 
 - Only labels with an entry in `[receipts.accounts]` are fetched. A label under
-  the prefix with no entry is unmanaged and left alone.
+  the prefix with no entry is unmanaged and left alone by `sync`; `abmx status`
+  reports it as a failure until it is mapped or ignored.
 - `[receipts].ignore` records an explicit no from `abmx setup`.
 - `[receipts].since` adds Gmail's `after:` filter. Without it, every labelled
   message is considered on every run.

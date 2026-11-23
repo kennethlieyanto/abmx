@@ -26,6 +26,13 @@ ignore = ["merchant.promo"]
 
 [receipts.accounts]
 "example.card_debit" = "uuid-example"
+
+[statements]
+since = 2026-11-01
+ignore = ["example.portfolio_summary"]
+
+[statements.accounts]
+"example.consolidated_statement:credit_card" = "uuid-example"
 "#,
             parsers.display()
         ),
@@ -60,7 +67,14 @@ fn offline_status_merges_label_checks_and_omits_network_sections() {
         stdout.contains("receipt/example.card_debit -> uuid-example"),
         "{stdout}"
     );
+    assert!(
+        stdout.contains(
+            "financial_statements/example.consolidated_statement [credit_card] -> uuid-example"
+        ),
+        "{stdout}"
+    );
     assert!(stdout.contains("1 ignored label(s)"), "{stdout}");
+    assert!(stdout.contains("1 ignored statement label(s)"), "{stdout}");
     assert!(
         stdout.contains("Gmail label inventory skipped (offline)"),
         "{stdout}"

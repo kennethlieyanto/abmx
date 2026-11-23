@@ -51,6 +51,11 @@ The password is a reference, never a literal: the config is often committed and
 the file may be a mounted Secret. An owner-restricted PDF with no user password
 needs no entry.
 
+`abmx status` lists every `[statements.accounts]` route. A label under
+`financial_statements/` must be mapped or listed in `[statements].ignore`; an
+unmapped label, a missing parser, or a parser of the wrong kind is reported as a
+failure, mirroring the receipts section.
+
 ## What the first run does
 
 ```sh

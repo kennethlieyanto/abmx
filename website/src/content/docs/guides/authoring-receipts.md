@@ -7,8 +7,9 @@ description: From a labeled email to a verified Rhai parser in four steps.
 
 - gmailctl labels the mail under `[receipts].prefix` (default `receipt/`).
 - The label is not in `[receipts].ignore`.
-- `abmx status` shows a `receipts` section. A label with no parser is the one to
-  author.
+- `abmx status` shows a `receipts` section. A non-ignored label with no parser
+  or no account mapping is a failure: author it, map it, or add it to
+  `[receipts].ignore`.
 
 ## 1. Evidence
 

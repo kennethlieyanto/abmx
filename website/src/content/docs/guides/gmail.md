@@ -167,8 +167,9 @@ labelIds=<label id>  q=-in:spam -in:trash
 ```
 
 - Only labels with an entry in `[receipts.accounts]` are fetched. A label under
-  the prefix with no entry is unmanaged and is left alone; `[receipts].ignore`
-  records an explicit "no" from `abmx setup`.
+  the prefix with no entry is unmanaged: `sync` leaves it alone, and `[receipts].ignore`
+  records an explicit "no" from `abmx setup`. `abmx status` reports an unmanaged
+  label as a failure until it is mapped or ignored.
 - A message carrying two managed `receipt/*` labels is an error; the routing is
   ambiguous.
 - `[receipts].since` adds Gmail's `after:` filter to the sync query. Without it

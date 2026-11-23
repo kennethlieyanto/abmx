@@ -295,25 +295,25 @@ clean:
 # ---------------------------------------------------------------------------
 
 # Start the disposable Actual server on http://localhost:5006.
-dev-up:
+ab-up:
     docker compose -f dev/compose.yaml up -d
 
 # Stop the disposable server, keeping its budget volume.
-dev-down:
+ab-down:
     docker compose -f dev/compose.yaml down
 
 # Stop the disposable server and delete its budget.
-dev-reset:
+ab-reset:
     docker compose -f dev/compose.yaml down -v
 
 # List accounts on the disposable server (needs dev/abmx.toml).
-dev-accounts:
+ab-accounts:
     cargo run -q -p abmx -- --config dev/abmx.toml accounts
 
 # Verify statement parsers against the private corpus fixtures.
-dev-check:
+ab-check:
     cargo run -q -p abmx -- statement --parsers statement-samples/corpus check --password-file statement-samples/.password -v
 
 # Statement sync against the disposable server. Dry run unless you pass args.
-dev-statements *args:
+ab-statements *args:
     cargo run -q -p abmx -- --config dev/abmx.toml statement sync --dry-run {{args}}

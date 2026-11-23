@@ -16,7 +16,7 @@ description: From a labeled statement PDF to a verified Rhai parser in four step
 
 ```bash
 abmx statement samples
-# ~/.config/abmx/statement-samples/<parser-id>/01.pdf … 03.pdf
+# ~/.config/abmx/samples/statements/<parser-id>/01.pdf … 03.pdf
 ```
 
 `--label <label|parser-id>` works for a label that is not mapped yet;

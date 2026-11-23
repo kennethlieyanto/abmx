@@ -19,7 +19,7 @@ use crate::paths;
 
 #[derive(Debug, Clone)]
 pub struct Options {
-    /// Where to write the samples. Defaults to the XDG config dir.
+    /// Where to write the samples. Defaults to `$XDG_CONFIG_HOME/abmx/samples/receipts`.
     pub out: Option<PathBuf>,
     /// How many of the newest messages to download per label.
     pub samples: usize,
@@ -118,11 +118,18 @@ pub fn download(
     }
 
     let requested = options.samples.max(1);
-    let output = options
-        .out
-        .clone()
-        .unwrap_or_else(|| paths::xdg_config_dir().join("abmx/samples"));
+    let (output, default_root) = match options.out.clone() {
+        Some(out) => (out, None),
+        None => (
+            paths::default_receipt_samples_dir(),
+            Some(paths::default_samples_dir()),
+        ),
+    };
 
+    if let Some(root) = default_root {
+        std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
+        restrict(&root, 0o700)?;
+    }
     std::fs::create_dir_all(&output).with_context(|| format!("creating {}", output.display()))?;
     restrict(&output, 0o700)?;
 

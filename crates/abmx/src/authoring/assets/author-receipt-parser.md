@@ -13,8 +13,8 @@ account.
 ## Loop
 
 1. **Sample.** `abmx receipt samples` writes the newest three messages per
-   non-ignored label to `$XDG_CONFIG_HOME/abmx/samples/<parser-id>/`. Narrow it
-   with `--label <label|parser-id>`. Fewer than three is a warning.
+   non-ignored label to `$XDG_CONFIG_HOME/abmx/samples/receipts/<parser-id>/`.
+   Narrow it with `--label <label|parser-id>`. Fewer than three is a warning.
 2. **Read the blocks.** `abmx dump <dir>` shows exactly what the parser sees;
    HTML and CSS are already gone.
 3. **Confirm one template.** If a label's samples differ in shape, stop: the

@@ -195,8 +195,8 @@ abmx receipt samples --label receipt/example-qris
 ```
 
 `abmx receipt samples` downloads up to three messages per non-ignored label into
-`$XDG_CONFIG_HOME/abmx/samples/<parser-id>/` with `0600` permissions and writes
-`manifest.json`. It never parses, never needs a parser, and never touches the
+`$XDG_CONFIG_HOME/abmx/samples/receipts/<parser-id>/` with `0600` permissions and
+writes `manifest.json`. It never parses, never needs a parser, and never touches the
 state database. Fewer than three samples is a warning; if the samples are
 different templates the label is reported as `mixed_shapes`; fix the
 label/filter instead of splitting the parser.

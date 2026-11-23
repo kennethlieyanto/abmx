@@ -85,9 +85,19 @@ pub fn default_parsers_dir() -> PathBuf {
     xdg_config_dir().join("abmx/parsers")
 }
 
-/// Where `abmx statement samples` writes PDFs (PII; outside the repository).
+/// Root of the downloaded parser evidence (PII; outside the repository).
+pub fn default_samples_dir() -> PathBuf {
+    xdg_config_dir().join("abmx/samples")
+}
+
+/// Where `abmx receipt samples` writes `.eml` files.
+pub fn default_receipt_samples_dir() -> PathBuf {
+    default_samples_dir().join("receipts")
+}
+
+/// Where `abmx statement samples` writes PDFs.
 pub fn default_statement_samples_dir() -> PathBuf {
-    xdg_config_dir().join("abmx/statement-samples")
+    default_samples_dir().join("statements")
 }
 
 pub fn default_token_path() -> PathBuf {

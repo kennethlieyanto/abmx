@@ -83,7 +83,8 @@ and verifies it with `abmx parser check --parser <id>`. See
 meanings.
 
 Already have `.eml` files? Put them under
-`~/.config/abmx/samples/<parser-id>/` and ask the agent to author from those.
+`~/.config/abmx/samples/receipts/<parser-id>/` and ask the agent to author from
+those.
 
 ## What a broken label looks like
 

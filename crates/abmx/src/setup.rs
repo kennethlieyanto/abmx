@@ -1314,15 +1314,13 @@ fn summary(path: &Path, config: &Config) -> Result<()> {
     if !config.receipts.accounts.is_empty() {
         lines.push(format!(
             "        receipt samples go to {}",
-            paths::xdg_config_dir().join("abmx/samples").display()
+            paths::default_receipt_samples_dir().display()
         ));
     }
     if !config.statements.accounts.is_empty() {
         lines.push(format!(
             "        statement samples go to {}",
-            paths::xdg_config_dir()
-                .join("abmx/statement-samples")
-                .display()
+            paths::default_statement_samples_dir().display()
         ));
     }
 

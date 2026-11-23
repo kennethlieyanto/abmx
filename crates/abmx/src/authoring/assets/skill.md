@@ -22,8 +22,8 @@ abmx receipt samples [--label]    # receipt .eml files
 abmx statement samples [--label]  # statement PDFs
 ```
 
-Samples land in `$XDG_CONFIG_HOME/abmx/samples/<id>/` and
-`$XDG_CONFIG_HOME/abmx/statement-samples/<id>/`. Fewer than three is a warning:
+Samples land in `$XDG_CONFIG_HOME/abmx/samples/receipts/<id>/` and
+`$XDG_CONFIG_HOME/abmx/samples/statements/<id>/`. Fewer than three is a warning:
 be conservative and never invent a template from one message.
 
 ## Non-negotiables

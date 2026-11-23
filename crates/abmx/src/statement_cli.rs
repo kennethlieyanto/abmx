@@ -95,7 +95,7 @@ enum StatementCommand {
         /// How many of the newest messages to download per label.
         #[arg(long, default_value_t = 3, value_name = "N")]
         samples: usize,
-        /// Output directory. Defaults to $XDG_CONFIG_HOME/abmx/statement-samples.
+        /// Output directory. Defaults to $XDG_CONFIG_HOME/abmx/samples/statements.
         #[arg(long, value_name = "DIR")]
         out: Option<PathBuf>,
         /// Machine-readable manifest.
@@ -405,7 +405,18 @@ pub fn statement_samples(
     let (targets, warnings) = select_sample_targets(&config, &discovered, selector.as_deref())?;
 
     let requested = count.max(1);
-    let output = out.unwrap_or_else(paths::default_statement_samples_dir);
+    let (output, default_root) = match out {
+        Some(out) => (out, None),
+        None => (
+            paths::default_statement_samples_dir(),
+            Some(paths::default_samples_dir()),
+        ),
+    };
+
+    if let Some(root) = default_root {
+        std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
+        restrict(&root, 0o700)?;
+    }
     std::fs::create_dir_all(&output).with_context(|| format!("creating {}", output.display()))?;
     restrict(&output, 0o700)?;
 

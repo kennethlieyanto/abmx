@@ -113,7 +113,7 @@ fn the_receipt_reference_is_focused() {
     let text = authoring::skill::render(authoring::skill::Doc::Receipt);
     assert!(!text.starts_with("---"));
     assert!(text.contains("abmx receipt samples"));
-    assert!(text.contains("samples/<parser-id>"));
+    assert!(text.contains("samples/receipts/<parser-id>"));
     assert!(text.contains("parse_mail(ctx)"));
     assert!(text.contains("[receipts.accounts]"));
     assert!(!text.contains("parse_statement"));

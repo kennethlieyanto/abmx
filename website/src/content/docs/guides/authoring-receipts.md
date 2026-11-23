@@ -15,7 +15,7 @@ description: From a labeled email to a verified Rhai parser in four steps.
 
 ```bash
 abmx receipt samples
-# ~/.config/abmx/samples/<parser-id>/01.eml … 03.eml
+# ~/.config/abmx/samples/receipts/<parser-id>/01.eml … 03.eml
 ```
 
 `--label <label|parser-id>` narrows it, `--samples N` changes the count, and

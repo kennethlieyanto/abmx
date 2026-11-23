@@ -16,8 +16,8 @@ and statements.
    ```bash
    abmx samples
    ```
-   Receipt samples go to `~/.config/abmx/samples/<id>/`; statement PDFs to
-   `~/.config/abmx/statement-samples/<id>/`. The command samples every
+   Receipt samples go to `~/.config/abmx/samples/receipts/<id>/`; statement PDFs
+   to `~/.config/abmx/samples/statements/<id>/`. The command samples every
    non-ignored label under both prefixes, mapped or not. Narrow it with
    `abmx receipt samples --label …` or `abmx statement samples --label …`.
 3. **Install the skills.**

@@ -191,7 +191,7 @@ enum ReceiptCommand {
         /// How many of the newest messages to download per label.
         #[arg(long, default_value_t = 3, value_name = "N")]
         samples: usize,
-        /// Output directory. Defaults to $XDG_CONFIG_HOME/abmx/samples.
+        /// Output directory. Defaults to $XDG_CONFIG_HOME/abmx/samples/receipts.
         #[arg(long, value_name = "DIR")]
         out: Option<PathBuf>,
         /// Machine-readable manifest.

@@ -15,7 +15,7 @@ sections.
 
 1. **Sample.** `abmx statement samples` downloads the PDFs attached to the
    newest messages per non-ignored label into
-   `$XDG_CONFIG_HOME/abmx/statement-samples/<parser-id>/`. Narrow it with
+   `$XDG_CONFIG_HOME/abmx/samples/statements/<parser-id>/`. Narrow it with
    `--label <label|parser-id>`. Fewer than three is a warning.
 2. **Dump the positioned text.** `abmx statement dump <one.pdf>` prints
    `y | [x] "text"` per run. Rows are the lines whose date cell matches a date;

@@ -101,7 +101,7 @@ statement PDFs. It samples every valid label under the prefixes that is not in
 the matching `ignore` list, mapped or not. The source-specific `--label` and
 `--out` flags live on `abmx receipt samples` and `abmx statement samples`. Like
 sync, sampling ignores the `since` windows and writes `0600` artifacts under the
-XDG config directory (`samples/` and `statement-samples/`).
+XDG config directory (`samples/receipts/` and `samples/statements/`).
 
 `abmx statement import` is the manual path for a bank that only offers a portal
 or app download: the PDF stays local, there is no Gmail call, and the ledger's

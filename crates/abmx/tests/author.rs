@@ -169,27 +169,29 @@ fn a_configured_label_with_a_parser_is_ok() {
     let parsers = dir.path().join("parsers/example-qris");
     std::fs::create_dir_all(&parsers).unwrap();
     std::fs::write(
-        parsers.join("config.toml"),
+        parsers.join("parser.rhai"),
         r#"
-spec_version = 2
-version = 1
-[labels]
-list = ["Total Payment", "Transaction Date", "Payment to"]
-[defaults]
-bank = "example"
-currency = "IDR"
-tz = "Asia/Jakarta"
-kind = "purchase"
-[extract.amount]
-label = "Total Payment"
-regex = '(?P<value>[0-9][0-9.,]*)'
-number = "id"
-[extract.occurred_at]
-label = "Transaction Date"
-regex = '(?P<value>\d{2} \w{3} \d{4} \d{2}:\d{2}:\d{2})'
-formats = ["%d %b %Y %H:%M:%S"]
-[extract.counterparty]
-label = "Payment to"
+fn meta() {
+    #{
+        bank: "example",
+        currency: "IDR",
+        tz: "Asia/Jakarta",
+        offset: "+07:00",
+        number: "id",
+        kind: "purchase",
+        labels: ["Total Payment", "Transaction Date", "Payment to"],
+        api: 1,
+        version: 1,
+    }
+}
+
+fn parse_mail(ctx) {
+    #{
+        amount: ctx.money_regex_in("Total Payment", `\d[0-9.,]*`, "id"),
+        occurred_at: ctx.datetime_in("Transaction Date", ["%d %b %Y %H:%M:%S"], "en"),
+        counterparty: ctx.text_in("Payment to"),
+    }
+}
 "#,
     )
     .unwrap();

@@ -49,7 +49,7 @@ Gmail rule.
     The label is the contract; there is no sender list to drift.
   </Card>
   <Card title="Parse with runtime data" icon="document">
-    A parser is a `config.toml` plus fixtures under `~/.config/abmx/parsers/`.
+    A parser is a sandboxed Rhai script plus fixtures under `~/.config/abmx/parsers/`.
     No compiler, no rebuild, no bank code in the binary.
   </Card>
   <Card title="Import, or report broken" icon="approve-check">
@@ -130,7 +130,7 @@ transactions and leaves reconciliation against the statement to you.
   <LinkCard
     title="Parser spec"
     href="/abmx/reference/parser-spec/"
-    description="The TOML format behind every bank template."
+    description="The sandboxed Rhai API behind every bank template."
   />
   <LinkCard
     title="Architecture"

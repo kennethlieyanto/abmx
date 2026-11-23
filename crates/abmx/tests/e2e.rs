@@ -17,34 +17,31 @@ use serde_json::{json, Value};
 const LABEL: &str = "Receipt/abmx:test.bank";
 
 const PARSER: &str = r#"
-spec_version = 2
-version = 1
+fn meta() {
+    #{
+        bank: "test",
+        currency: "IDR",
+        tz: "Asia/Jakarta",
+        offset: "+07:00",
+        number: "id",
+        kind: "purchase",
+        labels: ["Amount", "Merchant", "Transaction Date", "Status"],
+        api: 1,
+        version: 1,
+    }
+}
 
-[labels]
-list = ["Amount", "Merchant", "Transaction Date", "Status"]
-
-[defaults]
-bank = "test"
-currency = "IDR"
-tz = "Asia/Jakarta"
-kind = "purchase"
-
-[status]
-label = "Status"
-map = { Successful = "settled", Failed = "failed" }
-
-[extract.amount]
-label = "Amount"
-regex = '(?P<value>[0-9][0-9.,]*)'
-number = "id"
-
-[extract.occurred_at]
-label = "Transaction Date"
-regex = '(?P<value>\d{2} \w{3} \d{4} \d{2}:\d{2}:\d{2})'
-formats = ["%d %b %Y %H:%M:%S"]
-
-[extract.counterparty]
-label = "Merchant"
+fn parse_mail(ctx) {
+    let status = ctx.text_in("Status");
+    #{
+        amount: ctx.money_regex_in("Amount", `\d[0-9.,]*`, "id"),
+        occurred_at: ctx.datetime_in("Transaction Date", ["%d %b %Y %H:%M:%S"], "en"),
+        counterparty: ctx.text_in("Merchant"),
+        status: if status == "Successful" { "settled" }
+                else if status == "Failed" { "failed" }
+                else { "unknown" },
+    }
+}
 "#;
 
 const EMAIL: &str = "From: alerts@bank.example\r\n\
@@ -66,7 +63,7 @@ fn corpus(dir: &std::path::Path) -> PathBuf {
     let parsers = dir.join("parsers");
     let parser = parsers.join("test.bank");
     std::fs::create_dir_all(&parser).unwrap();
-    std::fs::write(parser.join("config.toml"), PARSER).unwrap();
+    std::fs::write(parser.join("parser.rhai"), PARSER).unwrap();
     parsers
 }
 

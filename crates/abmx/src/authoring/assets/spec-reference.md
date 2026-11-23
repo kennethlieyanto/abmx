@@ -1,152 +1,151 @@
-# bank parser spec reference
+# bank parser spec reference (Rhai)
 
-A parser lives at `~/.config/abmx/parsers/<id>/config.toml` (or another `<corpus>` directory). The directory name **is** the
-parser id; there is no `id` field. `spec_version` must be the version below.
-Changes to behaviour bump `version`; they never change a transaction's stable
-`id`.
+A parser is a directory: `<corpus>/<id>/parser.rhai`. The directory name **is**
+the parser id, and `fixtures/` sits beside the script. There is no TOML.
 
-Routing is **not** in the spec. gmailctl applies `receipt/<id>`; the main
-`abmx.toml` maps that parser id to a ledger account:
+A mail parser defines `fn meta()` and `fn parse_mail(ctx)`. The script only
+observes the email; identity, the offset, and `Strict` are decided by the host.
+
+## Skeleton
+
+```rhai
+fn meta() {
+    #{
+        bank: "example",
+        currency: "IDR",
+        tz: "Asia/Jakarta",
+        offset: "+07:00",
+        number: "id",          // id: 1.234,56   en: 1,234.56
+        kind: "purchase",      // decides the sign
+        labels: [              // every constant label block in the template
+            "Total Payment", "Merchant", "Transaction Date",
+        ],
+        api: 1,                // host API version
+        version: 1,            // bump when behaviour changes
+    }
+}
+
+fn parse_mail(ctx) {
+    #{
+        amount: ctx.money_regex_in("Total Payment", `\d[0-9.,]*`, "id"),
+        occurred_at: ctx.datetime_in("Transaction Date", ["%d %b %Y %H:%M:%S"], "id"),
+        counterparty: ctx.text_in("Merchant"),
+    }
+}
+```
+
+## meta()
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `bank` | yes | Short bank name, e.g. `bca` |
+| `currency` | yes | ISO-4217 |
+| `tz` | no | IANA zone, informational |
+| `offset` | no | Fixed offset for `occurred_at`, default `+00:00` |
+| `number` | no | `en` (default) or `id` |
+| `kind` | yes | `purchase`, `payment`, `transfer_in`, `transfer_out`, `fee`, `refund`, `cash_withdrawal` |
+| `labels` | yes | Every constant label block, including ones you do not extract |
+| `api` | no | Host API version, default 1 |
+| `version` | no | Parser version, default 1 |
+| `enabled` | no | Default `true` |
+| `exponent` | no | Override the currency's minor-unit exponent |
+
+`labels` partitions the body into regions: a region is everything between one
+label and the next. A missing label merges two regions; an extra label splits a
+value. Include all of them, in document order.
+
+## ctx
+
+| Expression | Result |
+| --- | --- |
+| `ctx.from` / `ctx.from_name` | sender address / display name |
+| `ctx.subject` | subject |
+| `ctx.sent_at` | email `Date:` as RFC 3339 |
+| `ctx.offset` | the email's offset, e.g. `+07:00` |
+| `ctx.blocks` | every block as an array of strings |
+| `ctx.text` | all blocks joined with spaces |
+| `ctx.has_label(label)` | whether the label appears |
+| `ctx.region(label)` | the label's region as an array of strings |
+| `ctx.text_in(label)` | the region collapsed to one string |
+| `ctx.block_in(label, n)` | the Nth block of the region (0-based) |
+| `ctx.regex_in(label, pattern)` | first capture in the joined region |
+| `ctx.per_block(label, pattern)` | first block that matches |
+| `ctx.matches_in(label, pattern)` | boolean |
+| `ctx.money_in(label, style)` | region parsed as money, in minor units |
+| `ctx.money_regex_in(label, pattern, style)` | capture parsed as money |
+| `ctx.money(raw, style)` | arbitrary text parsed as money |
+| `ctx.datetime_in(label, formats, locale)` | `YYYY-MM-DDTHH:MM:SS` |
+| `ctx.date_in(label, formats, locale)` | `YYYY-MM-DD` |
+| `ctx.time_in(label, formats)` | `HH:MM:SS` |
+| `date_text(raw, formats, locale)` | parse a captured date string |
+| `time_text(raw, formats)` | parse a captured time string |
+| `strip_spaces(raw)` | remove all whitespace |
+
+`*_in` datetime helpers are loose: they try the whole region and then every
+token window, so `13 Sep 2026 12:44:09 WIB` parses with
+`["%d %b %Y %H:%M:%S"]`.
+
+Captures prefer the first **named** group, then group 1, then the whole match.
+
+## Return value
+
+Return a map, or an array of maps for a template that contains several
+transactions:
+
+```rhai
+fn parse_mail(ctx) {
+    [#{
+        amount: ctx.money_in("Charge 1", "id"),
+        occurred_at: ctx.datetime_in("Date", ["%d/%m/%Y %H:%M"], "en"),
+        counterparty: "First",
+    }, #{
+        amount: ctx.money_in("Charge 2", "id"),
+        occurred_at: ctx.datetime_in("Date", ["%d/%m/%Y %H:%M"], "en"),
+        counterparty: "Second",
+    }]
+}
+```
+
+| Key | Required | Notes |
+| --- | --- | --- |
+| `amount` | yes | unsigned minor units; `kind` supplies the sign |
+| `occurred_at` | yes | `YYYY-MM-DDTHH:MM:SS` or `YYYY-MM-DD` |
+| `kind` | no | overrides `meta.kind` for this row |
+| `status` | no | `settled` (default), `pending`, `failed`, `unknown` |
+| `counterparty` | no | payee |
+| `counterparty_account` | no | destination account |
+| `account_last4` | no | last four digits of the funding account |
+| `reference_id` | no | bank reference |
+| `channel` | no | `QRIS`, `Transfer`, ... |
+| `description` | no | free text |
+| `extra` | no | map of named extra fields |
+| `warnings` | no | non-empty makes the row heuristic |
+
+Zero amounts are accepted but downgrade the row to heuristic, and the ledger
+policy refuses them.
+
+## Identity and money
+
+- `id` is `hash(Message-ID, tx_index)`. A parser change never changes it.
+- `amount_minor` is authoritative and signed; `kind` decides the sign:
+  `purchase`, `payment`, `transfer_out`, `fee`, `cash_withdrawal` are outflows.
+- `currency_exponent` is repeated on every row. IDR is 0; if a bank prints
+  sub-unit precision, set `exponent` in `meta()`.
+- The ledger account comes from `[receipts.accounts]`, never from the parser.
+
+## Routing
+
+Routing is not in the script. gmailctl applies `receipt/<id>`, and the main
+config maps the id to a ledger account:
 
 ```toml
-[receipts]
-prefix = "receipt/"
-
 [receipts.accounts]
 "example-qris" = "<actual-account-uuid>"
 ```
 
-```toml
-spec_version = 2
-version = 1                 # bump when the spec changes
-enabled = true
+## Stop rules
 
-[labels]
-# ALL constant label blocks in the template, in document order.
-# The engine partitions the blocks on these; a region is everything from one
-# label to the next. Values may span several blocks (`Rp` / `100.000` / `,00`).
-list = ["Amount", "Merchant", "Transaction Date"]
-
-[defaults]
-bank     = "example"
-currency = "IDR"
-tz       = "Asia/Jakarta"
-kind     = "purchase"
-
-[status]                  # optional; omit for settled
-label  = "Status"         # required when the template prints one
-map    = { Successful = "settled", Failed = "failed" }
-default = "unknown"
-
-[extract.amount]          # required
-label  = "Total Payment"
-regex  = '(?P<value>[0-9][0-9.,]*(?:\s*,\d{2})?)'
-number = "en"             # en: 1,234.56    id: 1.234,56
-
-[extract.occurred_at]     # required, single-field form
-label   = "Transaction Date"
-regex   = '(?P<value>\d{2} \w{3} \d{4} \d{2}:\d{2}:\d{2})'
-formats = ["%d %b %Y %H:%M:%S"]
-locale  = "en"            # "id" understands Okt/Agu/Mei/Des
-
-[extract.counterparty]
-label = "Merchant"
-
-[extract.counterparty_account]
-label = "Recipient"
-block = 1                 # 0-based index inside the label's region
-
-[extract.account]
-label = "Nomor Kartu"
-regex = '(?P<last4>\d{4})\s*$'
-
-[extract.reference_id]
-label     = "No. Ref wallet"
-regex     = '(?P<value>[0-9][0-9 -]{5,}[0-9])'
-normalize = "strip_spaces"
-
-[extract.channel]
-label = "Tipe Transaksi"
-block = 0
-
-[extract.description]
-label = "Remarks"
-
-[extract.extra]
-location = { label = "Merchant Location" }
-```
-
-Split date and time when the bank renders them as separate fields:
-
-```toml
-[extract.occurred_at]
-date = { label = "Date", regex = '(?P<value>\d{1,2} \w{3} \d{4})', formats = ["%d %b %Y"] }
-time = { label = "Time", regex = '(?P<value>\d{2}:\d{2}:\d{2})', formats = ["%H:%M:%S"] }
-```
-
-## Required fields
-
-- `[extract.amount]`
-- `[extract.occurred_at]` (either `label` + `formats`, or `date` + `time`)
-
-Every other `[extract.*]` section is optional. Omit it and the output field stays
-`null`.
-
-## How extraction works
-
-1. The body is normalized to an ordered list of visible text blocks, one per
-   block-level HTML element. Tags and attributes are never part of the contract.
-2. The engine partitions the blocks on `labels.list`. A region is everything
-   between one label and the next, which is why a value may span several blocks.
-3. Each field picks a value from its region:
-
-| Setting | Behaviour |
-| --- | --- |
-| nothing | the whole region, joined with spaces |
-| `regex` | first match in the joined region |
-| `per_block = true` + `regex` | first block that matches |
-| `block = N` | the Nth block of the region (optionally filtered by `regex`) |
-
-The captured group is the first **named** group (`value`, `last4`, ...), else
-group 1, else the whole match.
-
-Prefer a pattern that matches the value's shape over an end anchor: a region can
-run into the footer, and `[\d.,]+$` will happily capture a phone number.
-
-## Identity and money
-
-- `id` is `hash(Message-ID, tx_index)`, never derived from parsed output.
-- `amount_minor` is authoritative and signed. `currency_exponent` is repeated so
-  consumers need no currency table (IDR = 0, USD = 2).
-- `kind` is one of `purchase`, `payment`, `transfer_in`, `transfer_out`, `fee`,
-  `refund`, `cash_withdrawal`, `unknown`.
-- `status` is one of `settled`, `pending`, `failed`, `unknown`. A failed row must
-  not be imported.
-
-## Output fields a parser can fill
-
-| Field | Source |
-| --- | --- |
-| `counterparty` | `[extract.counterparty]` |
-| `counterparty_account` | `[extract.counterparty_account]` |
-| `account_last4` | `[extract.account]` |
-| `reference_id` | `[extract.reference_id]` |
-| `channel` | `[extract.channel]` |
-| `description` | `[extract.description]` |
-| `extra` | `[extract.extra]` (a table of named fields) |
-
-`bank`, `currency`, `tz`, and `kind` come from `[defaults]`. The account is the
-label's configured ledger account, not a parser field.
-
-## Labels
-
-- One label owns one template. If the three samples for a label are different
-  shapes, the label is wrong; fix the Gmail label/filter instead of writing a
-  parser that guesses between them.
-- Every routed label with mail must have a `[receipts.accounts]` entry and a parser.
-
-## Versioning rules
-
-- `spec_version` changes only when the TOML format changes.
-- `parser.version` increments when a spec's behaviour changes.
-- `SCHEMA_VERSION` changes only on breaking output changes.
+- No amount in the samples → no parser.
+- Samples that are different templates → the label is mislabeled; fix gmailctl.
+- A value that is ambiguous → leave the optional field out.
+- Never write a ledger UUID into a parser.

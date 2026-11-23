@@ -4,7 +4,7 @@ A tiny Helm chart whose only job is to turn plain files into the two ConfigMaps
 the `abmx` chart consumes:
 
 - `abmx-config` — from `files/config.toml`
-- `abmx-parsers` — one key per `files/parsers/<id>/config.toml`
+- `abmx-parsers` — one key per `files/parsers/<id>/parser.rhai`
 
 ## Use
 
@@ -12,7 +12,7 @@ Copy this directory into your private config repository, then edit:
 
 ```
 files/config.toml
-files/parsers/<id>/config.toml
+files/parsers/<id>/parser.rhai
 files/parsers/<id>/fixtures/*.eml
 ```
 

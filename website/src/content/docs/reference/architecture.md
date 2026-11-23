@@ -1,19 +1,19 @@
 ---
 title: Architecture
-description: Two foundations, one pipeline, and why parsers are data while fetchers and sinks are code.
+description: Two foundations, one pipeline, and why parsers are sandboxed scripts while fetchers and sinks are code.
 ---
 
 `abmx` is one project with two foundations and one pipeline.
 
-- **Parsing** is data-extensible: a new bank is a TOML spec, loaded at runtime,
-  no rebuild.
+- **Parsing** is script-extensible: a new bank is a `parser.rhai` loaded at
+  runtime, no rebuild.
 - **Syncing** is code-extensible: a new mailbox or ledger is a crate and a trait
   implementation.
 
-That asymmetry is deliberate. Bank templates churn weekly and are a regex table;
-mailboxes and ledgers carry credentials, pagination, retries, and vendor quirks.
-Forcing both through the same extension mechanism would be worse than keeping
-them apart.
+That asymmetry is deliberate. Bank templates churn weekly and are irregular
+enough to need control flow; mailboxes and ledgers carry credentials,
+pagination, retries, and vendor quirks. Forcing both through the same extension
+mechanism would be worse than keeping them apart.
 
 ```text
 ┌──────────────── sync foundation ────────────────┐
@@ -29,9 +29,9 @@ them apart.
 └───────────────────────▲─────────────────────────┘
                         │
 ┌────────────────── parser foundation ─────────────┐
-│  abmx-parser  discovery · routing · schema       │
-│  abmx-parse   the declarative spec engine        │
+│  abmx-parser  discovery · routing · Rhai host    │
 │  abmx-mail    MIME + HTML → blocks               │
+│  abmx-doc     PDF → positioned lines             │
 │  abmx-tx      the Transaction contract           │
 └──────────────────────────────────────────────────┘
 ```
@@ -51,7 +51,7 @@ state**. Copying the stages would give symmetry but the wrong abstraction —
 | ----------------- | ------------------- | -------------------------------------------------------------- |
 | input             | **Fetcher**         | same role, transport varies per user                           |
 | label routing     | gmailctl + `[receipts.accounts]` | the label names the parser; the config maps it to an account |
-| parser spec       | `abmx-parser`       | not reimplemented                                              |
+| parser script     | `abmx-parser`       | not reimplemented; one sandboxed host for mail and statements   |
 | extraction result | `abmx-tx` contract  | the shared vocabulary between the halves                       |
 | output schema     | **Policy → Sink**   | the decision and the write are separate                        |
 | —                 | **State**           | no equivalent in the parser, and where correctness lives       |
@@ -209,12 +209,20 @@ trait; one is a guess.
 
 ## Adding a parser
 
-No code. Write `<corpus>/<id>/config.toml`, add samples under
+No core code. Write `<corpus>/<id>/parser.rhai`, add samples under
 `<corpus>/<id>/fixtures/`, and run
 `abmx parser check --parser <id> --parsers <corpus>`. The useful commands are
 `parser init`, `dump`, `explain`, `lint`, and `check`. See the
-[Parser spec](/reference/parser-spec/) for the format and
+[Parser spec](/reference/parser-spec/) for the host API and
 [Authoring parsers](/guides/authoring/) for the workflow.
+
+A script only produces observations: fields, rows, optional printed balances.
+The host assigns `id`, `tx_index`, the offset, and `Strict`, and the statement
+verifier owns the arithmetic. That split is why a parser can be expressive
+without being able to lie about correctness.
+
+Scripts run in a fresh scope with no filesystem, network, clock, environment,
+`eval`, or imports, and with operation, depth, allocation, and wall-time caps.
 
 The corpus is runtime data: `abmx` searches `--parsers`, `$ABMX_PARSERS`,
 `~/.config/abmx/parsers`, then `/etc/abmx/parsers`. It never reads the working
@@ -235,6 +243,7 @@ migration, not a silent reinterpretation of old rows.
 - An async runtime.
 - A second binary. The parser is a library plus an `abmx parser` command group;
   it is not a separate product with its own release cadence.
-- One parser language for mail and statements. Mail is region-based; a
-  statement is a table with a running balance. They share the corpus, the
-  `Transaction` contract, and the authoring loop, not an input layer.
+- A parser DSL. The script *is* the extension language; the host API is
+  deliberately small and versioned.
+- Bank knowledge in the core. Verification is bank-agnostic; columns, labels,
+  periods, and markers live in `parser.rhai`.

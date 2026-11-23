@@ -21,10 +21,10 @@ mod assets {
     pub const AUTHORING_WORKFLOW: &str = include_str!("assets/authoring-workflow.md");
     pub const PITFALLS: &str = include_str!("assets/pitfalls.md");
 
-    /// The `spec_version` this guide was written against. Kept in the asset so
-    /// a test can catch drift after an `abmx-parser` bump.
+    /// The host API version this guide was written against. Kept in the asset
+    /// so a test can catch drift after an `abmx-parser` bump.
     #[allow(dead_code)]
-    pub const SPEC_REFERENCE_VERSION: u32 = 2;
+    pub const SPEC_REFERENCE_VERSION: u32 = 1;
 }
 
 #[cfg(test)]
@@ -33,9 +33,9 @@ mod tests {
     fn spec_reference_tracks_parser() {
         assert_eq!(
             super::assets::SPEC_REFERENCE_VERSION,
-            abmx_parser::SPEC_VERSION
+            abmx_parser::API_VERSION
         );
-        assert!(super::assets::SPEC_REFERENCE.contains("spec_version = 2"));
-        assert!(super::assets::SPEC_REFERENCE.contains("[extract.amount]"));
+        assert!(super::assets::SPEC_REFERENCE.contains("fn meta()"));
+        assert!(super::assets::SPEC_REFERENCE.contains("parse_mail"));
     }
 }

@@ -136,7 +136,7 @@ redact in="sample" out="build/redacted":
     @test -f redact.toml || { echo "missing redact.toml; copy redact.example.toml and fill it in"; exit 1; }
     cargo run -q -p xtask -- redact --in {{in}} --out {{out}}
 
-# Scaffold a parser in the user corpus (~/.config/abmx/parsers/<id>).
+# Scaffold a parser in the user corpus (~/.config/abmx/parsers/<id>/parser.rhai).
 parser-init id:
     cargo run -q -p abmx -- parser init {{id}}
 

@@ -1,22 +1,25 @@
 ---
 title: Parser spec
-description: The TOML format for a bank template, how specs are discovered, and how extraction works.
+description: The Rhai format for a mail parser, the host API, and how extraction works.
 ---
 
 Two things are versioned here: the **transaction output** (`SCHEMA_VERSION`, see
-the [Transaction contract](/reference/transaction/)) and the **parser spec
-format** (`spec_version` in every `<corpus>/<id>/config.toml`).
+the [Transaction contract](/reference/transaction/)) and the **host API**
+(`meta().api` in every `<corpus>/<id>/parser.rhai`).
 
-## Where specs are loaded from
+A parser is a script, not a data file. That is deliberate: bank templates are
+open-ended, and a declarative schema eventually grows control flow without
+becoming a language. The script gets a small, sandboxed host API; identity,
+offsets, and the `strict` decision stay in Rust.
 
-Parser specs are runtime configuration; none are compiled into the binary.
+## Where parsers are loaded from
+
+Parser scripts are runtime configuration; none are compiled into the binary.
 
 **Explicit sources merge.** Every directory named by `--parsers` or
 `$ABMX_PARSERS` is loaded in order and merged by parser `id`; when two
 directories define the same `id` the earlier one wins and the later one is
-reported as shadowed. Two parsers with the same id cannot coexist inside one
-corpus, because the directory name is the id. This allows a local override of a
-single bank without copying the whole corpus.
+reported as shadowed.
 
 **Implicit discovery uses one corpus.** When neither flag nor env is set, the
 first directory that **exists** wins:
@@ -26,145 +29,152 @@ first directory that **exists** wins:
 | 1     | `$XDG_CONFIG_HOME/abmx/parsers` |
 | 2     | `/etc/abmx/parsers`             |
 
-If that directory contains no specs, loading fails rather than falling through
-to a lower-precedence corpus: an empty corpus in the place you asked it to look
-is a broken install, and silently reading a different one is worse.
+There is no router file: a parser is selected by the `receipt/*` label mapped to
+it in `abmx.toml`.
 
-`abmx parser paths` prints the chain and marks skipped candidates. There is no
-router file: a parser is selected by the `receipt/*` label mapped to it in
-`abmx.toml`.
+## Layout
+
+```text
+<corpus>/<id>/
+  parser.rhai
+  fixtures/
+    01.eml
+```
+
+The directory name **is** the parser id. The script defines `meta()` and exactly
+one entry point: `parse_mail(ctx)` or `parse_statement(doc)`. Defining both, or
+neither, is a load error.
 
 ## Input
 
-One RFC 5322 message (`.eml`) per file, or a directory of them. Anything that can
-produce `.eml` bytes works: a mail export, an IMAP fetch, a Gmail API response
-decoded from base64url, or a saved test fixture.
+One RFC 5322 message (`.eml`) per fixture. The parser needs the body blocks, the
+`Date` header (for the timezone offset), and the `Message-ID` (identity).
 
-The parser needs:
+## Format
 
-- the block list from the body,
-- the `Date` header (used only to give `occurred_at` its timezone offset),
-- the `Message-ID` (identity),
-- a `text/html` or `text/plain` body (extraction).
+```rhai
+fn meta() {
+    #{
+        bank: "example",
+        currency: "IDR",
+        tz: "Asia/Jakarta",
+        offset: "+07:00",        // fixed offset used for occurred_at
+        number: "id",            // id: 1.234,56   en: 1,234.56
+        kind: "purchase",        // decides the sign
+        labels: [                // every constant label block, in order
+            "Total Payment", "Merchant", "Transaction Date",
+        ],
+        api: 1,
+        version: 1,
+    }
+}
 
-## Parser spec format
-
-One parser per label-visible template, in `<corpus>/<id>/config.toml`. The
-directory name **is** the parser id; there is no `id` field to disagree with it.
-`spec_version` must match the engine's supported version. There is no `[match]`
-section and no account field.
-
-```toml
-spec_version = 2
-version = 1                 # bump when the spec changes
-enabled = true
-
-[labels]
-list = ["Amount", "Merchant", "Date"]  # ALL constant label blocks in the template
-
-[defaults]
-bank     = "example"
-currency = "IDR"
-tz       = "Asia/Jakarta"
-kind     = "purchase"
-
-[status]                    # optional; omit for settled
-label  = "Status"           # required when the template prints one
-map    = { BERHASIL = "settled", GAGAL = "failed" }
-default = "unknown"
-
-[extract.amount]            # required
-label  = "Total Payment"
-regex  = '(?P<value>[0-9][0-9.,]*(?:\s*,\d{2})?)'
-number = "en"               # en: 1,234.56    id: 1.234,56
-
-[extract.occurred_at]       # required, single-field form
-label   = "Transaction Date"
-regex   = '(?P<value>\d{2} \w{3} \d{4} \d{2}:\d{2}:\d{2})'
-formats = ["%d %b %Y %H:%M:%S"]
-locale  = "en"              # "id" understands Okt/Agu/Mei/Des
-
-[extract.counterparty]
-label = "Merchant"
-
-[extract.counterparty_account]
-label = "Recipient"
-block = 1                   # 0-based index inside the label's region
-regex = '(?P<value>\d+)\s*$'
-
-[extract.account]
-label = "Nomor Kartu"
-regex = '(?P<last4>\d{4})\s*$'
-
-[extract.reference_id]
-label     = "No. Ref wallet"
-regex     = '(?P<value>[0-9][0-9 -]{5,}[0-9])'
-normalize = "strip_spaces"
-
-[extract.channel]
-label = "Tipe Transaksi"
-block = 0
-
-[extract.description]
-label = "Remarks"
-
-[extract.extra]
-location = { label = "Merchant Location" }
+fn parse_mail(ctx) {
+    #{
+        amount: ctx.money_regex_in("Total Payment", `\d[0-9.,]*`, "id"),
+        occurred_at: ctx.datetime_in("Transaction Date", ["%d %b %Y %H:%M:%S"], "id"),
+        counterparty: ctx.text_in("Merchant"),
+    }
+}
 ```
 
-Split date and time (when the bank renders them as separate fields):
+## meta()
 
-```toml
-[extract.occurred_at]
-date = { label = "Date", regex = '(?P<value>\d{1,2} \w{3} \d{4})', formats = ["%d %b %Y"] }
-time = { label = "Time", regex = '(?P<value>\d{2}:\d{2}:\d{2})', formats = ["%H:%M:%S"] }
-```
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `bank` | yes | short bank name |
+| `currency` | yes | ISO-4217 |
+| `tz` | no | IANA zone, informational |
+| `offset` | no | fixed offset, default `+00:00` |
+| `number` | no | `en` (default) or `id` |
+| `kind` | yes | `purchase`, `payment`, `transfer_in`, `transfer_out`, `fee`, `refund`, `cash_withdrawal` |
+| `labels` | yes | every constant label block |
+| `api` | no | host API version, default 1 |
+| `version` | no | parser version, default 1 |
+| `enabled` | no | default `true` |
+| `exponent` | no | override the currency's minor-unit exponent |
 
-### Which fields are required
+`labels` partitions the body: a region is everything between one label and the
+next. Include labels you do not extract, because they are boundaries. A missing
+label merges two regions; an extra label splits a value.
 
-`amount` and `occurred_at` are required. Every other `[extract.*]` field is
-optional; omit the section and the output field stays `null`.
+## ctx
 
-### How extraction works
+| Expression | Result |
+| --- | --- |
+| `ctx.from`, `ctx.from_name`, `ctx.subject` | envelope fields |
+| `ctx.sent_at`, `ctx.offset` | RFC 3339 date and the email's offset |
+| `ctx.blocks` | array of every block |
+| `ctx.has_label(label)` | is the label present |
+| `ctx.region(label)` | array of blocks in the region |
+| `ctx.text_in(label)` | region collapsed to one string |
+| `ctx.block_in(label, n)` | Nth block of the region |
+| `ctx.regex_in(label, pattern)` | first capture in the region |
+| `ctx.per_block(label, pattern)` | first block that matches |
+| `ctx.matches_in(label, pattern)` | boolean |
+| `ctx.money_in(label, style)` | region as money, in minor units |
+| `ctx.money_regex_in(label, pattern, style)` | capture as money |
+| `ctx.money(raw, style)` | arbitrary text as money |
+| `ctx.datetime_in(label, formats, locale)` | `YYYY-MM-DDTHH:MM:SS` |
+| `ctx.date_in(label, formats, locale)` | `YYYY-MM-DD` |
+| `ctx.time_in(label, formats)` | `HH:MM:SS` |
+| `date_text`, `time_text` | parse a captured value |
+| `strip_spaces(raw)` | remove whitespace |
 
-1. The body is normalized to an ordered list of visible text blocks, one per
-   block-level HTML element. Tags and attributes are never part of the contract.
-2. The engine partitions the blocks on `labels.list`. A _region_ is everything
-   between one label and the next, which is why a value may span several blocks
-   (`Rp` / `100.000` / `,00`).
-3. Each field picks a value from its region:
+The `*_in` date helpers try the whole region and then every token window, so
+`13 Sep 2026 12:44:09 WIB` parses with `["%d %b %Y %H:%M:%S"]`. Captures prefer
+the first named group, then group 1, then the whole match.
 
-| Setting                      | Behaviour                                                    |
-| ---------------------------- | ------------------------------------------------------------ |
-| nothing                      | the whole region, joined with spaces                         |
-| `regex`                      | first match in the joined region                             |
-| `per_block = true` + `regex` | first block that matches                                     |
-| `block = N`                  | the Nth block of the region (optionally filtered by `regex`) |
+## Return value
 
-The captured group is the first **named** group (`value`, `last4`, ...), else
-group 1, else the whole match.
+A map, or an array of maps when one email carries several transactions:
 
-Prefer a pattern that matches the value's shape over an end anchor: a region can
-run into the footer, and `[\d.,]+$` will happily capture a phone number.
+| Key | Required | Notes |
+| --- | --- | --- |
+| `amount` | yes | unsigned minor units; `kind` supplies the sign |
+| `occurred_at` | yes | `YYYY-MM-DDTHH:MM:SS` or `YYYY-MM-DD` |
+| `kind` | no | per-row override |
+| `status` | no | `settled`, `pending`, `failed`, `unknown` |
+| `counterparty` | no | payee |
+| `counterparty_account` | no | destination account |
+| `account_last4` | no | funding card/account |
+| `reference_id` | no | bank reference |
+| `channel` | no | `QRIS`, `Transfer`, ... |
+| `description` | no | free text |
+| `extra` | no | map of named fields |
+| `warnings` | no | non-empty downgrades to heuristic |
 
-## Versioning rules
+## Sandbox
 
-- `spec_version` changes only when the TOML format changes.
-- `parser.version` increments when a spec's behaviour changes. It is recorded on
-  every row, but it never affects `id`.
-- `SCHEMA_VERSION` increments on breaking changes to the output JSON.
+The script runs in a fresh scope per email, with no filesystem, network, clock,
+environment, `eval`, or imports. Operations, call depth, allocation, and wall
+time are capped. `print` is swallowed; a parser that needs to explain itself
+returns a warning.
+
+## Identity and money
+
+- `id` is `hash(Message-ID, tx_index)`, never derived from parsed output.
+- `amount_minor` is authoritative and signed. `currency_exponent` is repeated on
+  every row (IDR = 0, USD = 2), unless `meta().exponent` overrides it.
+- `kind` decides the sign; a printed minus sign is not trusted.
+- The ledger account comes from `[receipts.accounts]`, never from the script.
+
+## Versioning
+
+- `api` changes only when the host API breaks scripts.
+- `version` increments when a script's behaviour changes.
+- `SCHEMA_VERSION` changes only on breaking output changes.
 
 ## Authoring aids
 
 ```bash
-abmx parser init <id>                       # scaffold the directory
+abmx parser init <id>                       # scaffold parser.rhai and fixtures/
 abmx dump <file>                            # normalized block dump
-abmx parser explain <file> --parser <id>    # the region behind each field
-abmx parser lint --parser <id>              # static spec checks
-abmx parser check --parser <id> -v          # verify against fixtures
+abmx parser explain <file> --parser <id>    # the regions the script sees
+abmx parser lint --parser <id>              # fixtures and label coverage
+abmx parser check --parser <id> -v          # run every fixture
 abmx parser specs --format table            # loaded parsers and their files
 abmx parser schema                          # JSON Schema of the output contract
 ```
 
-The full workflow, including the AI-assisted path, is in
-[Authoring parsers](/guides/authoring/).
+The full workflow is in [Authoring parsers](/guides/authoring/).

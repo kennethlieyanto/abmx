@@ -3,34 +3,31 @@ use std::path::{Path, PathBuf};
 use abmx::authoring;
 
 const PARSER: &str = r#"
-spec_version = 2
-version = 1
+fn meta() {
+    #{
+        bank: "test",
+        currency: "IDR",
+        tz: "Asia/Jakarta",
+        offset: "+07:00",
+        number: "id",
+        kind: "purchase",
+        labels: ["Amount", "Merchant", "Transaction Date", "Status"],
+        api: 1,
+        version: 1,
+    }
+}
 
-[labels]
-list = ["Amount", "Merchant", "Transaction Date", "Status"]
-
-[defaults]
-bank = "test"
-currency = "IDR"
-tz = "Asia/Jakarta"
-kind = "purchase"
-
-[status]
-label = "Status"
-map = { Successful = "settled", Failed = "failed" }
-
-[extract.amount]
-label = "Amount"
-regex = '(?P<value>[0-9][0-9.,]*)'
-number = "id"
-
-[extract.occurred_at]
-label = "Transaction Date"
-regex = '(?P<value>\d{2} \w{3} \d{4} \d{2}:\d{2}:\d{2})'
-formats = ["%d %b %Y %H:%M:%S"]
-
-[extract.counterparty]
-label = "Merchant"
+fn parse_mail(ctx) {
+    let status = ctx.text_in("Status");
+    #{
+        amount: ctx.money_regex_in("Amount", `\d[0-9.,]*`, "id"),
+        occurred_at: ctx.datetime_in("Transaction Date", ["%d %b %Y %H:%M:%S"], "en"),
+        counterparty: ctx.text_in("Merchant"),
+        status: if status == "Successful" { "settled" }
+                else if status == "Failed" { "failed" }
+                else { "unknown" },
+    }
+}
 "#;
 
 fn email(message_id: &str, amount: &str, status: &str) -> String {
@@ -62,7 +59,7 @@ fn write_sample(dir: &Path, name: &str, message_id: &str, amount: &str, status: 
 #[test]
 fn verify_reports_strict_heuristic_and_unmatched() {
     let dir = tempfile::tempdir().unwrap();
-    let spec = dir.path().join("candidate.toml");
+    let spec = dir.path().join("candidate.rhai");
     std::fs::write(&spec, PARSER).unwrap();
 
     let mail = dir.path().join("mail");
@@ -88,7 +85,7 @@ fn verify_reports_strict_heuristic_and_unmatched() {
 #[test]
 fn verify_requires_a_parser_id() {
     let dir = tempfile::tempdir().unwrap();
-    let spec = dir.path().join("candidate.toml");
+    let spec = dir.path().join("candidate.rhai");
     std::fs::write(&spec, PARSER).unwrap();
     let mail = dir.path().join("mail");
     write_sample(&mail, "01.eml", "one", "Rp 27.500", "Successful");

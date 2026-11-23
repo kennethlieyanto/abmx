@@ -51,7 +51,7 @@ impl ReceiptsSection {
         let prefix = self.prefix.to_ascii_lowercase();
         let lower = label.to_ascii_lowercase();
         let rest = lower.strip_prefix(&prefix)?;
-        abmx_parse::is_parser_id(rest).then(|| rest.to_owned())
+        abmx_parser::is_parser_id(rest).then(|| rest.to_owned())
     }
 
     /// Whether the user declined this parser id. Gmail label matching is
@@ -114,7 +114,7 @@ impl StatementsSection {
         let prefix = self.prefix.to_ascii_lowercase();
         let lower = label.to_ascii_lowercase();
         let rest = lower.strip_prefix(&prefix)?;
-        abmx_parse::is_parser_id(rest).then(|| rest.to_owned())
+        abmx_parser::is_parser_id(rest).then(|| rest.to_owned())
     }
 
     pub fn is_ignored(&self, parser_id: &str) -> bool {
@@ -324,7 +324,7 @@ impl Config {
         }
         let mut problems = Vec::new();
         for (parser, account) in &self.receipts.accounts {
-            if !abmx_parse::is_parser_id(parser) {
+            if !abmx_parser::is_parser_id(parser) {
                 problems.push(format!(
                     "`{parser}` is not a parser id (expected `bank.type`)"
                 ));
@@ -334,7 +334,7 @@ impl Config {
             }
         }
         for parser in &self.receipts.ignore {
-            if !abmx_parse::is_parser_id(parser) {
+            if !abmx_parser::is_parser_id(parser) {
                 problems.push(format!(
                     "`{parser}` in [receipts].ignore is not a parser id"
                 ));
@@ -368,9 +368,9 @@ impl Config {
         for key in self.statements.accounts.keys() {
             let valid = match key.split_once(':') {
                 Some((parser, section)) => {
-                    abmx_parse::is_parser_id(parser) && !section.trim().is_empty()
+                    abmx_parser::is_parser_id(parser) && !section.trim().is_empty()
                 }
-                None => abmx_parse::is_parser_id(key),
+                None => abmx_parser::is_parser_id(key),
             };
             if !valid {
                 problems.push(format!(
@@ -379,7 +379,7 @@ impl Config {
             }
         }
         for parser in &self.statements.ignore {
-            if !abmx_parse::is_parser_id(parser) {
+            if !abmx_parser::is_parser_id(parser) {
                 problems.push(format!(
                     "`{parser}` in [statements].ignore is not a parser id"
                 ));

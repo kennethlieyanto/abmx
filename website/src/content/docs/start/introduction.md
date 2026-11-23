@@ -86,12 +86,13 @@ Three independent layers, because they fail in different ways:
 
 A new mailbox is a new `Fetcher`. A new ledger is a new `Sink`. Neither requires
 touching the runner, the CLI, or the other integrations. Adding a *bank*, by
-contrast, is a TOML file — no rebuild. See
+contrast, is a `parser.rhai` script — no rebuild. See
 [Architecture](/reference/architecture/) for why the seams are where they are.
 
 ## Out of scope, by design
 
-- Parsing bank templates in code. Templates are runtime TOML specs.
+- Hard-coded bank templates in the core. Templates are runtime scripts, and the
+  host owns identity, strictness, and statement arithmetic.
 - Statement import and balance reconciliation. Planned.
 - Transfers linking (importing both sides of a transfer as one).
 - Pending → settled reconciliation. Today the parser emits no `pending` rows;

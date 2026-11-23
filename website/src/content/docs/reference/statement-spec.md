@@ -1,15 +1,16 @@
 ---
 title: Statement spec
-description: The TOML format for a PDF statement parser, the column geometry, and the arithmetic that makes a parse strict.
+description: The Rhai format for a PDF statement parser, the line API, and the arithmetic that makes a parse strict.
 ---
 
-A statement parser is a directory in the same corpus as a receipt parser:
-`<corpus>/<id>/config.toml`. The directory name is the parser id, and
-`input = "pdf"` tells the loader which engine compiles it. Statements are run by
-`abmx statement sync` (or the combined `abmx sync`).
+A statement parser is a script in the same corpus as a mail parser:
+`<corpus>/<id>/parser.rhai`, with `fixtures/` beside it. It defines `meta()` and
+`fn parse_statement(doc)`. Statements are run by `abmx statement sync` (or the
+combined `abmx sync`).
 
-Two things are versioned: the spec format (`spec_version` below) and the shared
-transaction contract (`SCHEMA_VERSION`, see [Transaction](/reference/transaction/)).
+The script turns positioned lines into observations. The host proves the
+arithmetic and builds transactions, so a script cannot declare a document
+strict or invent a balance.
 
 ## Authoring loop
 
@@ -17,113 +18,172 @@ transaction contract (`SCHEMA_VERSION`, see [Transaction](/reference/transaction
 # 1. Evidence: positioned text, not the PDF
 abmx statement dump statement.pdf --password-file password.txt
 
-# 2. Write <corpus>/<id>/config.toml and put the PDFs in <corpus>/<id>/fixtures/
+# 2. Write <corpus>/<id>/parser.rhai and put the PDFs in <corpus>/<id>/fixtures/
 
 # 3. Verify every fixture, including the arithmetic
 abmx statement check --parsers <corpus> --parser <id> --password-file password.txt -v
 ```
 
 `dump` prints one line per text line: `y | [x] "text"`. Rows are the lines whose
-date cell matches a date; the x values on those lines are the column ranges.
-The dump contains the account holder's details, so keep it out of the
-repository and out of issues.
+date cell matches a date; the x values on those lines are the column ranges. The
+dump contains the account holder's details, so keep it out of the repository.
 
 ## What strict means
 
-Emails are strict when every declared field matched. A statement is strict when
-its own numbers agree, per section:
+Per section:
 
 1. `opening + Σ(credits) − Σ(debits) == closing`
 2. for every row in document order:
-   `previous_balance + signed_amount == row_balance`
-3. `Σ parsed credits == the printed credit total`
-4. `Σ parsed debits == the printed debit total`
+   `previous_balance + signed_amount == expected`; a printed balance must equal
+   `expected`
+3. `Σ parsed credits == the printed credit total` (when printed)
+4. `Σ parsed debits == the printed debit total` (when printed)
 5. every row date falls inside the printed period
+6. the printed page count matches, when the script provides it
 
-One mismatch rejects the whole document. There is no partial import and no
-per-row heuristic; a statement that cannot be proven is not written. The
-invariants are also what catches multi-page mistakes: a dropped page, a row
-split at a page boundary, or pages read out of order all break the balance walk.
+A row does **not** need a printed balance. Banks that print a balance only on the
+last row of a date group are supported: the host walks the missing balances and
+verifies every balance the bank prints. One mismatch rejects the document.
 
 ## Format
 
-```toml
-spec_version = 1
-version = 1
-input = "pdf"
+```rhai
+fn meta() {
+    #{
+        bank: "bca",
+        currency: "IDR",
+        tz: "Asia/Jakarta",
+        offset: "+07:00",     // fixed offset used for occurred_at
+        number: "en",         // en: 1,234.56   id: 1.234,56
+        exponent: 2,          // only when the bank prints sub-unit precision
+        api: 1,
+        version: 1,
+    }
+}
 
-[defaults]
-bank = "example"
-currency = "IDR"
-tz = "Asia/Jakarta"
-offset = "+07:00"          # fixed offset used for occurred_at
-number = "en"              # en: 1,234.56   id: 1.234,56
+fn parse_statement(doc) {
+    let rows = [];
+    for line in doc.lines() {
+        if !line.matches(`^\d{2}/\d{2}$`, 35.0, 88.0) { continue; }
+        let description = line.words(88.0, 380.0);
+        if description == "SALDO AWAL" { continue; }
 
-[document]
-# Must capture start and end.
-period = { regex = 'Period\s*:\s*(?P<start>\d{1,2}/\d{2}/\d{2})\s*s/d\s*(?P<end>\d{1,2}/\d{2}/\d{2})',
-           formats = ["%d/%m/%y"] }
-# Optional; hashed into the document identity, never emitted.
-account = { regex = '(?P<value>\d{3}-\d{2}-\d{7}-\d)' }
-# Optional; catches a truncated download.
-pages = { regex = 'Page\s+\d+\s+of\s+(?P<value>\d+)' }
+        rows.push(#{
+            date: line.cell(35.0, 88.0),
+            description: description,
+            amount: line.money(380.0, 435.0),
+            out: line.cell(435.0, 460.0) == "DB",
+            balance: line.money_any(500.0, 600.0),   // () when empty
+        });
+    }
 
-[[sections]]
-key = "savings"            # becomes `Transaction.account`
-start = 'Tabungan\s*/\s*Savings'   # a line that opens this section
-opening = { regex = 'Opening Balance\s*:\s*(?P<value>[\d.,]+)' }
-closing = { regex = 'Closing Balance\s*:\s*(?P<value>[\d.,]+)' }
-total_credit = { regex = 'Total Credits\s*:\s*(?P<value>[\d.,]+)' }
-total_debit = { regex = 'Total Debits\s*:\s*(?P<value>[\d.,]+)' }
-
-[sections.columns]
-# Half-open x ranges in PDF points: min <= x < max.
-date = { x = [35, 96] }
-value_date = { x = [96, 139] }
-description = { x = [139, 452] }
-amount = { x = [452, 521] }
-marker = { x = [521, 560] }
-balance = { x = [560, 650] }
-
-[sections.table]
-# A line is a row when this cell matches.
-row_when = { column = "date", regex = '^\d{2}/\d{2}$' }
-# Matched against the description cell and the whole line.
-skip = ['^Saldo Awal$']
-# The printed transaction date has no year; resolve it against the period.
-date = { format = "%d/%m" }
-# A marked row left the account; an unmarked row is a credit.
-direction = { out_marker = "D" }
+    #{
+        period: doc.month("PERIODE"),               // PERIODE : OKTOBER 2026
+        account: doc.regex(`NO\. REKENING\s*:?\s*(\d{10,})`),
+        sections: [#{
+            key: "savings",
+            opening: doc.money(`SALDO AWAL\s*:\s*([\d.,]+)`),
+            closing: doc.money(`SALDO AKHIR\s*:\s*([\d.,]+)`),
+            total_credit: doc.money(`MUTASI CR\s*:\s*([\d.,]+)`),
+            total_debit: doc.money(`MUTASI DB\s*:\s*([\d.,]+)`),
+            rows: rows,
+        }],
+    }
+}
 ```
 
-`description` must end before the leftmost amount start, `amount` must end
-before the marker, and `balance` must start after it. Those ranges are why the
-table is read column-wise rather than with one line-wide regex: a description
-may contain dates (`03-08-26`) or long digit strings that look exactly like
-amounts.
+A numeric period is equally fine:
 
-### Multi-product documents
+```rhai
+let period = #{
+    start: doc.date_text(doc.regex_group(`Period\s*:\s*([\d/]+)`, 1), ["%d/%m/%y"], "en"),
+    end: doc.date_text(doc.regex_group(`s/d\s*([\d/]+)`, 1), ["%d/%m/%y"], "en"),
+};
+```
 
-A consolidated statement can contain several products. Give each product its
-own `[[sections]]` entry and key, and map `<parser-id>:<key>` in the config.
-The arithmetic is checked per section, because each product has its own opening
-and closing balance.
+## doc
+
+| Expression | Result |
+| --- | --- |
+| `doc.page_count` | pages read |
+| `doc.text` | every line, newline separated |
+| `doc.lines()` | array of `Line` |
+| `doc.regex(pattern)` | first capture over the whole text |
+| `doc.regex_group(pattern, n)` | capture group `n` (number or name) |
+| `doc.has(pattern)` | boolean |
+| `doc.money(pattern)` | capture parsed as scale-2 money |
+| `doc.money_text(raw)` | arbitrary text as scale-2 money |
+| `doc.int(pattern)` | capture parsed as an integer |
+| `doc.date_text(raw, formats, locale)` | `YYYY-MM-DD` |
+| `doc.month(label)` | `#{start, end}` for the printed month |
+
+Money is **scale 2** regardless of currency: `278301099` is `2,783,010.99`.
+`doc.month` understands Indonesian and English month names, full or abbreviated.
+
+## Line
+
+| Expression | Result |
+| --- | --- |
+| `line.text` | the whole line |
+| `line.page`, `line.y` | provenance |
+| `line.cell(x0, x1)` | runs in `[x0, x1)` concatenated and collapsed |
+| `line.words(x0, x1)` | the same runs joined with spaces |
+| `line.matches(pattern, x0, x1)` | regex over the cell |
+| `line.contains(text, x0, x1)` | substring over the cell |
+| `line.money(x0, x1)` | cell as scale-2 money |
+| `line.money_any(x0, x1)` | money, or `()` when the cell is empty |
+
+Use `cell` for dates, amounts, markers, and balances: it mirrors the printed
+layout. Use `words` for descriptions, so adjacent runs do not fuse.
+
+## Return value
+
+```rhai
+#{
+    period: #{ start: "2026-10-01", end: "2026-10-31" },
+    account: "0332221432",        // optional, identity only
+    pages: 3,                     // optional, catches a truncated download
+    sections: [ #{
+        key: "savings",           // becomes Transaction.account
+        opening: 278301099,
+        closing: 560291264,
+        total_credit: 500007765,  // optional
+        total_debit: 218017600,   // optional
+        date_format: "%d/%m",     // default
+        rows: [ #{
+            date: "02/10",
+            description: "TGL: 02/10",
+            amount: 7150000,
+            out: true,
+            balance: 271151099,   // omit or () when not printed
+        } ],
+    } ],
+}
+```
+
+A consolidated document returns several sections, each with its own arithmetic.
+Map `<parser-id>` for a single product or `<parser-id>:<section-key>` for several
+in `[statements.accounts]`.
 
 ## Identity
 
 - **Document**: `hash(bank, account, period_start, period_end)`. Re-fetching the
-  same statement is a no-op; a re-issued statement for the same period with
-  different content fails the arithmetic or produces different row ids rather
-  than silently double-importing.
-- **Row**: content-based, including the running balance. Two identical
+  same statement is a no-op.
+- **Row**: content-based, including the computed running balance. Two identical
   same-day, same-amount rows are still distinct because their balances differ.
 
 Ids are stable across parser versions and do not depend on the file name or the
 Gmail message id.
 
+## Sandbox
+
+The script runs in a fresh scope per document, with no filesystem, network,
+clock, environment, `eval`, or imports. Operations, call depth, allocation, and
+wall time are capped.
+
 ## Passwords
 
-The spec never contains a password. Configure a reference in `abmx.toml`:
+The script never contains a password. Configure a reference in `abmx.toml`:
 
 ```toml
 [statements.passwords]
@@ -135,4 +195,4 @@ An owner-restricted PDF with an empty user password needs no configuration.
 Decryption happens in-process: the password is never passed on a command line
 and the decrypted PDF is never written to disk. A wrong password is reported as
 `wrong password`, a missing one as `password protected`, and a scanned PDF as
-`no extractable text layer` — never as a regex failure.
+`no extractable text layer` — never as a script failure.

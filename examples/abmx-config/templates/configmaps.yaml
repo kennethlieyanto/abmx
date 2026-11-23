@@ -13,7 +13,7 @@ metadata:
   name: abmx-parsers
   namespace: {{ .Release.Namespace }}
 data:
-{{- range $path, $_ := .Files.Glob "files/parsers/*/config.toml" }}
+{{- range $path, $_ := .Files.Glob "files/parsers/*/parser.rhai" }}
   {{ base (dir $path) }}: |
 {{ $.Files.Get $path | indent 4 }}
 {{- end }}

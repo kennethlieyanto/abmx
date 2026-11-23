@@ -228,12 +228,11 @@ fn check(
 ) -> Result<i32> {
     let config = load_optional(config_path);
     let dirs = parser_dirs(parsers, config.as_ref());
-    let registry = abmx_table::Registry::from_dirs(&dirs)
+    let registry = abmx_parser::Registry::from_dirs(&dirs)
         .map_err(|error| anyhow::anyhow!("loading statement parsers: {error}"))?;
 
     let ids: Vec<String> = registry
-        .parsers
-        .iter()
+        .statements()
         .map(|parser| parser.id.clone())
         .filter(|id| only.is_none_or(|only| only == id))
         .collect();
@@ -279,8 +278,8 @@ fn check(
             let outcome = abmx_doc::load(&bytes, password.as_deref())
                 .map_err(|error| error.to_string())
                 .and_then(|document| {
-                    parser
-                        .parse(&document, Some(file.display().to_string()))
+                    registry
+                        .run_statement(&id, &document, Some(file.display().to_string()))
                         .map(|rows| (document, rows))
                 });
 
@@ -703,7 +702,7 @@ pub fn sync(
             ));
             continue;
         };
-        let Some(parser) = registry.find(&parser_id) else {
+        let Some(_parser) = registry.find(&parser_id) else {
             plan.stats.failed += 1;
             plan.stats.errors.push(format!(
                 "{}: label `{}` names parser `{parser_id}`, which is not in the statement corpus",
@@ -745,7 +744,7 @@ pub fn sync(
                 }
             };
 
-            match parser.parse(&document, Some(key.clone())) {
+            match registry.run_statement(&parser_id, &document, Some(key.clone())) {
                 Ok(transactions) => {
                     plan.stats.parsed += transactions.len();
                     let ids: Vec<String> = transactions.iter().map(|tx| tx.id.clone()).collect();
@@ -898,9 +897,9 @@ fn import(
         None => bail!("no parser id: pass --parser <id>, or put the PDF under <dir>/<parser-id>/"),
     };
     let registry = statement_registry(parsers, &config, &base)?;
-    let Some(parser) = registry.find(&parser_id) else {
+    if registry.find(&parser_id).is_none() {
         bail!("statement parser `{parser_id}` is not in the corpus");
-    };
+    }
 
     let password = password_for(&config, &base, &parser_id, password_file)?;
     let bytes = std::fs::read(file).with_context(|| format!("reading {}", file.display()))?;
@@ -912,13 +911,14 @@ fn import(
             return Ok(EXIT_FAILED);
         }
     };
-    let transactions = match parser.parse(&document, Some(file.display().to_string())) {
-        Ok(transactions) => transactions,
-        Err(error) => {
-            eprintln!("error: {}: {error}", file.display());
-            return Ok(EXIT_FAILED);
-        }
-    };
+    let transactions =
+        match registry.run_statement(&parser_id, &document, Some(file.display().to_string())) {
+            Ok(transactions) => transactions,
+            Err(error) => {
+                eprintln!("error: {}: {error}", file.display());
+                return Ok(EXIT_FAILED);
+            }
+        };
 
     let mut plan = Plan::new();
     plan.stats.parsed = transactions.len();
@@ -1034,9 +1034,9 @@ fn statement_registry(
     parsers: &[PathBuf],
     config: &Config,
     base: &Path,
-) -> Result<abmx_table::Registry> {
+) -> Result<abmx_parser::Registry> {
     let dirs = parser_dirs(parsers, Some(&(config.clone(), base.to_path_buf())));
-    abmx_table::Registry::from_dirs(&dirs)
+    abmx_parser::Registry::from_dirs(&dirs)
         .map_err(|error| anyhow::anyhow!("loading statement parsers: {error}"))
 }
 
@@ -1060,7 +1060,7 @@ fn infer_parser_id(path: &Path) -> Option<String> {
     if name == "fixtures" {
         name = parent.parent()?.file_name()?.to_str()?;
     }
-    abmx_parse::is_parser_id(name).then(|| name.to_owned())
+    abmx_parser::is_parser_id(name).then(|| name.to_owned())
 }
 
 /// Keep only rows the ledger does not already have. A unique match inside the

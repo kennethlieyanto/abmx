@@ -48,10 +48,11 @@ abmx parser parse <path> --parser ID [--format json|ndjson|table]
                                     parse a file or directory with one parser
 abmx parser explain <path> --parser ID
                                     block regions behind each field
-abmx parser lint [--parser ID]      static spec checks
+abmx parser lint [--parser ID]      fixtures and label coverage checks
 abmx parser check [-v] [--parser ID]
                                     verify every parser against its fixtures
-abmx parser init <id>               scaffold ~/.config/abmx/parsers/<id>/{config.toml,fixtures}
+abmx parser init <id> [--kind mail|statement]
+                                    scaffold ~/.config/abmx/parsers/<id>/{parser.rhai,fixtures}
 ```
 
 `abmx sync` is the union: it runs the receipt source first and the statement

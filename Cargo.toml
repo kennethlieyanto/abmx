@@ -13,14 +13,13 @@ repository = "https://github.com/kennethlieyanto/abmx"
 abmx-core = { path = "crates/abmx-core" }
 abmx-tx = { path = "crates/abmx-tx" }
 abmx-mail = { path = "crates/abmx-mail" }
-abmx-parse = { path = "crates/abmx-parse" }
 abmx-parser = { path = "crates/abmx-parser" }
 abmx-gmail = { path = "crates/abmx-gmail" }
 abmx-actual = { path = "crates/abmx-actual" }
 abmx-file = { path = "crates/abmx-file" }
 abmx-doc = { path = "crates/abmx-doc" }
-abmx-table = { path = "crates/abmx-table" }
 abmx-testkit = { path = "crates/abmx-testkit" }
+rhai = { version = "1.23", default-features = false, features = ["std", "serde", "internals"] }
 
 anyhow = "1"
 base64 = "0.22"

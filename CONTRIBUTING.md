@@ -38,14 +38,15 @@ process.
 - Two emails may legitimately be identical. Keep both fixtures in your corpus:
   they prove that identity is stable.
 
-## Spec rules
+## Parser rules
 
-- `spec_version` only changes with the TOML format. Do not bump it for a new
-  parser.
-- Bump `version` inside the spec when the extraction behaviour changes.
-- One directory per parser: `<corpus>/<id>/config.toml`, with samples in
-  `<corpus>/<id>/fixtures/`. The directory name **is** the parser id; there is
-  no `id` field in the spec.
+- `meta().api` only changes when the host API breaks existing scripts. Do not
+  bump it for a new parser.
+- Bump `meta().version` when the script's extraction behaviour changes.
+- One directory per parser: `<corpus>/<id>/parser.rhai`, with samples in
+  `<corpus>/<id>/fixtures/`. The directory name **is** the parser id.
+- A script returns observations only. Identity, `strict`, and the statement
+  arithmetic stay in the host; never move them into a parser.
 - Add a fixture for every layout variation you know about. A bank that sends two
   layouts gets two fixtures; if the extracted fields differ, use two parser
   directories.

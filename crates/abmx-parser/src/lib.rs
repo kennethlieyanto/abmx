@@ -1,19 +1,37 @@
-//! `abmx-parser` — bank transaction email parser.
+//! Scripted bank parsers: a `parser.rhai` per directory, transactions out.
 //!
-//! Input: an RFC 5322 message (`.eml` bytes).
-//! Output: one [`Transaction`] per email, or an [`Outcome`] explaining why not.
+//! The corpus is runtime data. A parser is a directory:
 //!
-//! Parser specs are runtime configuration. Nothing is embedded in the binary;
-//! see [`Options`] and [`discover`] for the search order.
+//! ```text
+//! <corpus>/<id>/
+//!   parser.rhai
+//!   fixtures/
+//! ```
+//!
+//! The directory name is the parser id. `parser.rhai` defines `meta()` and one
+//! entry point, `parse_mail(ctx)` or `parse_statement(doc)`. The script only
+//! produces observations; identity, offsets, `Strict`, and the statement
+//! arithmetic stay in Rust.
+
+pub mod engine;
+pub mod mail;
+pub mod spec;
+pub mod statement;
+pub mod util;
 
 use std::path::{Path, PathBuf};
 
+use abmx_doc::Document;
 use abmx_tx::Transaction;
 
+pub use engine::{engine, Executor, Script, SCRIPT_FILE};
+pub use spec::{InputKind, Meta, SpecSummary, API_VERSION};
+pub use util::{is_parser_id, norm};
+
 pub use abmx_mail::{blocks_from_html, parse_eml, MailError};
-pub use abmx_parse::{Error as ParseError, Outcome, Registry, Shadow, SpecSummary, SPEC_VERSION};
 pub use abmx_tx::{
     json_schema, Address, Block, Extraction, Kind, Money, NormalizedEmail, Source, Status,
+    Transaction as Tx,
 };
 
 /// Version of the transaction JSON contract.
@@ -24,24 +42,204 @@ pub const ENV_PARSERS: &str = "ABMX_PARSERS";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error(transparent)]
-    Mail(#[from] abmx_mail::MailError),
-    #[error(transparent)]
-    Parse(#[from] abmx_parse::Error),
-    #[error("no .eml files at {0}")]
-    Empty(PathBuf),
+    #[error("could not read {path}: {source}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("{path}: {message}")]
+    Script { path: PathBuf, message: String },
+    #[error("no parser scripts found under {path}{hint}")]
+    NoParsers { path: PathBuf, hint: &'static str },
+    #[error("{path}: parser directory `{found}` is not a valid id")]
+    InvalidId { path: PathBuf, found: String },
     #[error("no parser specs found")]
     NoCorpus { tried: Vec<PathBuf> },
-    #[error("no parser specs in {path} (found via {found_via}); pass --parsers <dir> or remove the directory")]
+    #[error("no parser scripts in {path} (found via {found_via}); pass --parsers <dir> or remove the directory")]
     EmptyCorpus {
         path: PathBuf,
         found_via: &'static str,
     },
     #[error("{path} does not exist")]
     MissingPath { path: PathBuf },
+    #[error(transparent)]
+    Mail(#[from] abmx_mail::MailError),
+    #[error("no .eml files at {0}")]
+    Empty(PathBuf),
 }
 
-/// Where to look for parser specs.
+/// A parser found at lower precedence than another with the same id.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Shadow {
+    pub id: String,
+    pub skipped: PathBuf,
+    pub winner: PathBuf,
+}
+
+/// What one email produced.
+#[derive(Debug, Clone)]
+pub enum Outcome {
+    /// A parser ran and produced at least one transaction.
+    Parsed(Vec<Transaction>),
+    /// No parser with this id exists in the corpus.
+    Missing(String),
+    /// A parser ran but extraction failed.
+    Failed { parser: String, error: String },
+}
+
+/// The loaded corpus and the engine its scripts run in.
+pub struct Registry {
+    pub parsers: Vec<Script>,
+    /// Parsers skipped because a higher-precedence directory defines the same id.
+    pub shadows: Vec<Shadow>,
+    executor: Executor,
+}
+
+impl Registry {
+    /// Load every `parser.rhai` under one directory.
+    pub fn load(dir: impl AsRef<Path>) -> Result<Self, Error> {
+        Self::from_dirs(&[dir.as_ref().to_path_buf()])
+    }
+
+    /// Load scripts from several directories, highest precedence first.
+    pub fn from_dirs(dirs: &[PathBuf]) -> Result<Self, Error> {
+        let executor = engine();
+        let mut parsers: Vec<Script> = Vec::new();
+        let mut shadows: Vec<Shadow> = Vec::new();
+        let mut seen: std::collections::HashMap<String, PathBuf> = std::collections::HashMap::new();
+
+        for dir in dirs {
+            let mut paths = Vec::new();
+            collect_scripts(dir, &mut paths)?;
+            paths.sort();
+
+            for path in paths {
+                let id = path
+                    .parent()
+                    .and_then(Path::file_name)
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .to_owned();
+
+                if !is_parser_id(&id) {
+                    return Err(Error::InvalidId { path, found: id });
+                }
+
+                if let Some(winner) = seen.get(&id) {
+                    shadows.push(Shadow {
+                        id,
+                        skipped: path,
+                        winner: winner.clone(),
+                    });
+                    continue;
+                }
+
+                let script = Script::load(&executor, &path, id.clone()).map_err(|message| {
+                    Error::Script {
+                        path: path.clone(),
+                        message,
+                    }
+                })?;
+                seen.insert(id, path);
+                parsers.push(script);
+            }
+        }
+
+        if parsers.is_empty() {
+            let path = dirs.first().cloned().unwrap_or_default();
+            let hint = if dirs.iter().any(|dir| has_old_specs(dir)) {
+                " (found `config.toml`; parsers are now `parser.rhai`, see `abmx skill`)"
+            } else {
+                ""
+            };
+            return Err(Error::NoParsers { path, hint });
+        }
+
+        Ok(Self {
+            parsers,
+            shadows,
+            executor,
+        })
+    }
+
+    pub fn find(&self, id: &str) -> Option<&Script> {
+        self.parsers.iter().find(|script| script.id == id)
+    }
+
+    /// Parse with the parser named by a trusted routing decision (a configured
+    /// Gmail label). There is no guessing: an unknown id is an error.
+    pub fn run(
+        &self,
+        id: &str,
+        email: &abmx_tx::NormalizedEmail,
+        account: &str,
+    ) -> Result<Outcome, String> {
+        let Some(script) = self.find(id) else {
+            return Ok(Outcome::Missing(id.to_owned()));
+        };
+        if script.input() != InputKind::Mail {
+            return Ok(Outcome::Failed {
+                parser: id.to_owned(),
+                error: "this is a statement parser; it cannot parse an email".to_owned(),
+            });
+        }
+        if !script.meta.enabled {
+            return Ok(Outcome::Failed {
+                parser: id.to_owned(),
+                error: "parser is disabled".to_owned(),
+            });
+        }
+
+        match mail::parse(script, &self.executor, email, account) {
+            Ok(transactions) => Ok(Outcome::Parsed(transactions)),
+            Err(error) => Ok(Outcome::Failed {
+                parser: id.to_owned(),
+                error,
+            }),
+        }
+    }
+
+    /// Parse one PDF statement with a named parser.
+    pub fn run_statement(
+        &self,
+        id: &str,
+        document: &Document,
+        origin: Option<String>,
+    ) -> Result<Vec<Transaction>, String> {
+        let script = self
+            .find(id)
+            .ok_or_else(|| format!("no parser `{id}` in the corpus"))?;
+        if script.input() != InputKind::Statement {
+            return Err(format!("parser `{id}` is not a statement parser"));
+        }
+        if !script.meta.enabled {
+            return Err(format!("parser `{id}` is disabled"));
+        }
+        statement::parse(script, &self.executor, document, origin)
+    }
+
+    /// Statement parsers only, in corpus order.
+    pub fn statements(&self) -> impl Iterator<Item = &Script> {
+        self.parsers
+            .iter()
+            .filter(|script| script.input() == InputKind::Statement)
+    }
+
+    /// Mail parsers only, in corpus order.
+    pub fn mail_parsers(&self) -> impl Iterator<Item = &Script> {
+        self.parsers
+            .iter()
+            .filter(|script| script.input() == InputKind::Mail)
+    }
+
+    /// A machine-readable description of what the registry covers.
+    pub fn summaries(&self) -> Vec<SpecSummary> {
+        self.parsers.iter().map(Script::summary).collect()
+    }
+}
+
+/// Where to look for parser scripts.
 #[derive(Debug, Clone, Default)]
 pub struct Options {
     /// `--parsers`, repeated. Takes precedence over [`ENV_PARSERS`].
@@ -111,11 +309,7 @@ impl Discovery {
     }
 }
 
-/// Work out which parser directories would be used, without reading any spec.
-///
-/// Explicit sources (`--parsers`, `$ABMX_PARSERS`) are merged in order. The
-/// implicit chain uses exactly one directory: the first that exists, so that a
-/// stale user-level corpus can never silently contribute parsers.
+/// Work out which parser directories would be used, without reading any script.
 pub fn discover(options: &Options) -> Discovery {
     let mut candidates = Vec::new();
 
@@ -175,6 +369,48 @@ fn select_dirs(candidates: &[Candidate]) -> Vec<PathBuf> {
         .find(|candidate| candidate.exists)
         .map(|candidate| vec![candidate.path.clone()])
         .unwrap_or_default()
+}
+
+fn env_list(name: &str) -> Option<Vec<PathBuf>> {
+    let value = std::env::var_os(name)?;
+    let value = value.to_string_lossy();
+    let paths: Vec<PathBuf> = std::env::split_paths(value.as_ref())
+        .filter(|path| !path.as_os_str().is_empty())
+        .collect();
+
+    (!paths.is_empty()).then_some(paths)
+}
+
+fn implicit_chain() -> Vec<(PathBuf, &'static str)> {
+    let mut chain = Vec::new();
+
+    if let Some(base) = config_home() {
+        chain.push((base.join("abmx").join("parsers"), "xdg"));
+    }
+    chain.push((PathBuf::from("/etc/abmx/parsers"), "system"));
+
+    chain
+}
+
+fn config_home() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+}
+
+fn inspect(dir: &Path) -> (bool, bool) {
+    let exists = dir.is_dir();
+    if !exists {
+        return (false, false);
+    }
+
+    let mut paths = Vec::new();
+    let has_specs = collect_scripts(dir, &mut paths)
+        .ok()
+        .is_some_and(|()| !paths.is_empty());
+
+    (exists, has_specs)
 }
 
 impl Options {
@@ -250,7 +486,12 @@ impl Parser {
         account: &str,
     ) -> Result<Outcome, Error> {
         let email = abmx_mail::parse_eml(bytes, file)?;
-        Ok(self.registry.run(id, &email, account))
+        self.registry
+            .run(id, &email, account)
+            .map_err(|message| Error::Script {
+                path: PathBuf::from(id),
+                message,
+            })
     }
 
     /// Parse a file or every `.eml` under a directory, recursively.
@@ -288,6 +529,16 @@ impl Parser {
 
         Ok(results)
     }
+
+    /// Parse one PDF with a named statement parser.
+    pub fn parse_statement_with(
+        &self,
+        id: &str,
+        document: &Document,
+        origin: Option<String>,
+    ) -> Result<Vec<Transaction>, String> {
+        self.registry.run_statement(id, document, origin)
+    }
 }
 
 /// Everything the resolved corpus knows how to parse.
@@ -295,73 +546,46 @@ pub fn specs() -> Result<Vec<SpecSummary>, Error> {
     Ok(Parser::discover()?.registry().summaries())
 }
 
-/// The JSON Schema of [`Transaction`].
+/// JSON Schema of the transaction contract.
 pub fn schema() -> serde_json::Value {
-    json_schema()
+    abmx_tx::json_schema()
 }
 
-/// Re-exported for callers that want to build their own `Outcome` handling.
-pub fn transaction_of(outcome: &Outcome) -> Option<&Transaction> {
-    match outcome {
-        Outcome::Parsed(transaction) => Some(transaction),
-        _ => None,
-    }
-}
+fn collect_scripts(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), Error> {
+    let entries = std::fs::read_dir(dir).map_err(|source| Error::Io {
+        path: dir.to_path_buf(),
+        source,
+    })?;
 
-fn implicit_chain() -> Vec<(PathBuf, &'static str)> {
-    let mut chain = Vec::new();
-
-    if let Some(config) = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-    {
-        chain.push((config.join("abmx/parsers"), "xdg"));
-    }
-
-    chain.push((PathBuf::from("/etc/abmx/parsers"), "system"));
-    chain
-}
-
-fn env_list(name: &str) -> Option<Vec<PathBuf>> {
-    let value = std::env::var(name).ok()?;
-    let entries: Vec<PathBuf> = std::env::split_paths(&value)
-        .filter(|path| !path.as_os_str().is_empty())
-        .collect();
-
-    if entries.is_empty() {
-        None
-    } else {
-        Some(entries)
-    }
-}
-
-fn inspect(dir: &Path) -> (bool, bool) {
-    if !dir.is_dir() {
-        return (false, false);
-    }
-
-    let mut files = Vec::new();
-    collect_spec_files(dir, &mut files);
-    (true, !files.is_empty())
-}
-
-fn collect_spec_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry.map_err(|source| Error::Io {
+            path: dir.to_path_buf(),
+            source,
+        })?;
         let path = entry.path();
+
         // ConfigMap volumes keep their payload in `..data` and timestamped
-        // `..2026_...` siblings; those are symlink bookkeeping, not parser dirs.
-        if is_configmap_bookkeeping(&path) {
+        // `..2026_...` siblings; those are symlink bookkeeping, not parsers.
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.starts_with(".."))
+            .unwrap_or(false)
+        {
             continue;
         }
+
         if path.is_dir() {
-            collect_spec_files(&path, out);
-        } else if is_spec_file(&path) {
+            if path.file_name().and_then(|name| name.to_str()) == Some("fixtures") {
+                continue;
+            }
+            collect_scripts(&path, out)?;
+        } else if path.file_name().and_then(|name| name.to_str()) == Some(SCRIPT_FILE) {
             out.push(path);
         }
     }
+
+    Ok(())
 }
 
 fn collect_eml_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -370,101 +594,22 @@ fn collect_eml_files(dir: &Path, out: &mut Vec<PathBuf>) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if is_configmap_bookkeeping(&path) {
-            continue;
-        }
         if path.is_dir() {
             collect_eml_files(&path, out);
-        } else if path.extension().and_then(|value| value.to_str()) == Some("eml") {
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("eml") {
             out.push(path);
         }
     }
 }
 
-fn is_configmap_bookkeeping(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map(|name| name.starts_with(".."))
-        .unwrap_or(false)
-}
-
-fn is_spec_file(path: &Path) -> bool {
-    path.file_name().and_then(|name| name.to_str()) == Some("config.toml")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn candidate(path: &str, source: &'static str, exists: bool, has_specs: bool) -> Candidate {
-        Candidate {
-            path: PathBuf::from(path),
-            source,
-            exists,
-            has_specs,
-        }
-    }
-
-    fn discovery(candidates: Vec<Candidate>) -> Discovery {
-        let dirs = select_dirs(&candidates);
-        Discovery { candidates, dirs }
-    }
-
-    #[test]
-    fn implicit_chain_uses_the_first_existing_directory() {
-        let d = discovery(vec![
-            candidate("/xdg/abmx/parsers", "xdg", true, true),
-            candidate("/etc/abmx/parsers", "system", true, true),
-        ]);
-
-        assert_eq!(d.dirs, vec![PathBuf::from("/xdg/abmx/parsers")]);
-        assert_eq!(d.status(&d.candidates[1]), "skipped");
-        assert!(d.note().is_some());
-    }
-
-    #[test]
-    fn implicit_chain_stops_at_an_empty_directory() {
-        let d = discovery(vec![
-            candidate("/xdg/abmx/parsers", "xdg", true, false),
-            candidate("/etc/abmx/parsers", "system", true, true),
-        ]);
-
-        // The empty directory is still the chosen one; loading then fails loudly
-        // instead of silently reading the lower-precedence corpus.
-        assert_eq!(d.dirs, vec![PathBuf::from("/xdg/abmx/parsers")]);
-        assert_eq!(d.status(&d.candidates[0]), "used");
-        assert_eq!(d.status(&d.candidates[1]), "skipped");
-    }
-
-    #[test]
-    fn implicit_chain_never_reads_the_working_directory() {
-        let chain = implicit_chain();
-        assert!(chain.iter().all(|(path, _)| path.is_absolute()));
-        assert!(chain
-            .iter()
-            .all(|(_, source)| matches!(*source, "xdg" | "system")));
-    }
-
-    #[test]
-    fn explicit_sources_merge_in_order() {
-        let d = discovery(vec![
-            candidate("/override", "flag", true, true),
-            candidate("/base", "flag", true, false),
-        ]);
-
-        assert_eq!(
-            d.dirs,
-            vec![PathBuf::from("/override"), PathBuf::from("/base")]
-        );
-        assert!(d.candidates.iter().all(|c| d.status(c) == "used"));
-        assert!(d.note().is_none());
-    }
-
-    #[test]
-    fn nothing_found_yields_no_dirs() {
-        let d = discovery(vec![candidate("/xdg/abmx/parsers", "xdg", false, false)]);
-
-        assert!(d.dirs.is_empty());
-        assert_eq!(d.status(&d.candidates[0]), "missing");
-    }
+/// True when a corpus root still holds the old TOML layout, which is only used
+/// to make the "no parser scripts" error actionable.
+fn has_old_specs(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        path.is_dir() && path.join("config.toml").is_file()
+    })
 }

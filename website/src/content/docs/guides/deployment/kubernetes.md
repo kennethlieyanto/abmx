@@ -66,24 +66,24 @@ Then set `gmailAuth.existingSecret` and `secrets.existingSecret`.
 
 `abmx` ships **no built-in parser corpus**. Point `parsers.existingConfigMap` at
 a ConfigMap whose **keys are parser ids** and whose **values are that parser's
-`config.toml`**:
+`parser.rhai`**:
 
 ```yaml
 data:
   example.card_debit: |
-    spec_version = 2
-    …
+    fn meta() { #{ bank: "example", kind: "purchase", labels: ["Amount"] } }
+    fn parse_mail(ctx) { #{ amount: 1, occurred_at: "2026-01-01" } }
   example.qris_payment: |
-    spec_version = 2
     …
 ```
 
-An init container expands those flat keys into `<id>/config.toml` directories,
+An init container expands those flat keys into `<id>/parser.rhai` directories,
 and `ABMX_PARSERS` points at that directory. The image has no fallback corpus,
 so this ConfigMap is the source of truth.
 
-`examples/abmx-config/` is a tiny chart that turns plain `config.toml` and
-`files/parsers/<id>/config.toml` files in Git into those ConfigMaps.
+`examples/abmx-config/` is a tiny chart that turns the application
+`config.toml` and `files/parsers/<id>/parser.rhai` files in Git into those
+ConfigMaps.
 
 ## Values
 
@@ -95,7 +95,7 @@ The chart README documents every value, including image pinning, `schedule`,
 | `schedule` | `*/15 * * * *` | CronJob schedule |
 | `concurrencyPolicy` | `Forbid` | Never let two syncs overlap |
 | `config.existingConfigMap` | `""` | ConfigMap with a `config.toml` key |
-| `parsers.existingConfigMap` | `""` | ConfigMap of parser id → `config.toml` |
+| `parsers.existingConfigMap` | `""` | ConfigMap of parser id → `parser.rhai` |
 | `gmailAuth.existingSecret` | `""` | Secret with the exported bundle |
 | `secrets.existingSecret` | `""` | Env Secret for Actual credentials |
 | `persistence.size` | `1Gi` | PVC for `/data` |

@@ -11,7 +11,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use abmx_parse::Outcome;
+use abmx_parser::Outcome;
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand, ValueEnum};
 
@@ -61,7 +61,7 @@ pub enum ParserCommand {
         format: Format,
     },
 
-    /// Verify every parser against its fixtures.
+    /// Verify every mail parser against its fixtures.
     Check {
         #[arg(long)]
         parser: Option<String>,
@@ -73,7 +73,7 @@ pub enum ParserCommand {
         json: bool,
     },
 
-    /// Show the block regions a parser will see, without guessing.
+    /// Show the block regions a mail parser will see, without guessing.
     Explain {
         path: PathBuf,
 
@@ -81,16 +81,20 @@ pub enum ParserCommand {
         parser: String,
     },
 
-    /// Static checks for the common spec mistakes.
+    /// Static checks: labels covered by fixtures, fixtures present.
     Lint {
         #[arg(long, value_name = "ID")]
         parser: Option<String>,
     },
 
-    /// Scaffold <id>/config.toml and <id>/fixtures/ in the user corpus.
+    /// Scaffold <id>/parser.rhai and <id>/fixtures/ in the user corpus.
     Init {
         /// Parser id, e.g. example-qris. It becomes the directory name.
         id: String,
+
+        /// Which entry point to scaffold.
+        #[arg(long, value_enum, default_value_t = InitKind::Mail)]
+        kind: InitKind,
     },
 }
 
@@ -100,6 +104,12 @@ pub enum Format {
     Ndjson,
     Table,
     Plain,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum InitKind {
+    Mail,
+    Statement,
 }
 
 pub fn run(cli: ParserCli) -> Result<i32> {
@@ -135,7 +145,9 @@ pub fn run(cli: ParserCli) -> Result<i32> {
             explain(&corpus, &parser, &path)
         }
         ParserCommand::Lint { parser } => lint(&options, parser.as_deref()),
-        ParserCommand::Init { id } => init(&id, options.parsers.first().map(PathBuf::as_path)),
+        ParserCommand::Init { id, kind } => {
+            init(&id, kind, options.parsers.first().map(PathBuf::as_path))
+        }
     }
 }
 
@@ -151,7 +163,7 @@ fn load(options: &abmx_parser::Options) -> Result<(abmx_parser::Parser, abmx_par
                     .collect::<Vec<_>>()
                     .join(", ")
             };
-            anyhow::anyhow!("no parser specs found; looked in {tried}")
+            anyhow::anyhow!("no parser scripts found; looked in {tried}")
         }
         other => anyhow::anyhow!("{other}"),
     })?;
@@ -174,21 +186,23 @@ fn parse(
 
     for (file, outcome) in &results {
         match outcome {
-            Outcome::Parsed(transaction) => {
-                if transaction.extraction == abmx_parser::Extraction::Heuristic {
-                    heuristic += 1;
-                }
-                match format {
-                    Format::Json => println!("{}", serde_json::to_string_pretty(transaction)?),
-                    Format::Ndjson => println!("{}", serde_json::to_string(transaction)?),
-                    Format::Table => println!(
-                        "{:<8} {:<20} {:>12} {}",
-                        transaction.occurred_on,
-                        transaction.counterparty.as_deref().unwrap_or("-"),
-                        transaction.amount.decimal(),
-                        transaction.amount.currency
-                    ),
-                    Format::Plain => println!("{}", serde_json::to_string(transaction)?),
+            Outcome::Parsed(transactions) => {
+                for transaction in transactions {
+                    if transaction.extraction == abmx_parser::Extraction::Heuristic {
+                        heuristic += 1;
+                    }
+                    match format {
+                        Format::Json => println!("{}", serde_json::to_string_pretty(transaction)?),
+                        Format::Ndjson => println!("{}", serde_json::to_string(transaction)?),
+                        Format::Table => println!(
+                            "{:<8} {:<20} {:>12} {}",
+                            transaction.occurred_on,
+                            transaction.counterparty.as_deref().unwrap_or("-"),
+                            transaction.amount.decimal(),
+                            transaction.amount.currency
+                        ),
+                        Format::Plain => println!("{}", serde_json::to_string(transaction)?),
+                    }
                 }
             }
             Outcome::Missing(parser) => {
@@ -218,15 +232,15 @@ fn check(
     json: bool,
 ) -> Result<i32> {
     let (corpus, _) = load(options)?;
-    let summaries = corpus.registry().summaries();
-    let ids: Vec<&str> = summaries
-        .iter()
-        .map(|summary| summary.id.as_str())
+    let ids: Vec<&str> = corpus
+        .registry()
+        .mail_parsers()
+        .map(|script| script.id.as_str())
         .filter(|id| only.is_none_or(|only| only == *id))
         .collect();
 
     if ids.is_empty() {
-        bail!("no parser matched --parser");
+        bail!("no mail parser matched --parser");
     }
 
     let mut rows = Vec::new();
@@ -235,14 +249,10 @@ fn check(
     let mut failures = 0usize;
 
     for id in ids {
-        let Some(parser) = corpus.registry().find(id) else {
+        let Some(script) = corpus.registry().find(id) else {
             continue;
         };
-        let fixtures = parser
-            .source_file
-            .parent()
-            .map(|dir| dir.join("fixtures"))
-            .unwrap_or_default();
+        let fixtures = abmx_parser::engine::fixtures_dir(script);
         if !fixtures.is_dir() {
             failures += 1;
             rows.push(serde_json::json!({
@@ -257,22 +267,24 @@ fn check(
             .with_context(|| format!("parsing {}", fixtures.display()))?;
         for (file, outcome) in results {
             let (status, detail) = match outcome {
-                Outcome::Parsed(transaction) => {
-                    let status = match transaction.extraction {
-                        abmx_parser::Extraction::Strict => {
-                            strict += 1;
-                            "strict"
+                Outcome::Parsed(transactions) => {
+                    let mut detail = Vec::new();
+                    let mut status = "strict";
+                    for transaction in transactions {
+                        match transaction.extraction {
+                            abmx_parser::Extraction::Strict => strict += 1,
+                            abmx_parser::Extraction::Heuristic => {
+                                heuristic += 1;
+                                status = "heuristic";
+                            }
+                            abmx_parser::Extraction::Failed => {
+                                failures += 1;
+                                status = "failed";
+                            }
                         }
-                        abmx_parser::Extraction::Heuristic => {
-                            heuristic += 1;
-                            "heuristic"
-                        }
-                        abmx_parser::Extraction::Failed => {
-                            failures += 1;
-                            "failed"
-                        }
-                    };
-                    (status, transaction.warnings.join("; "))
+                        detail.extend(transaction.warnings);
+                    }
+                    (status, detail.join("; "))
                 }
                 Outcome::Missing(parser) => {
                     failures += 1;
@@ -360,11 +372,14 @@ fn specs(corpus: &abmx_parser::Parser, format: Format) -> Result<i32> {
             }
         }
         Format::Table => {
-            println!("{:<24} {:<4} {:<10} kind", "parser", "ver", "bank");
+            println!(
+                "{:<24} {:<4} {:<10} {:<10} kind",
+                "parser", "ver", "bank", "input"
+            );
             for summary in corpus.registry().summaries() {
                 println!(
-                    "{:<24} {:<4} {:<10} {:?}",
-                    summary.id, summary.version, summary.bank, summary.kind
+                    "{:<24} {:<4} {:<10} {:<10} {:?}",
+                    summary.id, summary.version, summary.bank, summary.input, summary.kind
                 );
             }
         }
@@ -378,41 +393,31 @@ fn specs(corpus: &abmx_parser::Parser, format: Format) -> Result<i32> {
 }
 
 fn explain(corpus: &abmx_parser::Parser, id: &str, path: &Path) -> Result<i32> {
-    let Some(parser) = corpus.registry().find(id) else {
+    let Some(script) = corpus.registry().find(id) else {
         bail!("no parser `{id}` in the corpus");
     };
+    if script.input() != abmx_parser::InputKind::Mail {
+        bail!("`{id}` is a statement parser; explain works on mail parsers");
+    }
+
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let email = abmx_parser::parse_eml(&bytes, Some(path.display().to_string()))?;
-    let regions = abmx_parse::Regions::build(&email.blocks, &parser.spec.labels.list);
+    let regions = abmx_parser::mail::build_regions(&email.blocks, &script.meta.labels);
 
     println!("file:    {}", path.display());
     println!("parser:  {id}");
+    println!("bank:    {}", script.meta.bank);
+    println!("kind:    {:?}", script.meta.kind);
     println!("from:    {}", email.from.email);
     println!("subject: {}", email.subject);
     println!("date:    {}", email.date.to_rfc3339());
     println!();
 
-    for label in &parser.spec.labels.list {
-        match regions.get(label) {
+    for label in &script.meta.labels {
+        match regions.get(&abmx_parser::norm(label)) {
             Some(blocks) => println!("{:<28} [{}]", label, blocks.join(" · ")),
             None => println!("{:<28} (label not present)", label),
         }
-    }
-
-    println!();
-    println!("fields:");
-    println!("  amount        <- {:?}", parser.spec.extract.amount.label);
-    if let Some(label) = &parser.spec.extract.occurred_at.label {
-        println!("  occurred_at   <- {label:?}");
-    }
-    if let Some(date) = &parser.spec.extract.occurred_at.date {
-        println!("  occurred_at   <- date {:?}", date.label);
-    }
-    if let Some(counterparty) = &parser.spec.extract.counterparty {
-        println!("  counterparty  <- {:?}", counterparty.label);
-    }
-    if let Some(list) = &parser.spec.status {
-        println!("  status        <- {:?}", list.label);
     }
 
     Ok(0)
@@ -422,110 +427,68 @@ fn lint(options: &abmx_parser::Options, only: Option<&str>) -> Result<i32> {
     let (corpus, _) = load(options)?;
     let mut problems = 0usize;
 
-    for parser in &corpus.registry().parsers {
+    for script in &corpus.registry().parsers {
         if let Some(only) = only {
-            if parser.id != only {
+            if script.id != only {
                 continue;
             }
         }
 
-        let declared: BTreeSet<String> = parser
-            .spec
-            .labels
-            .list
-            .iter()
-            .map(|label| abmx_parse::norm(label))
-            .collect();
-
-        let mut field_labels = vec![parser.spec.extract.amount.label.clone()];
-        if let Some(label) = &parser.spec.extract.occurred_at.label {
-            field_labels.push(label.clone());
-        }
-        if let Some(date) = &parser.spec.extract.occurred_at.date {
-            field_labels.push(date.label.clone());
-        }
-        if let Some(time) = &parser.spec.extract.occurred_at.time {
-            field_labels.push(time.label.clone());
-        }
-        for field in [
-            &parser.spec.extract.counterparty,
-            &parser.spec.extract.counterparty_account,
-            &parser.spec.extract.channel,
-            &parser.spec.extract.account,
-            &parser.spec.extract.reference_id,
-            &parser.spec.extract.description,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            field_labels.push(field.label.clone());
-        }
-        for field in parser.spec.extract.extra.values() {
-            field_labels.push(field.label.clone());
-        }
-        if let Some(status) = &parser.spec.status {
-            if let Some(label) = &status.label {
-                field_labels.push(label.clone());
-            }
-        }
-
-        for label in field_labels {
-            if !declared.contains(&abmx_parse::norm(&label)) {
-                problems += 1;
-                eprintln!(
-                    "{}: field label `{label}` is missing from labels.list",
-                    parser.id
-                );
-            }
-        }
-
-        if parser
-            .spec
-            .extract
-            .amount
-            .regex
-            .as_deref()
-            .is_some_and(|regex| regex.trim_end().ends_with('$'))
-        {
-            problems += 1;
-            eprintln!(
-                "{}: amount regex is end-anchored; match the value shape instead",
-                parser.id
-            );
-        }
-
-        let fixtures = parser
-            .source_file
-            .parent()
-            .map(|dir| dir.join("fixtures"))
-            .unwrap_or_default();
+        let fixtures = abmx_parser::engine::fixtures_dir(script);
         if !fixtures.is_dir() {
             problems += 1;
-            eprintln!("{}: no fixtures directory", parser.id);
+            eprintln!("{}: no fixtures directory", script.id);
             continue;
         }
 
-        let mut seen: BTreeSet<String> = BTreeSet::new();
-        let mut files = Vec::new();
-        collect_eml(&fixtures, &mut files);
-        for file in files {
-            let Ok(bytes) = std::fs::read(&file) else {
-                continue;
-            };
-            let Ok(email) = abmx_parser::parse_eml(&bytes, Some(file.display().to_string())) else {
-                continue;
-            };
-            for block in &email.blocks {
-                seen.insert(abmx_parse::norm(&block.text));
+        match script.input() {
+            abmx_parser::InputKind::Mail => {
+                let mut seen: BTreeSet<String> = BTreeSet::new();
+                let mut files = Vec::new();
+                collect_eml(&fixtures, &mut files);
+                if files.is_empty() {
+                    problems += 1;
+                    eprintln!("{}: no .eml fixtures", script.id);
+                    continue;
+                }
+                for file in files {
+                    let Ok(bytes) = std::fs::read(&file) else {
+                        continue;
+                    };
+                    let Ok(email) =
+                        abmx_parser::parse_eml(&bytes, Some(file.display().to_string()))
+                    else {
+                        continue;
+                    };
+                    for block in &email.blocks {
+                        seen.insert(abmx_parser::norm(&block.text));
+                    }
+                }
+                for label in &script.meta.labels {
+                    if !seen.contains(&abmx_parser::norm(label)) {
+                        eprintln!(
+                            "{}: meta.labels contains `{label}`, which never appears in fixtures",
+                            script.id
+                        );
+                    }
+                }
             }
-        }
-
-        for label in &parser.spec.labels.list {
-            if !seen.contains(&abmx_parse::norm(label)) {
-                eprintln!(
-                    "{}: labels.list contains `{label}`, which never appears in fixtures",
-                    parser.id
-                );
+            abmx_parser::InputKind::Statement => {
+                let pdfs = std::fs::read_dir(&fixtures)
+                    .map(|entries| {
+                        entries.flatten().any(|entry| {
+                            entry
+                                .path()
+                                .extension()
+                                .and_then(|ext| ext.to_str())
+                                .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+                        })
+                    })
+                    .unwrap_or(false);
+                if !pdfs {
+                    problems += 1;
+                    eprintln!("{}: no .pdf fixtures", script.id);
+                }
             }
         }
     }
@@ -552,8 +515,8 @@ fn collect_eml(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn init(id: &str, first: Option<&Path>) -> Result<i32> {
-    if !abmx_parse::is_parser_id(id) {
+fn init(id: &str, kind: InitKind, first: Option<&Path>) -> Result<i32> {
+    if !abmx_parser::is_parser_id(id) {
         bail!("`{id}` is not a valid parser id");
     }
     let corpus = first
@@ -564,16 +527,83 @@ fn init(id: &str, first: Option<&Path>) -> Result<i32> {
     std::fs::create_dir_all(&fixtures)
         .with_context(|| format!("creating {}", fixtures.display()))?;
 
-    let config = format!(
-        "spec_version = {}\nversion = 1\nenabled = true\n\n\
-         [labels]\nlist = []\n\n\
-         [defaults]\nbank = \"\"\ncurrency = \"IDR\"\ntz = \"Asia/Jakarta\"\nkind = \"purchase\"\n\n\
-         [extract.amount]\nlabel = \"\"\nregex = '(?P<value>[0-9][0-9.,]*)'\nnumber = \"id\"\n\n\
-         [extract.occurred_at]\nlabel = \"\"\nregex = ''\nformats = []\n",
-        abmx_parser::SPEC_VERSION
-    );
-    let path = dir.join("config.toml");
-    std::fs::write(&path, config).with_context(|| format!("writing {}", path.display()))?;
+    let script = match kind {
+        InitKind::Mail => MAIL_TEMPLATE,
+        InitKind::Statement => STATEMENT_TEMPLATE,
+    };
+
+    let path = dir.join(abmx_parser::SCRIPT_FILE);
+    std::fs::write(&path, script).with_context(|| format!("writing {}", path.display()))?;
     println!("wrote {}", path.display());
     Ok(0)
 }
+
+const MAIL_TEMPLATE: &str = r#"// A parser is a directory: <corpus>/<id>/parser.rhai.
+// Replace the labels, then extract each field with a ctx helper.
+// Run `abmx parser explain <file.eml> --parser <id>` to see the regions.
+
+fn meta() {
+    #{
+        bank: "",                 // e.g. "example"
+        currency: "IDR",
+        tz: "Asia/Jakarta",
+        offset: "+07:00",
+        number: "id",             // id: 1.234,56   en: 1,234.56
+        kind: "purchase",         // purchase | transfer_out | transfer_in | refund | fee
+        labels: [],               // every constant label block in the template
+        api: 1,
+        version: 1,
+    }
+}
+
+fn parse_mail(ctx) {
+    #{
+        amount: ctx.money_in("Total Payment", "id"),
+        occurred_at: ctx.datetime_in("Transaction Date", ["%d %b %Y %H:%M:%S"], "id"),
+        counterparty: ctx.text_in("Merchant"),
+        // optional: counterparty_account, account_last4, reference_id,
+        // channel, description, extra, status, kind, warnings
+    }
+}
+"#;
+
+const STATEMENT_TEMPLATE: &str = r#"// A statement parser receives positioned lines. `dump` shows them:
+//   abmx statement dump <file.pdf>
+// Rows are #{} maps; the host proves the arithmetic.
+
+fn meta() {
+    #{
+        bank: "",
+        currency: "IDR",
+        tz: "Asia/Jakarta",
+        offset: "+07:00",
+        number: "en",
+        api: 1,
+        version: 1,
+    }
+}
+
+fn parse_statement(doc) {
+    let rows = [];
+    for line in doc.lines() {
+        if !line.matches(`^\d{2}/\d{2}$`, 35.0, 88.0) { continue; }
+        rows.push(#{
+            date: line.cell(35.0, 88.0),
+            description: line.words(88.0, 380.0),
+            amount: line.money(380.0, 435.0),
+            out: line.cell(435.0, 460.0) == "DB",
+            balance: line.money_any(500.0, 600.0),
+        });
+    }
+
+    #{
+        period: doc.month("PERIODE"),
+        sections: [#{
+            key: "savings",
+            opening: doc.money(`SALDO AWAL\s*:\s*([\d.,]+)`),
+            closing: doc.money(`SALDO AKHIR\s*:\s*([\d.,]+)`),
+            rows: rows,
+        }],
+    }
+}
+"#;

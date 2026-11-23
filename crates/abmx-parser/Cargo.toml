@@ -1,6 +1,6 @@
 [package]
 name = "abmx-parser"
-description = "Parser corpus, discovery, and routing for abmx"
+description = "Scripted parser corpus, discovery, routing, and statement verification for abmx"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,8 +12,16 @@ name = "abmx_parser"
 path = "src/lib.rs"
 
 [dependencies]
+abmx-doc.workspace = true
 abmx-mail.workspace = true
-abmx-parse.workspace = true
 abmx-tx.workspace = true
+chrono.workspace = true
+regex.workspace = true
+rhai.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

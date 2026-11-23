@@ -411,7 +411,7 @@ fn build_runner(config: &Config, base: &Path) -> Result<Runner> {
         abmx_parser::Parser::load(&options).map_err(|error| match &error {
             abmx_parser::Error::NoCorpus { .. }
             | abmx_parser::Error::EmptyCorpus { .. }
-            | abmx_parser::Error::Parse(abmx_parse::Error::NoParsers { .. }) => anyhow::anyhow!(
+            | abmx_parser::Error::NoParsers { .. } => anyhow::anyhow!(
                 "no parsers installed — nothing can be parsed yet.\n\n\
              download samples and ask an agent to author one:\n  \
              abmx receipt samples\n  \
@@ -1127,7 +1127,7 @@ fn status(
             } else {
                 explicit
             };
-            match abmx_table::Registry::from_dirs(&dirs) {
+            match abmx_parser::Registry::from_dirs(&dirs) {
                 Ok(registry) => {
                     for key in config.statements.accounts.keys() {
                         let parser_id = key.split(':').next().unwrap_or(key);

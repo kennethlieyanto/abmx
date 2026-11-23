@@ -16,8 +16,8 @@ $ abmx statement sync --dry-run
 fetched 1, parsed 7 rows — new 7, already present 0, ambiguous 0, failed 0
 ```
 
-Parsers are runtime TOML, not compiled code. This repository ships no bank
-parsers; author them in your own corpus under `~/.config/abmx/parsers/`.
+Parsers are sandboxed Rhai scripts, not compiled code. This repository ships no
+bank parsers; author them in your own corpus under `~/.config/abmx/parsers/`.
 Statements are a second parser kind: one PDF, many rows, verified against the
 statement's own opening/closing and credit/debit totals.
 

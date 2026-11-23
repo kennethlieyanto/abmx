@@ -232,18 +232,20 @@ fn evaluate(
             Some(sample.origin.clone()),
             parser_id,
         ) {
-            Ok(abmx_parser::Outcome::Parsed(transaction)) => {
-                if transaction.status == abmx_parser::Status::Failed {
-                    failed = true;
-                    notes.push(format!(
-                        "{}: bank reported the transaction as failed; gmailctl should not route it",
-                        sample.file_name
-                    ));
-                } else if transaction.extraction != abmx_parser::Extraction::Strict
-                    || transaction.amount.amount_minor == 0
-                {
-                    failed = true;
-                    notes.push(format!("{}: not a strict, non-zero row", sample.file_name));
+            Ok(abmx_parser::Outcome::Parsed(transactions)) => {
+                for transaction in transactions {
+                    if transaction.status == abmx_parser::Status::Failed {
+                        failed = true;
+                        notes.push(format!(
+                            "{}: bank reported the transaction as failed; gmailctl should not route it",
+                            sample.file_name
+                        ));
+                    } else if transaction.extraction != abmx_parser::Extraction::Strict
+                        || transaction.amount.amount_minor == 0
+                    {
+                        failed = true;
+                        notes.push(format!("{}: not a strict, non-zero row", sample.file_name));
+                    }
                 }
             }
             Ok(abmx_parser::Outcome::Missing(parser)) => {
@@ -296,7 +298,7 @@ fn skeleton(sample: &Sample) -> BTreeSet<String> {
         .email
         .blocks
         .iter()
-        .map(|block| abmx_parse::norm(&block.text))
+        .map(|block| abmx_parser::norm(&block.text))
         .filter(|text| super::samples::is_label_like(text))
         .collect()
 }

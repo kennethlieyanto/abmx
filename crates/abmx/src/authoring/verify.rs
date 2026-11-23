@@ -84,12 +84,12 @@ fn dir_id(dir: &Path) -> Option<String> {
     dir.file_name()
         .and_then(|name| name.to_str())
         .map(str::to_owned)
-        .filter(|name| abmx_parse::is_parser_id(name))
+        .filter(|name| abmx_parser::is_parser_id(name))
 }
 
 /// Verify one candidate parser against a file or directory of `.eml` samples.
 ///
-/// `spec` may be a parser directory (`<corpus>/<id>/`) or a `config.toml`. The
+/// `spec` may be a parser directory (`<corpus>/<id>/`) or a `parser.rhai`. The
 /// parser id is the directory name; pass `id` when the candidate lives in a
 /// scratch directory that is not named after the parser.
 ///
@@ -98,7 +98,7 @@ fn dir_id(dir: &Path) -> Option<String> {
 /// same id.
 pub fn verify(spec: &Path, id: Option<&str>, input: Option<&Path>) -> Result<VerifyReport> {
     let (spec_file, spec_dir) = if spec.is_dir() {
-        (spec.join("config.toml"), spec.to_path_buf())
+        (spec.join("parser.rhai"), spec.to_path_buf())
     } else {
         (
             spec.to_path_buf(),
@@ -117,7 +117,7 @@ pub fn verify(spec: &Path, id: Option<&str>, input: Option<&Path>) -> Result<Ver
         bail!("{} does not exist", spec_file.display());
     }
 
-    if !abmx_parse::is_parser_id(&id) {
+    if !abmx_parser::is_parser_id(&id) {
         bail!("parser id `{id}` is not a valid directory name");
     }
 
@@ -135,7 +135,7 @@ pub fn verify(spec: &Path, id: Option<&str>, input: Option<&Path>) -> Result<Ver
     let dir = tempfile::tempdir().context("creating a temporary parser corpus")?;
     let candidate = dir.path().join(&id);
     std::fs::create_dir_all(&candidate).context("creating the candidate parser directory")?;
-    std::fs::write(candidate.join("config.toml"), &text)
+    std::fs::write(candidate.join("parser.rhai"), &text)
         .context("writing the candidate spec into the temporary corpus")?;
 
     let (parser, _) = abmx_parser::Parser::load(&abmx_parser::Options {
@@ -152,22 +152,31 @@ pub fn verify(spec: &Path, id: Option<&str>, input: Option<&Path>) -> Result<Ver
 
     let samples = results
         .into_iter()
-        .map(|(file, outcome)| {
-            let outcome = match outcome {
-                abmx_parser::Outcome::Parsed(transaction) => match transaction.extraction {
-                    abmx_parser::Extraction::Strict => VerifyOutcome::Strict(*transaction),
-                    abmx_parser::Extraction::Heuristic => VerifyOutcome::Heuristic(*transaction),
-                    abmx_parser::Extraction::Failed => VerifyOutcome::Failed {
-                        parser: transaction.parser.clone(),
-                        error: "abmx-parser marked the extraction failed".to_owned(),
-                    },
-                },
-                abmx_parser::Outcome::Missing(reason) => VerifyOutcome::Unmatched(reason),
+        .flat_map(|(file, outcome)| {
+            let outcomes = match outcome {
+                abmx_parser::Outcome::Parsed(transactions) => transactions
+                    .into_iter()
+                    .map(|transaction| match transaction.extraction {
+                        abmx_parser::Extraction::Strict => VerifyOutcome::Strict(transaction),
+                        abmx_parser::Extraction::Heuristic => VerifyOutcome::Heuristic(transaction),
+                        abmx_parser::Extraction::Failed => VerifyOutcome::Failed {
+                            parser: transaction.parser.clone(),
+                            error: "abmx-parser marked the extraction failed".to_owned(),
+                        },
+                    })
+                    .collect(),
+                abmx_parser::Outcome::Missing(reason) => vec![VerifyOutcome::Unmatched(reason)],
                 abmx_parser::Outcome::Failed { parser, error } => {
-                    VerifyOutcome::Failed { parser, error }
+                    vec![VerifyOutcome::Failed { parser, error }]
                 }
             };
-            VerifySample { file, outcome }
+            outcomes
+                .into_iter()
+                .map(|outcome| VerifySample {
+                    file: file.clone(),
+                    outcome,
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
 

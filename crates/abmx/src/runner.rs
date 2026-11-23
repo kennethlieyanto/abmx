@@ -41,7 +41,7 @@ impl Runner {
         let prefix = self.prefix.to_ascii_lowercase();
         let lower = label.to_ascii_lowercase();
         let rest = lower.strip_prefix(&prefix)?;
-        abmx_parse::is_parser_id(rest).then(|| rest.to_owned())
+        abmx_parser::is_parser_id(rest).then(|| rest.to_owned())
     }
 
     /// Produce a plan without touching the mailbox twice or writing anything.
@@ -89,39 +89,40 @@ impl Runner {
                 Some(message.origin.clone()),
                 &parser_id,
             ) {
-                Ok(abmx_parser::Outcome::Parsed(transaction)) => {
-                    plan.stats.parsed += 1;
-                    let transaction = *transaction;
+                Ok(abmx_parser::Outcome::Parsed(transactions)) => {
+                    for transaction in transactions {
+                        plan.stats.parsed += 1;
 
-                    // Two byte-identical emails share an id by design.
-                    if !seen_transactions.insert(transaction.id.clone()) {
-                        continue;
-                    }
-
-                    match check_transaction(&transaction, &self.accounts) {
-                        Ok(()) => {
-                            let account = self
-                                .accounts
-                                .get(&parser_id)
-                                .expect("check_transaction validated the mapping")
-                                .to_owned();
-                            plan.stats.import += 1;
-                            plan.rows.push(PlannedRow {
-                                id: transaction.id.clone(),
-                                message: message.key.clone(),
-                                account_key: message.label.clone(),
-                                account,
-                                transaction,
-                            });
+                        // Two byte-identical emails share an id by design.
+                        if !seen_transactions.insert(transaction.id.clone()) {
+                            continue;
                         }
-                        Err(reason) => {
-                            plan.stats.broken += 1;
-                            plan.broken.push(BrokenMessage {
-                                message: message.key.clone(),
-                                label: message.label.clone(),
-                                parser: Some(parser_id),
-                                reason,
-                            });
+
+                        match check_transaction(&transaction, &self.accounts) {
+                            Ok(()) => {
+                                let account = self
+                                    .accounts
+                                    .get(&parser_id)
+                                    .expect("check_transaction validated the mapping")
+                                    .to_owned();
+                                plan.stats.import += 1;
+                                plan.rows.push(PlannedRow {
+                                    id: transaction.id.clone(),
+                                    message: message.key.clone(),
+                                    account_key: message.label.clone(),
+                                    account,
+                                    transaction,
+                                });
+                            }
+                            Err(reason) => {
+                                plan.stats.broken += 1;
+                                plan.broken.push(BrokenMessage {
+                                    message: message.key.clone(),
+                                    label: message.label.clone(),
+                                    parser: Some(parser_id.clone()),
+                                    reason,
+                                });
+                            }
                         }
                     }
                 }

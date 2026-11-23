@@ -122,6 +122,16 @@ impl StatementsSection {
             .iter()
             .any(|ignored| ignored.eq_ignore_ascii_case(parser_id))
     }
+
+    /// Whether a parser id has an account entry, either exact or through a
+    /// `parser:section` key.
+    pub fn is_mapped(&self, parser_id: &str) -> bool {
+        self.accounts.keys().any(|key| {
+            key.split_once(':')
+                .map_or(key.as_str(), |(parser, _)| parser)
+                == parser_id
+        })
+    }
 }
 
 /// Where a statement password comes from. The secret is never a literal in the

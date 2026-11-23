@@ -1,14 +1,14 @@
 //! Deciding what a set of discovered Gmail labels means for abmx.
 //!
-//! `[receipts.accounts]` is the only source of truth for what abmx manages. A
-//! label under the prefix that has no account entry is *unmanaged*, not a
-//! configuration error: gmailctl may create labels ahead of time, and the user
-//! may simply not want some of them imported. `[receipts].ignore` remembers an
-//! explicit "no" so `abmx setup` does not ask again.
+//! `[receipts.accounts]` and `[statements.accounts]` are the only source of
+//! truth for what abmx manages. A label under the prefix that has no account
+//! entry is *unmanaged*: `abmx status` reports it as a failure to fix, and
+//! `abmx setup` offers to map or ignore it. `[receipts].ignore` and
+//! `[statements].ignore` remember an explicit "no" so status stays quiet.
 
 use std::collections::BTreeSet;
 
-use crate::config::ReceiptsSection;
+use crate::config::{ReceiptsSection, StatementsSection};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedLabel {
@@ -16,7 +16,7 @@ pub struct ManagedLabel {
     pub label: String,
     /// The decoder ring: the remainder after the prefix.
     pub parser_id: String,
-    /// The `[receipts.accounts]` value.
+    /// The configured account (the first one for a `parser:section` key).
     pub account: String,
 }
 
@@ -36,7 +36,7 @@ pub struct LabelPlan {
     pub ignored: Vec<DiscoveredLabel>,
     /// Labels under the prefix whose remainder is not a parser id.
     pub invalid: Vec<String>,
-    /// `[receipts.accounts]` entries with no matching Gmail label.
+    /// Configured parser ids with no matching Gmail label.
     pub orphans: Vec<String>,
 }
 
@@ -54,13 +54,58 @@ impl LabelPlan {
     }
 }
 
-/// Classify labels discovered under the configured prefix.
+/// Classify labels discovered under a receipt prefix.
 pub fn plan(discovered: &[String], labels: &ReceiptsSection) -> LabelPlan {
+    plan_with(
+        discovered,
+        |label| labels.parser_id(label),
+        |parser_id| labels.is_ignored(parser_id),
+        |parser_id| labels.accounts.get(parser_id).cloned(),
+        labels.accounts.keys().cloned(),
+    )
+}
+
+/// Classify labels discovered under a statement prefix.
+///
+/// Statement keys may be `parser:section`, so a mapping is matched by the
+/// parser id before the colon, and several keys can point at the same label.
+pub fn plan_statements(discovered: &[String], labels: &StatementsSection) -> LabelPlan {
+    plan_with(
+        discovered,
+        |label| labels.parser_id(label),
+        |parser_id| labels.is_ignored(parser_id),
+        |parser_id| {
+            labels
+                .accounts
+                .iter()
+                .find(|(key, _)| key_parser_id(key) == parser_id)
+                .map(|(_, account)| account.clone())
+        },
+        labels
+            .accounts
+            .keys()
+            .map(|key| key_parser_id(key).to_owned()),
+    )
+}
+
+/// The parser id part of a `[statements.accounts]` key (`parser` or
+/// `parser:section`).
+pub fn key_parser_id(key: &str) -> &str {
+    key.split_once(':').map_or(key, |(parser, _)| parser)
+}
+
+fn plan_with(
+    discovered: &[String],
+    parse: impl Fn(&str) -> Option<String>,
+    is_ignored: impl Fn(&str) -> bool,
+    account_for: impl Fn(&str) -> Option<String>,
+    mapped_keys: impl Iterator<Item = String>,
+) -> LabelPlan {
     let mut plan = LabelPlan::default();
     let mut seen = BTreeSet::new();
 
     for label in discovered {
-        let Some(parser_id) = labels.parser_id(label) else {
+        let Some(parser_id) = parse(label) else {
             plan.invalid.push(label.clone());
             continue;
         };
@@ -72,13 +117,13 @@ pub fn plan(discovered: &[String], labels: &ReceiptsSection) -> LabelPlan {
             continue;
         }
 
-        if let Some(account) = labels.accounts.get(&parser_id) {
+        if let Some(account) = account_for(&parser_id) {
             plan.managed.push(ManagedLabel {
                 label: label.clone(),
                 parser_id,
-                account: account.clone(),
+                account,
             });
-        } else if labels.is_ignored(&parser_id) {
+        } else if is_ignored(&parser_id) {
             plan.ignored.push(DiscoveredLabel {
                 label: label.clone(),
                 parser_id,
@@ -91,9 +136,10 @@ pub fn plan(discovered: &[String], labels: &ReceiptsSection) -> LabelPlan {
         }
     }
 
-    for parser_id in labels.accounts.keys() {
-        if !seen.contains(parser_id) {
-            plan.orphans.push(parser_id.clone());
+    let mut orphaned = BTreeSet::new();
+    for parser_id in mapped_keys {
+        if !seen.contains(&parser_id) && orphaned.insert(parser_id.clone()) {
+            plan.orphans.push(parser_id);
         }
     }
 
@@ -116,6 +162,28 @@ mod tests {
             .into_iter()
             .collect(),
             ignore: vec!["merchant.promo".to_owned()],
+        }
+    }
+
+    fn statements() -> StatementsSection {
+        StatementsSection {
+            enabled: true,
+            prefix: "financial_statements/".to_owned(),
+            since: None,
+            accounts: [
+                (
+                    "example.consolidated_statement".to_owned(),
+                    "uuid-main".to_owned(),
+                ),
+                (
+                    "example.consolidated_statement:savings".to_owned(),
+                    "uuid-savings".to_owned(),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            ignore: vec!["example.portfolio_summary".to_owned()],
+            passwords: Default::default(),
         }
     }
 
@@ -182,5 +250,38 @@ mod tests {
         assert!(plan.invalid.is_empty());
         assert!(plan.orphans.is_empty());
         assert!(!plan.needs_setup());
+    }
+
+    #[test]
+    fn statements_map_through_section_keys() {
+        let plan = plan_statements(
+            &discovered(&[
+                "financial_statements/example.consolidated_statement",
+                "financial_statements/example.portfolio_summary",
+                "financial_statements/new.bank",
+            ]),
+            &statements(),
+        );
+
+        assert_eq!(plan.managed.len(), 1);
+        assert_eq!(plan.managed[0].parser_id, "example.consolidated_statement");
+        assert_eq!(
+            plan.managed[0].label,
+            "financial_statements/example.consolidated_statement"
+        );
+        assert_eq!(plan.ignored.len(), 1);
+        assert_eq!(plan.unmanaged.len(), 1);
+        assert_eq!(plan.unmanaged[0].parser_id, "new.bank");
+        assert!(plan.orphans.is_empty());
+    }
+
+    #[test]
+    fn statement_orphans_are_deduped_by_parser_id() {
+        let plan = plan_statements(
+            &discovered(&["financial_statements/example.portfolio_summary"]),
+            &statements(),
+        );
+
+        assert_eq!(plan.orphans, vec!["example.consolidated_statement"]);
     }
 }

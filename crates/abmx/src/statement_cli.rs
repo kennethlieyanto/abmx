@@ -1130,11 +1130,7 @@ fn apply_plan(sink: &dyn Sink, config: &Config, plan: &Plan, dry_run: bool) -> R
 }
 
 fn is_mapped(config: &Config, parser_id: &str) -> bool {
-    config.statements.accounts.contains_key(parser_id)
-        || config.statements.accounts.keys().any(|key| {
-            key.split_once(':')
-                .is_some_and(|(parser, _)| parser == parser_id)
-        })
+    config.statements.is_mapped(parser_id)
 }
 
 fn load_optional(config: Option<&Path>) -> Option<(Config, PathBuf)> {

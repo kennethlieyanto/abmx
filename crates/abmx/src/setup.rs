@@ -16,8 +16,8 @@ use crate::config::{Config, INIT_TEMPLATE};
 use crate::config_edit::{write_secret_file, ConfigDocument};
 use crate::credentials;
 use crate::gmail_auth;
+use crate::labels::{self, DiscoveredLabel};
 use crate::paths;
-use crate::receipts::{self, DiscoveredLabel};
 
 use crate::authoring::skill as authoring_skill;
 
@@ -502,7 +502,7 @@ fn step_labels(
     ));
 
     if discovered.is_empty() {
-        let plan = receipts::plan(&discovered, &config.receipts);
+        let plan = labels::plan(&discovered, &config.receipts);
         for parser_id in &plan.orphans {
             log::warning(format!(
                 "`{}{parser_id}` is mapped in [receipts.accounts] but no such Gmail label exists",
@@ -526,7 +526,7 @@ fn step_labels(
         return Ok(Some(discovered));
     }
 
-    let plan = receipts::plan(&discovered, &config.receipts);
+    let plan = labels::plan(&discovered, &config.receipts);
     for label in &plan.invalid {
         log::warning(format!(
             "`{label}`: the remainder after `{}` is not a parser id",
@@ -637,7 +637,7 @@ fn step_accounts(
 
     // Do not demand a ledger when there is nothing to map.
     let (current, _) = reload(path)?;
-    let initial = receipts::plan(discovered, &current.receipts);
+    let initial = labels::plan(discovered, &current.receipts);
     let nothing_to_do =
         initial.unmanaged.is_empty() && (!options.remap || initial.managed.is_empty());
     if nothing_to_do {
@@ -681,7 +681,7 @@ fn step_accounts(
         return Ok(());
     }
 
-    let plan = receipts::plan(discovered, &config.receipts);
+    let plan = labels::plan(discovered, &config.receipts);
     let pending: Vec<&DiscoveredLabel> = plan.unmanaged.iter().collect();
 
     if pending.is_empty() && !options.remap {

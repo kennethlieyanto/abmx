@@ -14,8 +14,8 @@ use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use crate::config::Config;
+use crate::labels;
 use crate::paths;
-use crate::receipts;
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -71,7 +71,7 @@ pub fn download(
         .into_iter()
         .map(|label| label.name)
         .collect();
-    let plan = receipts::plan(&discovered, &config.receipts);
+    let plan = labels::plan(&discovered, &config.receipts);
 
     // Managed and unmanaged labels are both evidence. A label is excluded only
     // by [receipts].ignore; the account mapping is a sync decision, not an

@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use abmx::authoring::{self, author};
 use abmx::config::Config;
 use abmx::fetchers::DirFetcher;
+use abmx::labels;
 use abmx::paths;
-use abmx::receipts;
 use abmx::state::State;
 use abmx::Runner;
 use abmx_core::{ApplyOptions, FetchRequest, Fetcher, LedgerMatch, Plan, Report, Sink};
@@ -473,7 +473,7 @@ fn resolve_label_inventory(
         .into_iter()
         .map(|label| label.name)
         .collect();
-    let plan = receipts::plan(&discovered, &config.receipts);
+    let plan = labels::plan(&discovered, &config.receipts);
 
     if !plan.orphans.is_empty() {
         bail!(
@@ -860,7 +860,7 @@ fn status(
 
     let plan = gmail_labels
         .as_deref()
-        .map(|found| receipts::plan(found, &config.receipts));
+        .map(|found| labels::plan(found, &config.receipts));
     let accounts_by_id: Option<BTreeMap<&str, &abmx_core::SinkAccount>> =
         sink_accounts.as_ref().map(|accounts| {
             accounts

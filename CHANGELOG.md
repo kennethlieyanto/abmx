@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/kennethlieyanto/abmx/compare/v0.1.0...v0.2.0) (2026-11-23)
+
+
+### Features
+
+* **status:** mirror statements routes and fail unconfigured labels ([458f1cf](https://github.com/kennethlieyanto/abmx/commit/458f1cfd7678057cb03aecb98cc31c37ba9f5f38))
+
 ## 0.1.0 (2026-11-23)
 
 

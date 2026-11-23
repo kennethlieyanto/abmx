@@ -498,8 +498,9 @@ future = "field"
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("abmx configuration"));
         assert!(text.contains("credentials_file = \"gmail-client.json\""));
-        // The template's secrets-do-not-live-here guidance survives.
-        assert!(text.contains("ABMX_GMAIL_CLIENT_SECRET"));
+        // The template points at the configuration reference instead of
+        // repeating every option inline.
+        assert!(text.contains("https://kennethlieyanto.github.io/abmx/start/configuration/"));
     }
 
     #[test]

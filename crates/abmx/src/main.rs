@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use abmx::authoring::{self, author};
-use abmx::config::{Config, INIT_TEMPLATE};
+use abmx::config::Config;
 use abmx::fetchers::DirFetcher;
 use abmx::paths;
 use abmx::receipts;
@@ -52,14 +52,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Write a starter config file.
-    Init {
-        #[arg(long, value_name = "FILE")]
-        path: Option<PathBuf>,
-        #[arg(long)]
-        force: bool,
-    },
-
     /// Interactive quickstart: config, Gmail, labels, and account mapping.
     Setup {
         /// Approve in any browser and paste the callback URL back.
@@ -301,7 +293,6 @@ fn run(cli: Cli) -> Result<i32> {
     };
 
     match cli.command {
-        Command::Init { path, force } => init(path, force),
         Command::Setup {
             manual,
             no_browser,
@@ -542,40 +533,6 @@ fn apply_options(config: &Config, dry_run: bool) -> ApplyOptions {
 }
 
 // ---------------------------------------------------------------- commands
-
-fn init(path: Option<PathBuf>, force: bool) -> Result<i32> {
-    let path = path.unwrap_or_else(|| paths::xdg_config_dir().join("abmx/config.toml"));
-
-    if path.exists() && !force {
-        bail!(
-            "{} already exists; pass --force to overwrite",
-            path.display()
-        );
-    }
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
-
-    std::fs::write(&path, INIT_TEMPLATE).with_context(|| format!("writing {}", path.display()))?;
-
-    println!("wrote {}", path.display());
-    println!();
-    println!("next:");
-    println!("  abmx setup                   interactive config, Gmail, labels, accounts");
-    println!();
-    println!("or by hand:");
-    println!(
-        "  1. edit {} and set [fetch.gmail] + [sink.actual]",
-        path.display()
-    );
-    println!("  2. abmx auth gmail            (headless: --manual)");
-    println!("  3. abmx status");
-    println!("  4. abmx receipt sync --dry-run");
-
-    Ok(EXIT_OK)
-}
 
 fn setup(
     settings: &Settings,

@@ -741,107 +741,17 @@ impl Config {
     }
 }
 
-pub const INIT_TEMPLATE: &str = r#"# abmx configuration
-#
-# `abmx setup` fills this in interactively. The comments below are for manual
-# edits and for service managers.
-#
-# Secrets belong in the environment or in files referenced by `*_file`, not in
-# this file:
-#   ABMX_GMAIL_CLIENT_SECRET
-#   ABMX_ACTUAL_API_KEY
-#   ABMX_ACTUAL_SERVER_PASSWORD
-#   ABMX_ACTUAL_BUDGET_PASSWORD
-
-[general]
-# Explicit parser directories, highest precedence first.
-# Empty means implicit discovery (~/.config/abmx/parsers, /etc/abmx/parsers).
-parsers = []
-# state = "~/.local/state/abmx/state.db"
+pub const INIT_TEMPLATE: &str = r#"# abmx configuration. Every option is documented at
+# https://kennethlieyanto.github.io/abmx/start/configuration/
 
 [fetch.gmail]
-# Google's downloaded OAuth client JSON (`installed` or `web` shape).
-# `abmx setup` copies it here and sets this field.
-# credentials_file = "gmail-client.json"
-#
-# Or set the client id here and keep the secret out of the file:
-# client_id = "1234567890-abc.apps.googleusercontent.com"
-# client_secret_file = "/run/credentials/abmx.service/gmail-secret"
-# token = "~/.local/state/abmx/gmail-credentials.json"
-# Hard cap. Exceeding it is an error, not a silent truncation.
 max_messages = 10000
 
-# Actual Budget has no HTTP API. abmx drives the official Node client
-# (`@actual-app/api`) through a bundled helper, which talks to your Actual
-# server directly:
-#   abmx  ──►  actual-helper (Node)  ──►  @actual-app/api  ──►  actual-server
-#
-# `server_url` is the Actual server itself, not a wrapper. `api_key` is a
-# budget-scoped key from Actual: Settings → General → Security → API keys.
-# Servers too old to have API keys can use `server_password` instead.
-#
-# [sink.actual]
-# server_url = "http://localhost:5006"
-# budget_sync_id = "00000000-0000-0000-0000-000000000000"
-# api_key_file = "/run/credentials/abmx.service/actual-api-key"
-# server_password_file = "/run/credentials/abmx.service/actual-server-password"
-# budget_password_file = "/run/credentials/abmx.service/actual-budget-password"
-# The local copy of the budget. Keep it persistent; otherwise every run
-# downloads the whole budget again.
-# data_dir = "~/.cache/abmx/actual"
-# The helper and Node binary are found automatically; override them when
-# running from a custom prefix.
-# helper = "/usr/share/abmx/actual-helper/helper.js"
-# node = "node"
-# timeout_secs = 120
-# chunk_size = 50
-# never | settled | always. `never` leaves imported rows uncleared so clearing
-# stays your reconciliation step.
-# cleared = "never"
-# true (default): the ledger is a projection of the mailbox, so a rebuild
-# recreates rows you deleted. false makes ledger deletions permanent.
-# reimport_deleted = true
-# Notes come from parser fields. The default is just `description`; set an
-# empty list to disable notes entirely.
-# notes_fields = ["description"]
-#
-# A file sink is useful for tests:
-# [sink.file]
-# path = "out/ledger.jsonl"
-
-# Gmail labels are the routing contract. The user (via gmailctl) applies
-# one `receipt/<parser-id>` label per tracked message; the remainder after
-# the prefix is the parser id. Only parser ids in [receipts.accounts] are fetched.
-# Plain `receipt` and other labels are ignored.
-# Run `abmx accounts` to see what Actual calls the accounts.
 [receipts]
-# Set to false to pause receipts without deleting the mappings.
 enabled = true
 prefix = "receipt/"
-# Recommended. Without it, sync scans every labelled message in the mailbox,
-# which is slow and may include templates the parser has not seen.
-# since = 2026-11-01
-# Labels you declined in `abmx setup`; they are not fetched and are not asked
-# about again.
-# ignore = ["merchant.promo"]
 
 [receipts.accounts]
-# "example.card_debit"       = "00000000-0000-0000-0000-000000000000"
-# "example.journal_transfer" = "00000000-0000-0000-0000-000000000000"
-
-# Bank statements are a second label namespace with the same parser-id
-# convention. They are imported by `abmx statement sync` (or the combined `abmx sync`),
-# and their rows are marked cleared because the bank has already settled them.
-# [statements]
-# enabled = true
-# prefix = "financial_statements/"
-# since = 2026-01-01
-# ignore = ["example.portfolio_summary"]
-# [statements.accounts]
-# "example.consolidated_statement"       = "00000000-0000-0000-0000-000000000000"
-# Multi-product documents map a section: "example.consolidated_statement:savings".
-# [statements.passwords]
-# "example.consolidated_statement" = { file = "/run/secrets/abmx/statement" }
 "#;
 
 fn strip_trailing_newline(mut value: String) -> String {

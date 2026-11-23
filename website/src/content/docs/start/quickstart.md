@@ -25,8 +25,11 @@ You need a Gmail OAuth client and an Actual server. Both have one-time guides:
 
 ## Prefer doing it by hand?
 
+Create the file yourself, using [Configuration](/start/configuration/) as the
+reference:
+
 ```bash
-abmx init                            # writes ~/.config/abmx/config.toml
+mkdir -p ~/.config/abmx
 $EDITOR ~/.config/abmx/config.toml   # Gmail client file + Actual endpoint
 abmx auth gmail                      # OAuth2 + PKCE, stores a refresh token (0600)
 abmx status

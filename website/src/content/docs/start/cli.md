@@ -4,8 +4,7 @@ description: Every abmx command, the receipt and statement groups, stdout rules,
 ---
 
 ```text
-abmx init [--path FILE] [--force]   write a starter config
-abmx setup [--manual] [--review] [--remap]
+abmx setup [--manual] [--no-browser] [--review] [--remap]
                                     interactive config, Gmail, receipts, statements
 abmx auth gmail [--manual]          OAuth2 + PKCE; --manual for a headless box
 abmx auth export [--out FILE] [--stdout] [--force]

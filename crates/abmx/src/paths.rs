@@ -46,8 +46,8 @@ pub fn config_path(explicit: Option<&Path>) -> Result<PathBuf> {
 
     bail!(
         "no config found; tried:\n{tried}\n\n\
-         Run `abmx setup` for the interactive quickstart, or `abmx init` to write \
-         a starter config."
+         Run `abmx setup` to write a starter config and finish the interactive \
+         quickstart."
     )
 }
 

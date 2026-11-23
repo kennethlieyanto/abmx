@@ -212,7 +212,7 @@ pub struct GmailSection {
     /// Hard cap. Exceeding it is an error, never a silent truncation.
     #[serde(default)]
     pub max_messages: Option<usize>,
-    /// Loopback port for `abmx auth gmail`; `0` picks one.
+    /// Loopback port for `abmx auth login`; `0` picks one.
     #[serde(default)]
     pub port: Option<u16>,
 }
@@ -491,7 +491,7 @@ impl Config {
         )?;
 
         // Only read the token file when it can actually contribute. This keeps
-        // a malformed token from blocking `abmx auth gmail` when the client is
+        // a malformed token from blocking `abmx auth login` when the client is
         // configured explicitly.
         let bundle = if explicit_id.is_none() || explicit_secret.is_none() {
             TokenStore::new(self.gmail_token_path(base)).load()?

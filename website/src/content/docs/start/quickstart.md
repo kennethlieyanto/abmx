@@ -19,7 +19,7 @@ or move to a new machine. Every step it has already completed is skipped. See
 You need a Gmail OAuth client and an Actual server. Both have one-time guides:
 
 - [Gmail](/guides/gmail/) — Google Cloud project, `gmail.readonly`, desktop
-  client, then `abmx auth gmail`.
+  client, then `abmx auth login`.
 - [Actual Budget](/guides/actual/) — server URL, budget Sync ID, and an API key
   or server password.
 
@@ -31,7 +31,7 @@ reference:
 ```bash
 mkdir -p ~/.config/abmx
 $EDITOR ~/.config/abmx/config.toml   # Gmail client file + Actual endpoint
-abmx auth gmail                      # OAuth2 + PKCE, stores a refresh token (0600)
+abmx auth login                      # OAuth2 + PKCE, stores a refresh token (0600)
 abmx status
 ```
 

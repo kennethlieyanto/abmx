@@ -396,7 +396,7 @@ pub fn statement_samples(
 
     let fetcher = config
         .build_gmail_with(&base, &config.statements.prefix, None)
-        .context("Gmail is not authorized; run `abmx setup` or `abmx auth gmail`")?;
+        .context("Gmail is not authorized; run `abmx setup` or `abmx auth login`")?;
     let discovered: Vec<String> = fetcher
         .routed_labels()?
         .into_iter()

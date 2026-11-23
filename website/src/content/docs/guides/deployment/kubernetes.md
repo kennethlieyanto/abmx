@@ -11,7 +11,7 @@ From a checkout of the repository:
 
 ```bash
 # once, on a machine with a browser
-abmx auth gmail
+abmx auth login
 abmx auth export --out abmx-gmail-auth.json
 
 # then point the chart at your config and parser ConfigMaps

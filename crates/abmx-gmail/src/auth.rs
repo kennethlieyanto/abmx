@@ -3,7 +3,7 @@
 //! The flow is the standard "desktop app" one. Google retired the out-of-band
 //! flow, so a loopback listener is the only headless-friendly option that does
 //! not require a public redirect URL. On a server without a browser, run
-//! `abmx auth gmail` on a machine that has one and copy the credential file.
+//! `abmx auth login` on a machine that has one and copy the credential file.
 
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};

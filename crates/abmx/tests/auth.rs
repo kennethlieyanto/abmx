@@ -157,3 +157,19 @@ fn export_refuses_without_a_client_secret() {
         String::from_utf8_lossy(&allowed.stderr)
     );
 }
+
+#[test]
+fn the_gmail_alias_still_reaches_login() {
+    let output = Command::new(env!("CARGO_BIN_EXE_abmx"))
+        .args(["auth", "gmail", "--help"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--manual"), "{stdout}");
+}

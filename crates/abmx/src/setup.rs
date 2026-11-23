@@ -282,7 +282,7 @@ fn step_gmail(path: &Path, doc: &mut ConfigDocument, options: &Options) -> Resul
                 }
                 Err(error) => {
                     spinner.error(format!("stored Gmail session is not usable: {error}"));
-                    log::info("run `abmx auth gmail` to authorize again")?;
+                    log::info("run `abmx auth login` to authorize again")?;
                 }
             },
             Err(error) => {
@@ -364,7 +364,7 @@ fn step_gmail(path: &Path, doc: &mut ConfigDocument, options: &Options) -> Resul
         }
         Err(error) => {
             log::error(format!("{error:#}"))?;
-            log::info("run `abmx auth gmail` when ready; the rest of setup can continue")?;
+            log::info("run `abmx auth login` when ready; the rest of setup can continue")?;
             Ok(false)
         }
     }

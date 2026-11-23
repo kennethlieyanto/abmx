@@ -15,7 +15,7 @@ never scans or classifies the rest of the mailbox.
    - User type: **External**.
    - Add your own Google account under **Test users**.
    - While the app is in "Testing", refresh tokens expire after 7 days. For a
-     personal tool, either re-run `abmx auth gmail` weekly or publish the app
+     personal tool, either re-run `abmx auth login` weekly or publish the app
      (Publishing status → Publish app). Publishing an app that only uses
      `gmail.readonly` does not require Google verification for personal use, but
      the consent screen will show an "unverified app" warning.
@@ -45,7 +45,7 @@ secret into `abmx.toml`.
 ## Authorize
 
 ```bash
-abmx auth gmail
+abmx auth login
 ```
 
 This starts a loopback listener on `127.0.0.1:<random port>`, prints an
@@ -57,7 +57,7 @@ Flags: `--no-browser` prints the URL only, `--port N` pins the loopback port.
 
 ### Headless server (or a browser on another machine)
 
-`abmx auth gmail` listens on `127.0.0.1` **on the machine running it**. If you
+`abmx auth login` listens on `127.0.0.1` **on the machine running it**. If you
 approve in a browser on a different machine, the redirect goes to *that*
 machine's localhost, where nothing is listening — you get "This site can't be
 reached" even though authorization succeeded.
@@ -65,7 +65,7 @@ reached" even though authorization succeeded.
 Use `--manual`:
 
 ```bash
-abmx auth gmail --manual
+abmx auth login --manual
 ```
 
 1. It prints the authorization URL. Open it in any browser, on any machine.
@@ -86,7 +86,7 @@ machine:
 
 ```bash
 # on the server
-abmx auth gmail --port 43323 --no-browser
+abmx auth login --port 43323 --no-browser
 
 # on the browser's machine
 ssh -N -L 43323:127.0.0.1:43323 you@server
@@ -221,11 +221,11 @@ it to re-fetch everything.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `gmail: not authorized` | no credentials file | `abmx auth gmail` |
-| `invalid_grant` on refresh | token expired (testing app) or revoked | re-run `abmx auth gmail` |
+| `gmail: not authorized` | no credentials file | `abmx auth login` |
+| `invalid_grant` on refresh | token expired (testing app) or revoked | re-run `abmx auth login` |
 | `403 … insufficient authentication scopes` | wrong scope on the token | revoke at <https://myaccount.google.com/permissions>, re-authorize |
 | `no refresh token returned` | Google only returns one on the first consent | remove app access, re-authorize (the flow already sends `prompt=consent`) |
-| browser shows "This site can't be reached" after approving | the redirect's `127.0.0.1` is the browser's machine, not the CLI's | `abmx auth gmail --manual`, then paste the URL from the address bar |
+| browser shows "This site can't be reached" after approving | the redirect's `127.0.0.1` is the browser's machine, not the CLI's | `abmx auth login --manual`, then paste the URL from the address bar |
 | `state mismatch` | the pasted URL came from a different run | re-run `--manual` and paste the URL from that same run |
 | nothing found | no messages under the mapped labels | check the gmailctl filter, then `abmx status` |
 | old mail is downloaded again | the state database was removed or reset | expected after `abmx reset`; dedupe keeps the ledger intact |

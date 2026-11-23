@@ -1,4 +1,4 @@
-//! The one OAuth flow shared by `abmx auth gmail` and `abmx setup`.
+//! The one OAuth flow shared by `abmx auth login` and `abmx setup`.
 
 use std::path::{Path, PathBuf};
 

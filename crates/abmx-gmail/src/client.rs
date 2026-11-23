@@ -16,7 +16,7 @@ use crate::auth::{self, Credentials, TokenStore};
 
 #[derive(Debug, thiserror::Error)]
 pub enum GmailError {
-    #[error("gmail: not authorized; run `abmx auth gmail`")]
+    #[error("gmail: not authorized; run `abmx auth login`")]
     NotAuthorized,
 
     #[error("gmail: {0}")]

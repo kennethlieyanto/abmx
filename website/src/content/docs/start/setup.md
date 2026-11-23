@@ -82,7 +82,7 @@ Google Cloud checklist and asks for the path to the downloaded OAuth client JSON
 `0600`, and `[fetch.gmail].credentials_file` is set.
 
 The authorization itself is the same PKCE loopback flow as
-`abmx auth gmail`, and respects `--manual` and `--no-browser`. The refresh token
+`abmx auth login`, and respects `--manual` and `--no-browser`. The refresh token
 is written to `~/.local/state/abmx/gmail-credentials.json`.
 
 The client JSON and the token are deliberately separate, just like gws and

@@ -68,7 +68,7 @@ enum Command {
         remap: bool,
     },
 
-    /// Authorize or deauthorize a mail provider.
+    /// Sign in or out of the mailbox abmx reads.
     Auth {
         #[command(subcommand)]
         command: AuthCommand,
@@ -201,8 +201,9 @@ enum ReceiptCommand {
 
 #[derive(Subcommand)]
 enum AuthCommand {
-    /// OAuth2 with PKCE: a loopback listener, or `--manual` on a headless box.
-    Gmail {
+    /// Authorize the Gmail account with OAuth2 + PKCE.
+    #[command(alias = "gmail")]
+    Login {
         /// Print the URL instead of trying to open a browser.
         #[arg(long)]
         no_browser: bool,
@@ -300,7 +301,7 @@ fn run(cli: Cli) -> Result<i32> {
             remap,
         } => setup(&settings, manual, no_browser, review, remap),
         Command::Auth { command } => match command {
-            AuthCommand::Gmail {
+            AuthCommand::Login {
                 no_browser,
                 port,
                 manual,
@@ -609,7 +610,7 @@ fn auth_export(
 
     let Some(token) = store.load()? else {
         bail!(
-            "no stored Gmail credentials at {}; run `abmx auth gmail` first",
+            "no stored Gmail credentials at {}; run `abmx auth login` first",
             store.path().display()
         );
     };
@@ -1258,7 +1259,7 @@ fn status(
                             Err(error) => auth_section.hint(
                                 Status::Fail,
                                 error.to_string(),
-                                "the refresh token may be revoked or expired; run `abmx auth gmail`",
+                                "the refresh token may be revoked or expired; run `abmx auth login`",
                             ),
                         }
                     } else {
@@ -1267,19 +1268,19 @@ fn status(
                             gmail_build_error
                                 .clone()
                                 .unwrap_or_else(|| "could not build the Gmail fetcher".to_owned()),
-                            "run `abmx setup` (or `abmx auth gmail`) to store credentials",
+                            "run `abmx setup` (or `abmx auth login`) to store credentials",
                         );
                     }
                 }
                 Ok(None) => auth_section.hint(
                     Status::Fail,
                     "gmail: no token",
-                    "run `abmx setup` (or `abmx auth gmail`)",
+                    "run `abmx setup` (or `abmx auth login`)",
                 ),
                 Err(error) => auth_section.hint(
                     Status::Fail,
                     error.to_string(),
-                    "run `abmx setup` (or `abmx auth gmail`) to store credentials",
+                    "run `abmx setup` (or `abmx auth login`) to store credentials",
                 ),
             }
         }
@@ -1330,7 +1331,7 @@ fn status(
                 "Gmail is not available",
                 gmail_build_error
                     .as_deref()
-                    .unwrap_or("run `abmx setup` or `abmx auth gmail`"),
+                    .unwrap_or("run `abmx setup` or `abmx auth login`"),
             ),
             (_, None) => strict_section.push(Status::Skip, "no parser corpus"),
         }
@@ -1837,7 +1838,7 @@ fn collect_receipt_samples(
 
     let fetcher = config
         .build_gmail(&base)
-        .context("Gmail is not authorized; run `abmx setup` or `abmx auth gmail`")?;
+        .context("Gmail is not authorized; run `abmx setup` or `abmx auth login`")?;
     let report = abmx::samples::download(&config, &fetcher, &options)?;
     Ok(Some(report))
 }

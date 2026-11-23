@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "abmx"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abmx-actual",
  "abmx-core",
@@ -32,7 +32,7 @@ dependencies = [
 
 [[package]]
 name = "abmx-actual"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abmx-core",
  "abmx-parser",
@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "abmx-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abmx-parser",
  "abmx-tx",
@@ -57,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "abmx-doc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lopdf",
  "serde",
@@ -66,7 +66,7 @@ dependencies = [
 
 [[package]]
 name = "abmx-file"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abmx-core",
  "chrono",
@@ -76,7 +76,7 @@ dependencies = [
 
 [[package]]
 name = "abmx-gmail"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abmx-core",
  "abmx-testkit",
@@ -94,7 +94,7 @@ dependencies = [
 
 [[package]]
 name = "abmx-mail"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abmx-tx",
  "chrono",
@@ -106,7 +106,7 @@ dependencies = [
 
 [[package]]
 name = "abmx-parser"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abmx-doc",
  "abmx-mail",
@@ -123,14 +123,14 @@ dependencies = [
 
 [[package]]
 name = "abmx-testkit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "abmx-tx"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "schemars",
@@ -2815,7 +2815,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "abmx-mail",
  "anyhow",

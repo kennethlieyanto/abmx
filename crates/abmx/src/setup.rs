@@ -6,9 +6,11 @@
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
-use abmx_core::SinkAccount;
+use abmx_core::{Sink, SinkAccount};
 use anyhow::{bail, Context, Result};
-use cliclack::{confirm, input, intro, log, note, outro, outro_cancel, password, select, spinner};
+use cliclack::{
+    confirm, input, intro, log, multiselect, note, outro, outro_cancel, password, select, spinner,
+};
 
 use crate::config::{Config, INIT_TEMPLATE};
 use crate::config_edit::{write_secret_file, ConfigDocument};
@@ -16,6 +18,8 @@ use crate::credentials;
 use crate::gmail_auth;
 use crate::paths;
 use crate::receipts::{self, DiscoveredLabel};
+
+use crate::authoring::skill as authoring_skill;
 
 #[derive(Debug, Clone, Default)]
 pub struct Options {
@@ -50,6 +54,10 @@ pub fn run(options: &Options) -> Result<i32> {
 
 fn setup(options: &Options) -> Result<()> {
     intro("abmx setup")?;
+    log::info(
+        "abmx imports bank notification mail and statement PDFs into an Actual Budget ledger",
+    )?;
+    log::info("docs: https://kennethlieyanto.github.io/abmx/start/introduction/")?;
 
     let path = resolve_config_path(options.config.as_deref());
     let existed = path.exists();
@@ -76,29 +84,36 @@ fn setup(options: &Options) -> Result<()> {
         log::success(format!("wrote {}", path.display()))?;
     }
 
-    // 2. Discovery rule ----------------------------------------------------
-    step_discovery(&path, &mut doc)?;
+    // 2. Sources -----------------------------------------------------------
+    let sources = step_sources(&path, &mut doc)?;
 
-    // 3. History window ----------------------------------------------------
-    step_history(&path, &mut doc)?;
-
-    // 4. Gmail -------------------------------------------------------------
+    // 3. Gmail -------------------------------------------------------------
     let gmail_ready = step_gmail(&path, &mut doc, options)?;
 
-    // 5. Labels ------------------------------------------------------------
-    let current = reload(&path)?.0;
-    let discovered = if current.receipts.enabled {
+    // 4. Receipts ----------------------------------------------------------
+    let discovered = if sources.receipts {
+        describe_receipts()?;
+        step_discovery(&path, &mut doc)?;
+        step_history(&path, &mut doc)?;
         step_labels(&path, &mut doc, options, gmail_ready)?
     } else {
-        log::info("receipts are disabled ([receipts].enabled = false); skipping labels")?;
+        log::info("receipts are disabled ([receipts].enabled = false); skipping receipt steps")?;
         None
     };
 
-    // 6. Accounts ----------------------------------------------------------
-    step_accounts(&path, &mut doc, options, discovered.as_deref())?;
+    if sources.receipts {
+        step_accounts(&path, &mut doc, options, discovered.as_deref())?;
+    }
 
-    // 7. Statements --------------------------------------------------------
-    step_statements(&path, &mut doc, options, gmail_ready)?;
+    // 5. Statements --------------------------------------------------------
+    if sources.statements {
+        step_statements(&path, &mut doc, options, gmail_ready)?;
+    } else {
+        log::info("statements are disabled ([statements].enabled = false)")?;
+    }
+
+    // 6. AI agent skills ---------------------------------------------------
+    step_skills()?;
 
     // Done -----------------------------------------------------------------
     let (config, _) = reload(&path)?;
@@ -106,6 +121,77 @@ fn setup(options: &Options) -> Result<()> {
     config.validate_statements()?;
     summary(&path, &config)?;
     outro("Setup finished; rerun `abmx setup` whenever something changes")?;
+    Ok(())
+}
+
+/// Which sources setup should configure, answered before any source-specific
+/// question so declining a source skips all of its steps.
+#[derive(Debug, Clone, Copy)]
+struct Sources {
+    receipts: bool,
+    statements: bool,
+}
+
+fn step_sources(path: &Path, doc: &mut ConfigDocument) -> Result<Sources> {
+    log::step("Sources")?;
+    let (config, _) = reload(path)?;
+
+    let mut initial = Vec::new();
+    if config.receipts.enabled {
+        initial.push("receipts");
+    }
+    if config.statements.enabled {
+        initial.push("statements");
+    }
+    // The prompt requires at least one answer; a config with both paused starts
+    // from a usable selection instead of an unanswerable empty list.
+    if initial.is_empty() {
+        initial = vec!["receipts", "statements"];
+    }
+
+    let chosen = multiselect::<&str>("Which sources should abmx sync?")
+        .item("receipts", "Receipts", "one .eml -> one transaction")
+        .item(
+            "statements",
+            "Statements",
+            "a PDF in an email -> transaction data",
+        )
+        .initial_values(initial)
+        .interact()?;
+
+    let receipts = chosen.contains(&"receipts");
+    let statements = chosen.contains(&"statements");
+
+    if receipts != config.receipts.enabled {
+        doc.set_bool(&["receipts", "enabled"], receipts)?;
+        doc.save()?;
+        log::success(if receipts {
+            "receipts enabled"
+        } else {
+            "receipts paused"
+        })?;
+    }
+    if statements != config.statements.enabled {
+        doc.set_bool(&["statements", "enabled"], statements)?;
+        doc.save()?;
+        log::success(if statements {
+            "statements enabled"
+        } else {
+            "statements paused"
+        })?;
+    }
+
+    Ok(Sources {
+        receipts,
+        statements,
+    })
+}
+
+fn describe_receipts() -> Result<()> {
+    log::step("Receipts")?;
+    log::info("each .eml under the receipt prefix becomes one structured transaction")?;
+    log::info("parsing settings: https://kennethlieyanto.github.io/abmx/start/configuration/")?;
+    log::info("parser reference: https://kennethlieyanto.github.io/abmx/reference/parser-spec/")?;
     Ok(())
 }
 
@@ -384,7 +470,7 @@ fn step_labels(
     options: &Options,
     gmail_ready: bool,
 ) -> Result<Option<Vec<String>>> {
-    log::step("Receipts")?;
+    log::step("Receipt labels")?;
     if !gmail_ready {
         log::info("skipped: Gmail is not authorized")?;
         return Ok(None);
@@ -460,29 +546,71 @@ fn step_labels(
         ))?;
     }
 
-    let mut candidates: Vec<DiscoveredLabel> = plan.unmanaged.clone();
+    let mut choices: Vec<(String, String, &'static str, bool, bool)> = Vec::new();
+    for label in &plan.managed {
+        choices.push((
+            label.parser_id.clone(),
+            label.label.clone(),
+            "mapped",
+            true,
+            true,
+        ));
+    }
+    for label in &plan.unmanaged {
+        choices.push((
+            label.parser_id.clone(),
+            label.label.clone(),
+            "new",
+            true,
+            false,
+        ));
+    }
     if options.review {
-        candidates.extend(plan.ignored.iter().cloned());
+        for label in &plan.ignored {
+            choices.push((
+                label.parser_id.clone(),
+                label.label.clone(),
+                "previously declined",
+                false,
+                false,
+            ));
+        }
     }
 
-    if candidates.is_empty() {
+    if choices.is_empty() {
         log::success("nothing new to decide")?;
         return Ok(Some(discovered));
     }
 
-    for label in &candidates {
-        let import = confirm(format!("Import transactions labelled `{}`?", label.label))
-            .initial_value(true)
-            .interact()?;
-
-        if import {
-            doc.remove_ignore(&label.parser_id)?;
-        } else {
-            doc.add_ignore(&label.parser_id)?;
-        }
-        // Save per answer so a Ctrl-C later does not lose decisions.
-        doc.save()?;
+    let initial: Vec<&str> = choices
+        .iter()
+        .filter(|(_, _, _, checked, _)| *checked)
+        .map(|(parser_id, _, _, _, _)| parser_id.as_str())
+        .collect();
+    let mut prompt = multiselect::<&str>("Import which receipt labels?")
+        .initial_values(initial)
+        .required(false);
+    for (parser_id, label, hint, _, _) in &choices {
+        prompt = prompt.item(parser_id.as_str(), label, *hint);
     }
+    let chosen = prompt.interact()?;
+
+    for (parser_id, label, _, _, managed) in &choices {
+        if chosen.contains(&parser_id.as_str()) {
+            doc.remove_ignore(parser_id)?;
+        } else {
+            if *managed {
+                doc.remove_account(parser_id)?;
+                log::warning(format!(
+                    "removed the [receipts.accounts] mapping for `{label}`"
+                ))?;
+            } else {
+                log::info(format!("declined `{label}`"))?;
+            }
+            doc.add_ignore(parser_id)?;
+        }
+    }
+    doc.save()?;
 
     Ok(Some(discovered))
 }
@@ -517,42 +645,10 @@ fn step_accounts(
         return Ok(());
     }
 
-    let (mut config, mut base) = reload(path)?;
-
-    let sink = match config.build_sink(&base) {
-        Ok(sink) => sink,
-        Err(error) => {
-            log::warning(format!("the ledger is not configured: {error}"))?;
-            note(
-                "Actual Budget",
-                "abmx drives Actual's official Node client through a bundled helper.\n\n\
-                 Have your Actual server URL, a budget-scoped API key (Settings →\n\
-                 General → Security → API keys), and the budget's sync id ready.\n\
-                 Details: https://kennethlieyanto.github.io/abmx/guides/actual/.",
-            )?;
-
-            let configure = confirm("Configure Actual now?")
-                .initial_value(true)
-                .interact()?;
-            if !configure {
-                log::info("skipped account mapping; rerun `abmx setup` when the ledger is ready")?;
-                return Ok(());
-            }
-
-            configure_actual(path, doc, &config, &base)?;
-            let (next, next_base) = reload(path)?;
-            config = next;
-            base = next_base;
-
-            match config.build_sink(&base) {
-                Ok(value) => value,
-                Err(error) => {
-                    log::error(format!("still could not build the sink: {error:#}"))?;
-                    return Ok(());
-                }
-            }
-        }
+    let Some(sink) = ensure_ledger(path, doc)? else {
+        return Ok(());
     };
+    let (config, _) = reload(path)?;
 
     let spinner = spinner();
     spinner.start("Reading accounts from the actual helper");
@@ -648,6 +744,61 @@ fn step_accounts(
     Ok(())
 }
 
+/// Build the configured ledger, offering to configure Actual when it is not
+/// ready yet. Both receipt and statement mapping go through here so either
+/// source can be the one that sets the ledger up.
+fn ensure_ledger(path: &Path, doc: &mut ConfigDocument) -> Result<Option<Box<dyn Sink>>> {
+    let (config, base) = reload(path)?;
+    match config.build_sink(&base) {
+        Ok(sink) => Ok(Some(sink)),
+        Err(error) => {
+            log::warning(format!("the ledger is not configured: {error}"))?;
+            note(
+                "Actual Budget",
+                "abmx drives Actual's official Node client through a bundled helper.\n\n\
+                 Have your Actual server URL, a budget-scoped API key (Settings →\n\
+                 General → Security → API keys), and the budget's sync id ready.\n\
+                 Details: https://kennethlieyanto.github.io/abmx/guides/actual/.",
+            )?;
+
+            let configure = confirm("Configure Actual now?")
+                .initial_value(true)
+                .interact()?;
+            if !configure {
+                log::info("skipped account mapping; rerun `abmx setup` when the ledger is ready")?;
+                return Ok(None);
+            }
+
+            configure_actual(path, doc, &config, &base)?;
+            let (next, next_base) = reload(path)?;
+            match next.build_sink(&next_base) {
+                Ok(sink) => Ok(Some(sink)),
+                Err(error) => {
+                    log::error(format!("still could not build the sink: {error:#}"))?;
+                    Ok(None)
+                }
+            }
+        }
+    }
+}
+
+/// A statement label as it appears in the setup checklist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatementLabelState {
+    Managed,
+    New,
+    Ignored,
+}
+
+struct StatementChoice {
+    label: String,
+    parser_id: String,
+    state: StatementLabelState,
+    /// Mapped only through `parser:<section>` keys, so setup cannot remap it
+    /// without collapsing the sections.
+    sectioned: bool,
+}
+
 /// Statement labels are a second namespace with the same parser-id convention.
 ///
 /// The step is deliberately independent of the receipt mapping: a user may
@@ -659,7 +810,7 @@ fn step_statements(
     options: &Options,
     gmail_ready: bool,
 ) -> Result<()> {
-    log::step("Bank statements")?;
+    log::step("Statements")?;
 
     if !gmail_ready {
         log::info("skipped: Gmail is not authorized yet")?;
@@ -671,6 +822,15 @@ fn step_statements(
         log::info("statements are disabled ([statements].enabled = false)")?;
         return Ok(());
     }
+
+    log::info("a statement email's PDF becomes structured transaction data")?;
+    log::info(
+        "settings (prefix, history window, encrypted PDFs): \
+         https://kennethlieyanto.github.io/abmx/guides/statements/",
+    )?;
+    log::info(
+        "parser reference: https://kennethlieyanto.github.io/abmx/reference/statement-spec/",
+    )?;
 
     let prefix: String = input("Statement label prefix")
         .placeholder("financial_statements/")
@@ -718,48 +878,121 @@ fn step_statements(
         }
     };
 
-    let mut pending: Vec<String> = Vec::new();
-
+    let mut choices: Vec<StatementChoice> = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
     for label in &discovered {
         let Some(parser_id) = config.statements.parser_id(label) else {
             continue;
         };
-        let mapped = config.statements.accounts.contains_key(&parser_id)
-            || config.statements.accounts.keys().any(|key| {
+        if !seen.insert(parser_id.clone()) {
+            continue;
+        }
+        let exact = config.statements.accounts.contains_key(&parser_id);
+        let sectioned = !exact
+            && config.statements.accounts.keys().any(|key| {
                 key.split_once(':')
                     .is_some_and(|(parser, _)| parser == parser_id)
             });
-        if mapped && !options.remap {
-            continue;
-        }
-        if config.statements.is_ignored(&parser_id) && !options.review && !options.remap {
-            continue;
-        }
-
-        let import = confirm(format!("Import statements labelled `{label}`?")).interact()?;
-        if import {
-            doc.remove_statement_ignore(&parser_id)?;
-            doc.save()?;
-            pending.push(parser_id);
+        let state = if exact || sectioned {
+            StatementLabelState::Managed
+        } else if config.statements.is_ignored(&parser_id) {
+            if options.review || options.remap {
+                StatementLabelState::Ignored
+            } else {
+                continue;
+            }
         } else {
-            doc.add_statement_ignore(&parser_id)?;
-            doc.save()?;
-        }
+            StatementLabelState::New
+        };
+        choices.push(StatementChoice {
+            label: label.clone(),
+            parser_id,
+            state,
+            sectioned,
+        });
     }
 
-    if pending.is_empty() {
+    if choices.is_empty() {
         log::success("nothing to map")?;
         return Ok(());
     }
 
-    let sink = match config.build_statement_sink(&base) {
-        Ok(sink) => sink,
-        Err(error) => {
-            log::warning(format!("the ledger is not configured: {error}"))?;
-            log::info("rerun `abmx setup` once the ledger is reachable")?;
-            return Ok(());
+    let initial: Vec<&str> = choices
+        .iter()
+        .filter(|choice| choice.state != StatementLabelState::Ignored)
+        .map(|choice| choice.parser_id.as_str())
+        .collect();
+    let mut prompt = multiselect::<&str>("Import which statement labels?")
+        .initial_values(initial)
+        .required(false);
+    for choice in &choices {
+        let hint = match choice.state {
+            StatementLabelState::Managed => "mapped",
+            StatementLabelState::New => "new",
+            StatementLabelState::Ignored => "previously declined",
+        };
+        prompt = prompt.item(choice.parser_id.as_str(), &choice.label, hint);
+    }
+    let chosen = prompt.interact()?;
+
+    let mut pending: Vec<String> = Vec::new();
+    let mut remap: Vec<String> = Vec::new();
+    let mut removed_sectioned: Vec<String> = Vec::new();
+
+    for choice in &choices {
+        let import = chosen.contains(&choice.parser_id.as_str());
+        match choice.state {
+            StatementLabelState::Managed => {
+                if import {
+                    if options.remap {
+                        if choice.sectioned {
+                            log::info(format!(
+                                "`{}` maps through sections; edit [statements.accounts] by hand to remap it",
+                                choice.parser_id
+                            ))?;
+                        } else {
+                            remap.push(choice.parser_id.clone());
+                        }
+                    }
+                } else {
+                    doc.remove_statement_accounts(&choice.parser_id)?;
+                    doc.add_statement_ignore(&choice.parser_id)?;
+                    if choice.sectioned {
+                        removed_sectioned.push(choice.parser_id.clone());
+                    }
+                    log::warning(format!(
+                        "removed the [statements.accounts] mapping for `{}`",
+                        choice.label
+                    ))?;
+                }
+            }
+            StatementLabelState::New | StatementLabelState::Ignored => {
+                if import {
+                    doc.remove_statement_ignore(&choice.parser_id)?;
+                    pending.push(choice.parser_id.clone());
+                } else {
+                    doc.add_statement_ignore(&choice.parser_id)?;
+                }
+            }
         }
+    }
+    doc.save()?;
+
+    for parser_id in &removed_sectioned {
+        log::info(format!(
+            "`{parser_id}` had per-section mappings; all of them were removed"
+        ))?;
+    }
+
+    if pending.is_empty() && remap.is_empty() {
+        log::success("nothing to map")?;
+        return Ok(());
+    }
+
+    let Some(sink) = ensure_ledger(path, doc)? else {
+        return Ok(());
     };
+    let (config, _) = reload(path)?;
 
     let progress = spinner();
     progress.start("Reading accounts");
@@ -800,16 +1033,39 @@ fn step_statements(
         doc.set_statement_account(&parser_id, &chosen)?;
         doc.save()?;
 
-        let password_file: String =
-            input(format!("Password file for `{parser_id}` (empty if none)"))
-                .placeholder("/run/secrets/abmx/statement")
-                .default_input("")
-                .interact()?;
-        if !password_file.trim().is_empty() {
-            doc.set_statement_password_file(&parser_id, password_file.trim())?;
-            doc.save()?;
-        }
+        log::success(format!("{parser_id} -> {chosen}"))?;
+    }
 
+    for parser_id in remap {
+        let current = config.statements.accounts.get(&parser_id).cloned();
+        let mut prompt = select(format!("Statement account for `{parser_id}`")).filter_mode();
+        if let Some(current) = &current {
+            prompt = prompt.initial_value(current.clone());
+        }
+        for account in &open {
+            let hint = if account.off_budget {
+                format!("{} · off-budget", account.id)
+            } else {
+                account.id.clone()
+            };
+            prompt = prompt.item(account.id.clone(), account.name.clone(), hint);
+        }
+        prompt = prompt.item(
+            String::new(),
+            if current.is_some() {
+                "Keep the current mapping"
+            } else {
+                "Skip for now"
+            },
+            "",
+        );
+
+        let chosen: String = prompt.interact()?;
+        if chosen.is_empty() || current.as_deref() == Some(chosen.as_str()) {
+            continue;
+        }
+        doc.set_statement_account(&parser_id, &chosen)?;
+        doc.save()?;
         log::success(format!("{parser_id} -> {chosen}"))?;
     }
 
@@ -944,6 +1200,52 @@ fn configure_actual(
 
 // ----------------------------------------------------------------- Output
 
+/// Offer the generated parser-authoring skills to an agent.
+///
+/// Idempotent: when both files already match, nothing is asked. An edited file
+/// is only replaced after the user confirms.
+fn step_skills() -> Result<()> {
+    log::step("AI agent skills")?;
+    let dir = authoring_skill::default_dir();
+
+    if let Some(legacy) = authoring_skill::legacy_path(&dir) {
+        log::warning(format!(
+            "{} is the old single-file skill; it will be replaced on install",
+            legacy.display()
+        ))?;
+    }
+
+    if !authoring_skill::needs_install(&dir) {
+        log::success(format!(
+            "parser-authoring skill is installed in {}",
+            authoring_skill::skill_dir(&dir).display()
+        ))?;
+        return Ok(());
+    }
+
+    log::info("agents can author parsers from the downloaded samples")?;
+    let install = confirm(format!(
+        "Install the abmx parser-authoring skill in {}?",
+        authoring_skill::skill_dir(&dir).display()
+    ))
+    .initial_value(true)
+    .interact()?;
+    if !install {
+        log::info("skipped; run `abmx skill install` when you want them")?;
+        return Ok(());
+    }
+
+    let report = authoring_skill::install(&dir, true)?;
+    for entry in &report.entries {
+        log::success(format!(
+            "{} {}",
+            entry.outcome.label(),
+            entry.path.display()
+        ))?;
+    }
+    Ok(())
+}
+
 fn summary(path: &Path, config: &Config) -> Result<()> {
     let mut lines = Vec::new();
     lines.push(format!("config: {}", path.display()));
@@ -988,10 +1290,15 @@ fn summary(path: &Path, config: &Config) -> Result<()> {
         }
     ));
     lines.push(format!(
-        "statements: {} managed, {} ignored (prefix `{}`)",
+        "statements: {} managed, {} ignored (prefix `{}`{})",
         config.statements.accounts.len(),
         config.statements.ignore.len(),
-        config.statements.prefix
+        config.statements.prefix,
+        if config.statements.enabled {
+            ""
+        } else {
+            ", disabled"
+        }
     ));
     lines.push(format!(
         "window: {}",
@@ -1001,25 +1308,35 @@ fn summary(path: &Path, config: &Config) -> Result<()> {
             .map(|date| format!("since {date}"))
             .unwrap_or_else(|| "all history".to_owned())
     ));
-    if config.receipts.accounts.is_empty() {
+    if config.receipts.enabled && config.receipts.accounts.is_empty() {
         lines.push("        nothing is imported until a receipt label is mapped".to_owned());
-    } else {
+    }
+    if !config.receipts.accounts.is_empty() {
         lines.push(format!(
-            "        samples go to {}",
+            "        receipt samples go to {}",
             paths::xdg_config_dir().join("abmx/samples").display()
+        ));
+    }
+    if !config.statements.accounts.is_empty() {
+        lines.push(format!(
+            "        statement samples go to {}",
+            paths::xdg_config_dir()
+                .join("abmx/statement-samples")
+                .display()
         ));
     }
 
     note("Summary", lines.join("\n"))?;
 
-    if !config.receipts.accounts.is_empty() {
+    if !config.receipts.accounts.is_empty() || !config.statements.accounts.is_empty() {
         note(
             "Author a parser with AI",
-            "1. abmx receipt samples\n\
-             2. mkdir -p ~/.agents/skills/abmx && abmx skill > ~/.agents/skills/abmx/SKILL.md\n\
-             3. prompt your agent:\n\
-                \"help me create parser for all my transaction email, use abmx parser authoring skill\"\n\
-             4. abmx receipt sync --dry-run",
+            "1. abmx samples\n\
+             2. abmx skill install\n\
+             3. prompt your agent (one or both):\n\
+                \"help me create receipt parsers for all my transaction emails, use the abmx parser authoring skill\"\n\
+                \"help me create statement parsers for all my statement emails, use the abmx parser authoring skill\"\n\
+             4. abmx sync --dry-run",
         )?;
     }
 

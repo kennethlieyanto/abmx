@@ -15,7 +15,9 @@ abmx status [--offline] [--strict] [--check] [--json]
                                     full health check; --offline skips network
 abmx reset [--purge] [--yes]        forget delivered receipts and statements
 abmx accounts [--json]              sink accounts and how [receipts.accounts] maps onto them
-abmx skill                          print the parser-authoring skill to stdout
+abmx skill [receipt|statement]      print the skill index or one reference
+abmx skill install [--dir DIR] [--force]
+                                    install the skill under ~/.agents/skills/abmx
 abmx dump <path> [--json]           normalized block dump (authoring aid)
 
 abmx sync [--dry-run] [--json] [--limit N]

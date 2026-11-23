@@ -32,13 +32,13 @@ abmx statement import <file.pdf> --parser <id>
 ## 2. Skill
 
 ```bash
-abmx skill > ~/.agents/skills/abmx/SKILL.md
+abmx skill install
 ```
 
 ## 3. Prompt
 
 ```text
-help me create parser for all missing receipt and statement, use abmx parser authoring skill
+help me create statement parsers for all my statement emails, use the abmx parser authoring skill
 ```
 
 ## What the agent does

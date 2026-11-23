@@ -41,33 +41,6 @@ helm-lint:
 helm-template:
     helm template abmx charts/abmx -f charts/abmx/ci/minimal-values.yaml
 
-# Exercise the whole pipeline against saved .eml files and the file sink.
-# `just demo ./sample-mail`
-demo dir parser="example.bank" parsers="examples/parsers":
-    #!/usr/bin/env bash
-    set -euo pipefail
-    work=$(mktemp -d)
-    mkdir -p "$work/mail"
-    cp {{dir}}/*.eml "$work/mail/"
-    cat > "$work/abmx.toml" <<EOF
-    [general]
-    state = "$work/state.db"
-    parsers = ["$(realpath {{parsers}})"]
-
-    [sink.file]
-    path = "$work/ledger.jsonl"
-
-    [receipts]
-    prefix = "receipt/"
-
-    [receipts.accounts]
-    "{{parser}}" = "demo"
-    EOF
-    cargo run -q -p abmx -- --config "$work/abmx.toml" receipt sync --dry-run --from-dir "$work/mail" --label "receipt/{{parser}}"
-    cargo run -q -p abmx -- --config "$work/abmx.toml" sync --from-dir "$work/mail" --label "receipt/{{parser}}"
-    echo "ledger: $work/ledger.jsonl"
-    cat "$work/ledger.jsonl"
-
 # ---------------------------------------------------------------------------
 # website
 # ---------------------------------------------------------------------------

@@ -68,13 +68,13 @@ the parser:
 
 ```bash
 abmx samples                # evidence for labeled receipts and statements
-mkdir -p ~/.agents/skills/abmx && abmx skill > ~/.agents/skills/abmx/SKILL.md
+abmx skill install          # authoring skill under ~/.agents/skills/abmx
 ```
 
 Then prompt your agent:
 
 ```
-help me create parser for all my transaction email, use abmx parser authoring skill
+help me create receipt and statement parsers for all my emails, use the abmx parser authoring skill
 ```
 
 The agent writes the parser into `~/.config/abmx/parsers/<id>/` with its fixtures

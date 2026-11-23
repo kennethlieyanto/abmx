@@ -146,8 +146,11 @@ enum Command {
     /// Bank statements: dump, verify, and import PDF statements.
     Statement(statement_cli::StatementCli),
 
-    /// Print the parser-authoring skill to stdout.
-    Skill,
+    /// Print or install the parser-authoring skill.
+    Skill {
+        #[command(subcommand)]
+        command: Option<SkillCommand>,
+    },
 
     /// Print the normalized block list of an email (an authoring aid).
     Dump {
@@ -197,6 +200,23 @@ enum ReceiptCommand {
         /// Machine-readable manifest.
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum SkillCommand {
+    /// Print the receipt parser reference.
+    Receipt,
+    /// Print the statement parser reference.
+    Statement,
+    /// Install the skill under ~/.agents/skills/abmx.
+    Install {
+        /// Skill root. Defaults to ~/.agents/skills.
+        #[arg(long, value_name = "DIR")]
+        dir: Option<PathBuf>,
+        /// Replace files that differ from the generated version.
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -385,7 +405,7 @@ fn run(cli: Cli) -> Result<i32> {
         Command::Accounts { json } => accounts(&settings, json),
         Command::Parser(cli) => parser_cli::run(cli),
         Command::Statement(cli) => statement_cli::run(cli, settings.config.clone()),
-        Command::Skill => skill(),
+        Command::Skill { command } => skill(command),
         Command::Dump { path, json } => dump(&path, json),
     }
 }
@@ -411,8 +431,8 @@ fn build_runner(config: &Config, base: &Path) -> Result<Runner> {
                 "no parsers installed — nothing can be parsed yet.\n\n\
              download samples and ask an agent to author one:\n  \
              abmx receipt samples\n  \
-             mkdir -p ~/.agents/skills/abmx && abmx skill > ~/.agents/skills/abmx/SKILL.md\n  \
-             then: \"help me create parser for all my transaction email, use abmx parser authoring skill\"\n\n\
+             abmx skill install\n  \
+             then: \"help me create receipt parsers for all my transaction emails, use the abmx parser authoring skill\"\n\n\
              the repository's synthetic example is under examples/parsers/"
             ),
             other => anyhow::anyhow!(
@@ -1408,8 +1428,8 @@ fn require_parsers(runner: &Runner) -> Result<()> {
             "no parsers installed — nothing can be parsed yet.\n\n\
              download samples and ask an agent to author one:\n  \
              abmx receipt samples\n  \
-             mkdir -p ~/.agents/skills/abmx && abmx skill > ~/.agents/skills/abmx/SKILL.md\n  \
-             then: \"help me create parser for all my transaction email, use abmx parser authoring skill\""
+             abmx skill install\n  \
+             then: \"help me create receipt parsers for all my transaction emails, use the abmx parser authoring skill\""
         );
     }
     Ok(())
@@ -1870,7 +1890,7 @@ fn print_receipt_samples(report: &abmx::samples::SampleReport) {
     }
 
     println!();
-    println!("next: author the parsers from these samples; see `abmx skill`");
+    println!("next: author the parsers from these samples; see `abmx skill receipt` and `abmx skill statement`");
 }
 
 fn samples_all(settings: &Settings, count: usize, json: bool) -> Result<i32> {
@@ -2114,7 +2134,30 @@ fn exit_for_report(report: &Report) -> i32 {
     }
 }
 
-fn skill() -> Result<i32> {
-    print!("{}", authoring::skill::render_authoring()?);
+fn skill(command: Option<SkillCommand>) -> Result<i32> {
+    use authoring::skill::Doc;
+
+    match command {
+        None => print!("{}", authoring::skill::render(Doc::Index)),
+        Some(SkillCommand::Receipt) => print!("{}", authoring::skill::render(Doc::Receipt)),
+        Some(SkillCommand::Statement) => print!("{}", authoring::skill::render(Doc::Statement)),
+        Some(SkillCommand::Install { dir, force }) => {
+            let dir = dir.unwrap_or_else(authoring::skill::default_dir);
+            let report = authoring::skill::install(&dir, force)?;
+            println!("skill: {}", report.dir.display());
+            for entry in &report.entries {
+                println!("  {:<9} {}", entry.outcome.label(), entry.path.display());
+            }
+            if let Some(legacy) = &report.legacy {
+                eprintln!(
+                    "warning: {} is the old single-file skill; run with --force to replace it",
+                    legacy.display()
+                );
+            }
+            if report.any_skipped() {
+                eprintln!("note: run with --force to replace edited skill files");
+            }
+        }
+    }
     Ok(EXIT_OK)
 }

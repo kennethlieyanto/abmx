@@ -149,7 +149,7 @@ impl Registry {
         if parsers.is_empty() {
             let path = dirs.first().cloned().unwrap_or_default();
             let hint = if dirs.iter().any(|dir| has_old_specs(dir)) {
-                " (found `config.toml`; parsers are now `parser.rhai`, see `abmx skill`)"
+                " (found `config.toml`; parsers are now `parser.rhai`, see `abmx skill receipt` or `abmx skill statement`)"
             } else {
                 ""
             };

@@ -1,125 +1,272 @@
-use anyhow::Result;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
 
 use super::assets;
 
-const VERIFICATION: &str = r#"## Verifying a parser
-
-Run a candidate parser against its fixtures, and against any samples you are
-investigating:
-
-```sh
-abmx parser check --parser <parser-id> --parsers <corpus>
-abmx parser check --parser <parser-id> --parsers <corpus> -v
-abmx parser parse <samples-dir> --parser <parser-id> --parsers <corpus> --format table
-abmx parser explain <one.eml> --parser <parser-id>
-abmx parser lint --parser <parser-id>
-```
-
-`parser check` uses the parser's own `fixtures/`. `parser parse` runs the parser
-over a file or directory of `.eml` files, which is useful while iterating on the
-downloaded samples.
-
-| Result | Meaning | Action |
-| --- | --- | --- |
-| `strict` | every declared field matched and the amount is non-zero | accept |
-| `heuristic` | parsed with warnings (usually a zero amount) | almost always the wrong region; fix the label or regex |
-| `unmatched` / `missing` | the parser id is not in the corpus | fix the id or install the parser |
-| `failed` | extraction errored | `parser explain` names the region and field |
-
-Exit codes: `0` all strict, `3` at least one heuristic, `2` failed, `1` the tool
-failed.
-
-Statement parsers use the same evidence loop with `abmx statement dump` and
-`abmx statement check`; their fixtures are PDFs, and `strict` means the whole
-document's arithmetic balances (opening, running balance, credit/debit totals).
-
-If the samples for a label are different templates, the label is mislabeled.
-Fix the Gmail label/filter; do not teach one parser to guess.
-"#;
-
-const LABELS_AND_ACCOUNTS: &str = r#"## Labels and ledger accounts
-
-One label is the whole contract:
-
-```toml
-[receipts]
-prefix = "receipt/"
-
-[receipts.accounts]
-"<parser-id>" = "<actual-account-uuid>"
-```
-
-| Layer | Field | Example | Meaning |
-| --- | --- | --- | --- |
-| Gmail | label | `receipt/example-qris` | the user's explicit routing decision |
-| abmx config | `[receipts.accounts]` key | `example-qris` | the parser directory |
-| abmx config | `[receipts.accounts]` value | `<uuid>` | the sink's account id |
-
-Rules:
-
-- Apply exactly one `receipt/<parser-id>` label per tracked message.
-- A message with two abmx labels aborts the run: the routing is ambiguous.
-- A label with no `[receipts.accounts]` entry is unmanaged and is not fetched.
-- `[receipts].ignore` records labels the user declined; `abmx setup --review`
-  asks again.
-- A `[receipts.accounts]` entry with no Gmail label is `orphan_account`; fix the
-  label or the entry.
-- The sink UUID comes from `abmx accounts`; never guess it. `abmx setup`
-  normally fills it in.
-- There is no `[accounts]` table and no `[defaults].account` in the parser.
-- A label whose samples are different templates is mislabeled. Fix the
-  gmailctl rule; do not split it in the parser.
-"#;
-
-/// The authoring skill, for `abmx skill` on stdout.
+/// One document of the `abmx` skill.
 ///
-/// This is deliberately one self-contained document: agents installed at
-/// `~/.agents/skills/abmx/SKILL.md` cannot follow `references/` links that were
-/// never written.
-pub fn render_authoring() -> Result<String> {
+/// `SKILL.md` is the entry point; it points at the two reference documents that
+/// live beside it. Installed together, they form a single skill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Doc {
+    Index,
+    Receipt,
+    Statement,
+}
+
+impl Doc {
+    /// Every document, in install order.
+    pub const ALL: [Doc; 3] = [Doc::Index, Doc::Receipt, Doc::Statement];
+
+    /// A short name for reports.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Index => "abmx",
+            Self::Receipt => "abmx/author-receipt-parser",
+            Self::Statement => "abmx/author-statement-parser",
+        }
+    }
+
+    fn file(self) -> &'static str {
+        match self {
+            Self::Index => "SKILL.md",
+            Self::Receipt => "author-receipt-parser.md",
+            Self::Statement => "author-statement-parser.md",
+        }
+    }
+
+    fn body(self) -> &'static str {
+        match self {
+            Self::Index => assets::SKILL_INDEX,
+            Self::Receipt => assets::RECEIPT_REFERENCE,
+            Self::Statement => assets::STATEMENT_REFERENCE,
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Index => {
+                "Author or repair abmx bank parsers. Receipts: one transaction email \
+                 (.eml) per parse. Statements: an email with PDF attachments. Use after \
+                 `abmx samples`, or when `abmx parser check` / `abmx statement check` fails."
+            }
+            Self::Receipt | Self::Statement => "",
+        }
+    }
+}
+
+/// Where `abmx skill install` writes the skill.
+pub fn default_dir() -> PathBuf {
+    crate::paths::home_dir().join(".agents/skills")
+}
+
+/// The skill directory inside `dir`.
+pub fn skill_dir(dir: &Path) -> PathBuf {
+    dir.join("abmx")
+}
+
+/// Render one document. Only `SKILL.md` carries frontmatter.
+pub fn render(doc: Doc) -> String {
     let version = env!("CARGO_PKG_VERSION");
-    Ok(format!(
-        r#"---
-name: abmx parser authoring
-description: Author or repair abmx parsers from `receipt/*` and `financial_statements/*` samples. Use after `abmx samples`, or when a parser check fails.
----
+    match doc {
+        Doc::Index => format!(
+            "---\nname: {name}\ndescription: {description}\n---\n\n\
+             <!-- generated by abmx {version} -->\n\n{body}\n",
+            name = doc.name(),
+            description = doc.description(),
+            body = doc.body().trim_end(),
+        ),
+        Doc::Receipt | Doc::Statement => format!(
+            "<!-- generated by abmx {version} -->\n\n{body}\n",
+            body = doc.body().trim_end(),
+        ),
+    }
+}
 
-<!-- generated by abmx {version} -->
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallOutcome {
+    /// The file did not exist and was written.
+    Written,
+    /// The file existed with different content and `--force` replaced it.
+    Updated,
+    /// The file already matched the generated document.
+    Unchanged,
+    /// The file differs and `--force` was not given; it was left alone.
+    Skipped,
+}
 
-# abmx parser authoring
+impl InstallOutcome {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Written => "written",
+            Self::Updated => "updated",
+            Self::Unchanged => "unchanged",
+            Self::Skipped => "skipped",
+        }
+    }
+}
 
-Evidence is downloaded by `abmx samples` into two directories:
-`$XDG_CONFIG_HOME/abmx/samples/<parser-id>/` for receipt `.eml` files and
-`$XDG_CONFIG_HOME/abmx/statement-samples/<parser-id>/` for statement PDFs.
-Every non-ignored label under the matching prefix is sampled, mapped or not;
-`manifest.json` records how many were available. Fewer than three samples is a
-warning: be conservative and do not invent a template. The `since` windows do
-not apply to samples; they are the newest messages under the label. Use
-`abmx receipt samples --label …` or `abmx statement samples --label …` to
-narrow one source.
+#[derive(Debug, Clone)]
+pub struct InstallEntry {
+    pub doc: Doc,
+    pub path: PathBuf,
+    pub outcome: InstallOutcome,
+}
 
-The parser corpus is one directory per parser id, normally
-`~/.config/abmx/parsers/<parser-id>/`; `[general].parsers` can point somewhere
-else. The ledger account is already mapped in `[receipts.accounts]`; never invent
-a UUID.
+#[derive(Debug, Clone)]
+pub struct InstallReport {
+    pub dir: PathBuf,
+    pub entries: Vec<InstallEntry>,
+    /// An installed `SKILL.md` that predates the split and has no references.
+    pub legacy: Option<PathBuf>,
+}
 
-{workflow}
+impl InstallReport {
+    pub fn any_skipped(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.outcome == InstallOutcome::Skipped)
+    }
+}
 
-{verification}
+/// Write the complete skill under `dir/abmx`.
+///
+/// Idempotent: identical files are left untouched. A differing file is only
+/// replaced with `force`, so a user edit is never silently overwritten.
+pub fn install(dir: &Path, force: bool) -> Result<InstallReport> {
+    let legacy = legacy_path(dir);
+    let dir = skill_dir(dir);
+    let mut entries = Vec::with_capacity(Doc::ALL.len());
 
-{spec_reference}
+    for doc in Doc::ALL {
+        let path = dir.join(doc.file());
+        let content = render(doc);
+        let outcome = match std::fs::read_to_string(&path) {
+            Ok(existing) if existing == content => InstallOutcome::Unchanged,
+            Ok(_) if !force => InstallOutcome::Skipped,
+            Ok(_) => {
+                write_doc(&path, &content)?;
+                InstallOutcome::Updated
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                write_doc(&path, &content)?;
+                InstallOutcome::Written
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("reading {}", path.display()));
+            }
+        };
+        entries.push(InstallEntry { doc, path, outcome });
+    }
 
-{statement_reference}
+    Ok(InstallReport {
+        dir,
+        entries,
+        legacy,
+    })
+}
 
-{pitfalls}
+fn write_doc(path: &Path, content: &str) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    std::fs::write(path, content).with_context(|| format!("writing {}", path.display()))
+}
 
-{labels_and_accounts}
-"#,
-        workflow = assets::AUTHORING_WORKFLOW,
-        verification = VERIFICATION,
-        spec_reference = assets::SPEC_REFERENCE,
-        statement_reference = assets::STATEMENT_REFERENCE,
-        pitfalls = assets::PITFALLS,
-        labels_and_accounts = LABELS_AND_ACCOUNTS,
-    ))
+/// Whether any document is missing or out of date under `dir`.
+pub fn needs_install(dir: &Path) -> bool {
+    Doc::ALL.iter().any(|doc| {
+        let path = skill_dir(dir).join(doc.file());
+        match std::fs::read_to_string(&path) {
+            Ok(existing) => existing != render(*doc),
+            Err(_) => true,
+        }
+    })
+}
+
+/// The old single-file skill, when it is still installed without references.
+pub fn legacy_path(dir: &Path) -> Option<PathBuf> {
+    let index = skill_dir(dir).join("SKILL.md");
+    let receipt = skill_dir(dir).join("author-receipt-parser.md");
+    (index.exists() && !receipt.exists()).then_some(index)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_index_points_at_both_references() {
+        let index = render(Doc::Index);
+        assert!(index.starts_with("---\nname: abmx\n"));
+        assert!(index.contains("author-receipt-parser.md"));
+        assert!(index.contains("author-statement-parser.md"));
+        assert!(index.lines().count() < 80, "the index should stay a router");
+    }
+
+    #[test]
+    fn references_are_focused() {
+        let receipt = render(Doc::Receipt);
+        assert!(receipt.contains("parse_mail(ctx)"));
+        assert!(!receipt.contains("parse_statement"));
+
+        let statement = render(Doc::Statement);
+        assert!(statement.contains("parse_statement(doc)"));
+        assert!(!statement.contains("parse_mail"));
+    }
+
+    #[test]
+    fn install_is_idempotent_and_refuses_to_clobber_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        let first = install(root, false).unwrap();
+        assert!(first
+            .entries
+            .iter()
+            .all(|entry| entry.outcome == InstallOutcome::Written));
+        assert!(!needs_install(root));
+
+        let second = install(root, false).unwrap();
+        assert!(second
+            .entries
+            .iter()
+            .all(|entry| entry.outcome == InstallOutcome::Unchanged));
+
+        let receipt = skill_dir(root).join("author-receipt-parser.md");
+        std::fs::write(&receipt, "hand edited").unwrap();
+        assert!(needs_install(root));
+
+        let conflicted = install(root, false).unwrap();
+        let entry = conflicted
+            .entries
+            .iter()
+            .find(|entry| entry.doc == Doc::Receipt)
+            .unwrap();
+        assert_eq!(entry.outcome, InstallOutcome::Skipped);
+        assert_eq!(std::fs::read_to_string(&receipt).unwrap(), "hand edited");
+
+        let forced = install(root, true).unwrap();
+        let entry = forced
+            .entries
+            .iter()
+            .find(|entry| entry.doc == Doc::Receipt)
+            .unwrap();
+        assert_eq!(entry.outcome, InstallOutcome::Updated);
+        assert_eq!(
+            std::fs::read_to_string(&receipt).unwrap(),
+            render(Doc::Receipt)
+        );
+    }
+
+    #[test]
+    fn install_reports_a_single_file_skill() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = skill_dir(dir.path()).join("SKILL.md");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, "old").unwrap();
+
+        let report = install(dir.path(), false).unwrap();
+        assert_eq!(report.legacy.as_deref(), Some(legacy.as_path()));
+    }
 }

@@ -96,19 +96,48 @@ fn verify_requires_a_parser_id() {
 }
 
 #[test]
-fn the_authoring_skill_is_one_self_contained_document() {
-    let text = authoring::skill::render_authoring().unwrap();
-    assert!(text.starts_with("---\nname: abmx parser authoring"));
+fn the_skill_index_routes_to_both_references() {
+    let text = authoring::skill::render(authoring::skill::Doc::Index);
+    assert!(text.starts_with("---\nname: abmx\n"));
     assert!(text.contains("description:"));
+    assert!(text.contains("author-receipt-parser.md"));
+    assert!(text.contains("author-statement-parser.md"));
+    assert!(
+        text.lines().count() < 90,
+        "the index must stay a short router"
+    );
+}
+
+#[test]
+fn the_receipt_reference_is_focused() {
+    let text = authoring::skill::render(authoring::skill::Doc::Receipt);
+    assert!(!text.starts_with("---"));
     assert!(text.contains("abmx receipt samples"));
     assert!(text.contains("samples/<parser-id>"));
-    assert!(text.contains("# bank parser spec reference"));
-    assert!(text.contains("## Verifying a parser"));
-    assert!(text.contains("# Parser authoring pitfalls"));
+    assert!(text.contains("parse_mail(ctx)"));
     assert!(text.contains("[receipts.accounts]"));
+    assert!(!text.contains("parse_statement"));
+    assert!(!text.contains("[statements.accounts]"));
     assert!(
-        !text.contains("references/"),
-        "the skill must not link references"
+        text.lines().count() < 240,
+        "the receipt reference is getting dense again"
+    );
+}
+
+#[test]
+fn the_statement_reference_is_focused() {
+    let text = authoring::skill::render(authoring::skill::Doc::Statement);
+    assert!(!text.starts_with("---"));
+    assert!(text.contains("abmx statement samples"));
+    assert!(text.contains("parse_statement(doc)"));
+    assert!(text.contains("doc.lines()"));
+    assert!(text.contains("[statements.accounts]"));
+    assert!(text.contains("[statements.passwords]"));
+    assert!(!text.contains("parse_mail"));
+    assert!(!text.contains("[receipts.accounts]"));
+    assert!(
+        text.lines().count() < 240,
+        "the statement reference is getting dense again"
     );
 }
 

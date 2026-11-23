@@ -511,7 +511,7 @@ pub fn print_sample_report(report: &SampleReport) {
         }
     }
     println!();
-    println!("next: author the parser from these PDFs; see `abmx skill`");
+    println!("next: author the parser from these PDFs; see `abmx skill statement`");
 }
 
 /// Every valid label under the prefix that is not ignored is a target. The

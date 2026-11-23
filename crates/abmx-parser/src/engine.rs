@@ -263,7 +263,7 @@ pub(crate) fn describe_runtime_error(entry: &str, error: &rhai::EvalAltResult) -
 
     match error {
         rhai::EvalAltResult::ErrorFunctionNotFound(name, _) => format!(
-            "{entry}: `{name}` is not a host function{position}; see `abmx skill` for the API"
+            "{entry}: `{name}` is not a host function{position}; see `abmx skill receipt` or `abmx skill statement` for the API"
         ),
         rhai::EvalAltResult::ErrorTooManyOperations(_) => {
             format!("{entry}: parser exceeded its operation limit{position}")

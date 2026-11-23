@@ -4,12 +4,13 @@ description: What abmx setup asks, what it writes, and when to rerun it.
 ---
 
 `abmx setup` is the attended quickstart. It walks through the pieces that must be
-true before `abmx receipt sync` can import anything:
+true before `abmx sync` can import anything:
 
 1. a config file exists and has a discovery prefix and history window;
-2. Gmail is authorized;
-3. the labels under that prefix have an explicit yes/no decision;
-4. every accepted label maps to a ledger account.
+2. the sources you want (receipts, statements, or both) are enabled;
+3. Gmail is authorized;
+4. the labels under each prefix have an explicit import decision;
+5. every accepted label maps to a ledger account.
 
 It is idempotent. Rerunning it skips completed steps, so it doubles as the
 "add a new bank label" and "move to another machine" command.
@@ -32,9 +33,46 @@ If no config resolves, it offers to write the starter template to
 `$XDG_CONFIG_HOME/abmx/config.toml`. If one exists (including `./abmx.toml` or a
 `--config` path), it uses that and moves on.
 
-### 2. Discovery rule
+### 2. Sources
 
-Setup asks for the Gmail label prefix:
+Setup asks which sources to configure:
+
+```text
+Which sources should abmx sync?
+◇ Receipts     one .eml -> one transaction
+◇ Statements   a PDF in an email -> transaction data
+```
+
+Both are pre-selected to match the current `[receipts].enabled` and
+`[statements].enabled` values, and at least one must stay selected. Declining a
+source pauses it in the config and skips all of its questions for this run.
+Mappings are kept, so re-running setup with the source enabled resumes where you
+left off.
+
+### 3. Gmail
+
+If a stored refresh token works, this step is skipped. Otherwise it prints the
+Google Cloud checklist and asks for the path to the downloaded OAuth client JSON
+(Desktop app). The JSON is copied to `<config dir>/gmail-client.json` with mode
+`0600`, and `[fetch.gmail].credentials_file` is set.
+
+The authorization itself is the same PKCE flow as `abmx auth login`. It tries
+to open a browser; if none can be opened it switches to the manual paste flow
+by itself. `--manual` forces that flow and `--no-browser` keeps the loopback
+listener while printing the URL. The refresh token is written to
+`~/.local/state/abmx/gmail-credentials.json`.
+
+The client JSON and the token are deliberately separate, just like gws and
+gmailctl: the client identifies the app, the token identifies the user. See
+[Gmail](/guides/gmail/) for the Google Cloud side.
+
+### 4. Receipts
+
+When receipts are enabled, setup prints a one-line reminder that each `.eml`
+under the prefix becomes one structured transaction, with links to
+[configuration](/start/configuration/) and the
+[parser spec](/reference/parser-spec/) for the parsing knobs. Then it asks for
+the discovery rule:
 
 ```text
 Discovery rule
@@ -52,7 +90,7 @@ Gmail label prefix › receipt/
   parser ids.
 - The value is saved to `[receipts].prefix`.
 
-### 3. History window
+### 5. History window
 
 Setup asks how far back to fetch:
 
@@ -74,35 +112,23 @@ History window
   `abmx status --strict`. `abmx samples` ignores it and always takes the newest
   three messages per non-ignored label.
 
-### 4. Gmail
+### 6. Receipt labels
 
-If a stored refresh token works, this step is skipped. Otherwise it prints the
-Google Cloud checklist and asks for the path to the downloaded OAuth client JSON
-(Desktop app). The JSON is copied to `<config dir>/gmail-client.json` with mode
-`0600`, and `[fetch.gmail].credentials_file` is set.
-
-The authorization itself is the same PKCE flow as `abmx auth login`. It tries
-to open a browser; if none can be opened it switches to the manual paste flow
-by itself. `--manual` forces that flow and `--no-browser` keeps the loopback
-listener while printing the URL. The refresh token is written to
-`~/.local/state/abmx/gmail-credentials.json`.
-
-The client JSON and the token are deliberately separate, just like gws and
-gmailctl: the client identifies the app, the token identifies the user. See
-[Gmail](/guides/gmail/) for the Google Cloud side.
-
-### 5. Labels
-
-Setup lists every Gmail label under `[receipts].prefix`. For each label that is
-neither mapped nor declined, it asks:
+Setup lists every valid Gmail label under `[receipts].prefix` in one checklist:
 
 ```text
-Import transactions labelled `receipt/example.card_debit`?
+Import which receipt labels?
+◆ receipt/example.card_debit   mapped
+◆ receipt/example.qris         new
+◇ receipt/example.old          previously declined
 ```
 
-- **Yes** leaves the label to be mapped in the next step.
-- **No** records the parser id in `[receipts].ignore`, so the question is not
-  asked again unless you pass `--review`.
+- **Mapped** labels start checked. Unchecking one removes its
+  `[receipts.accounts]` entry and records the parser id in `[receipts].ignore`.
+- **New** labels start checked. Leaving one checked sends it to the account
+  mapping step; unchecking records it in `[receipts].ignore`.
+- **Previously declined** labels appear (unchecked) only with `--review`.
+  Checking one clears the ignore entry and sends it to account mapping.
 
 Labels whose suffix is not a parser id (for example `receipt/some/thing`) are
 reported and skipped; rename the gmailctl label.
@@ -114,7 +140,7 @@ Existing `[receipts.accounts]` entries with no Gmail label under the new prefix 
 reported as warnings, so a prefix change is visible before `sync` hard-fails on
 them.
 
-### 6. Ledger accounts
+### 7. Ledger accounts
 
 If the ledger is not configured, setup asks for the Actual server URL, the
 budget sync id, and an Actual API key (if your Actual build offers
@@ -131,14 +157,23 @@ For every accepted label it offers the open accounts and writes:
 A parser does not have to exist yet. The next step is `abmx samples` plus
 [parser authoring](/guides/authoring/).
 
-### 7. Statements
+### 8. Statements
 
 The last step asks for the statement label prefix (`financial_statements/` by
-default), lists the labels under it, and offers each one. Accepting a label
-maps its parser id to a ledger account; declining records it in
-`[statements].ignore` so setup does not ask again. When a PDF is encrypted, the
-step asks for a password file — the password itself is never written into the
-config. Rerun with `--review` to revisit declined labels.
+default), then shows the same checklist for the labels under it. It starts with a
+short reminder that a statement email's PDF becomes structured transaction data,
+with links to [statement settings](/guides/statements/) and the
+[statement spec](/reference/statement-spec/).
+
+- Checked labels are mapped to a ledger account in the next prompt.
+- Unchecking a mapped label removes all of its `[statements.accounts]` entries
+  (including `parser:<section>` keys) and records it in `[statements].ignore`.
+- Unchecking a new label records it in `[statements].ignore`.
+- Previously declined labels appear unchecked with `--review`.
+
+Encrypted PDFs are configured by hand through `[statements.passwords]`; setup
+does not ask for the password. With `--remap`, checked mapped labels go straight
+to the account picker with a **Keep the current mapping** option.
 
 ## Secrets
 

@@ -24,10 +24,11 @@ Gmail label financial_statements/<id>
 
 ## Setup
 
-`abmx setup` asks for the statement prefix after the receipt labels. It lists
-the labels under that prefix, lets you accept or decline each one, maps accepted
-parsers to ledger accounts, and asks for a password file when the PDFs are
-encrypted.
+`abmx setup` asks for the statement prefix after the receipt steps and shows the
+labels under that prefix as one checklist. Checked labels are mapped to ledger
+accounts; unchecking a mapped label removes its `[statements.accounts]` entries
+and records the parser id in `[statements].ignore`. Encrypted PDFs are configured
+with `[statements.passwords]` (below) rather than prompted for by setup.
 
 ```toml
 [statements]

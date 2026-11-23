@@ -167,6 +167,30 @@ impl ConfigDocument {
         Ok(())
     }
 
+    /// Remove every mapping for a statement parser, including multi-product
+    /// `<parser>:<section>` keys.
+    pub fn remove_statement_accounts(&mut self, parser_id: &str) -> Result<bool> {
+        let table = self.table(&["statements", "accounts"])?;
+        let keys: Vec<String> = table
+            .iter()
+            .map(|(key, _)| key.to_owned())
+            .filter(|key| {
+                key == parser_id
+                    || key
+                        .split_once(':')
+                        .is_some_and(|(parser, _)| parser == parser_id)
+            })
+            .collect();
+        let mut removed = false;
+        for key in keys {
+            removed |= table.remove(&key).is_some();
+        }
+        if removed {
+            self.dirty = true;
+        }
+        Ok(removed)
+    }
+
     pub fn add_statement_ignore(&mut self, parser_id: &str) -> Result<()> {
         let array = self.array(&["statements", "ignore"])?;
         let exists = array.iter().any(|item| {
@@ -204,11 +228,9 @@ impl ConfigDocument {
         Ok(true)
     }
 
-    /// Point a statement parser at a password file. The secret itself is never
-    /// written into the config.
-    pub fn set_statement_password_file(&mut self, parser_id: &str, path: &str) -> Result<()> {
-        self.set(&["statements", "passwords", parser_id, "file"], value(path))?;
-        Ok(())
+    /// Enable or pause a source (`[receipts].enabled`, `[statements].enabled`).
+    pub fn set_bool(&mut self, keys: &[&str], input: bool) -> Result<()> {
+        self.set(keys, value(input))
     }
 
     /// Remember an explicit "no" from setup. Order is preserved and duplicates
@@ -474,6 +496,52 @@ future = "field"
         doc.save().unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("ignore = [\"one\", \"two\"]"), "got:\n{text}");
+    }
+
+    #[test]
+    fn source_toggles_are_written_as_booleans() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abmx.toml");
+        let mut doc = ConfigDocument::open_or_template(&path).unwrap();
+        doc.set_bool(&["receipts", "enabled"], false).unwrap();
+        doc.set_bool(&["statements", "enabled"], false).unwrap();
+        assert!(doc.save().unwrap());
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("enabled = false"), "got:\n{text}");
+        assert!(!text.contains("enabled = \"false\""), "got:\n{text}");
+
+        let config: crate::config::Config = toml::from_str(&text).unwrap();
+        assert!(!config.receipts.enabled);
+        assert!(!config.statements.enabled);
+    }
+
+    #[test]
+    fn statement_accounts_are_removed_by_parser_including_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("abmx.toml");
+        std::fs::write(
+            &path,
+            r#"[statements.accounts]
+"example.consolidated" = "uuid-one"
+"example.consolidated:savings" = "uuid-two"
+"example.other" = "uuid-three"
+"#,
+        )
+        .unwrap();
+
+        let mut doc = ConfigDocument::open_or_template(&path).unwrap();
+        assert!(doc
+            .remove_statement_accounts("example.consolidated")
+            .unwrap());
+        assert!(doc.save().unwrap());
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("example.consolidated"), "got:\n{text}");
+        assert!(text.contains("example.other"), "got:\n{text}");
+        assert!(!doc
+            .remove_statement_accounts("example.consolidated")
+            .unwrap());
     }
 
     #[test]

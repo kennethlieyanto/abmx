@@ -20,13 +20,14 @@ and statements.
    `~/.config/abmx/statement-samples/<id>/`. The command samples every
    non-ignored label under both prefixes, mapped or not. Narrow it with
    `abmx receipt samples --label …` or `abmx statement samples --label …`.
-3. **Install the skill.**
+3. **Install the skills.**
    ```bash
-   abmx skill > ~/.agents/skills/abmx/SKILL.md
+   abmx skill install
    ```
 4. **Ask the agent.**
    ```text
-   help me create parser for all missing receipt and statement, use abmx parser authoring skill
+   help me create receipt parsers for all my transaction emails, use the abmx parser authoring skill
+   help me create statement parsers for all my statement emails, use the abmx parser authoring skill
    ```
 
 The agent reads the samples, writes the script, and verifies it against

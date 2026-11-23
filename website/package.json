@@ -6,10 +6,14 @@
     "private": true,
     "license": "MIT",
     "scripts": {
+        "predev": "node scripts/sync-release-notes.mjs",
         "dev": "astro dev --host 0.0.0.0",
+        "prebuild": "node scripts/sync-release-notes.mjs",
         "build": "astro build",
         "preview": "astro preview",
+        "precheck": "node scripts/sync-release-notes.mjs",
         "check": "astro check",
+        "sync-release-notes": "node scripts/sync-release-notes.mjs",
         "compiler:wasi": "bash scripts/use-wasi-compiler.sh"
     },
     "dependencies": {

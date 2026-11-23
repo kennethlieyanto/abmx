@@ -23,6 +23,11 @@ export default defineConfig({
       title: 'abmx',
       description: 'Sync bank transaction emails into an Actual Budget ledger.',
       favicon: '/favicon.svg',
+      logo: {
+        src: './src/assets/logo.svg',
+        // Decorative: the site title text sits next to it and carries the name.
+        alt: '',
+      },
       social: [
         {
           icon: 'github',
@@ -38,6 +43,10 @@ export default defineConfig({
       // Local builds can skip it; CI always builds the index.
       pagefind: !process.env.ABMX_NO_PAGEFIND,
       customCss: ['./src/styles/custom.css'],
+      components: {
+        Header: './src/components/Header.astro',
+        Hero: './src/components/Hero.astro',
+      },
       plugins: [starlightLinksValidator()],
       sidebar: [
         {
@@ -85,6 +94,10 @@ export default defineConfig({
             'reference/architecture',
             'reference/security',
           ],
+        },
+        {
+          label: 'Project',
+          items: ['release-notes'],
         },
       ],
     }),

@@ -1,0 +1,32 @@
+---
+// Splash hero override: put the "bank email in, ledger transaction out"
+// illustration above the title on the homepage, then render Starlight's
+// default hero unchanged.
+import Default from '@astrojs/starlight/components/Hero.astro';
+import BankEmailAnimation from './BankEmailAnimation.astro';
+
+const isSplash = Astro.locals.starlightRoute.entry.data.template === 'splash';
+---
+
+{
+  isSplash && (
+    <div class="home-illustration">
+      <BankEmailAnimation />
+    </div>
+  )
+}
+<Default><slot /></Default>
+
+<style>
+  .home-illustration {
+    width: 100%;
+    max-width: 900px;
+    margin: 1.5rem auto 0;
+  }
+
+  @media (min-width: 50rem) {
+    .home-illustration {
+      margin-top: 2.5rem;
+    }
+  }
+</style>

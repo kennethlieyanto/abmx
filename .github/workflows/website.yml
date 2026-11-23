@@ -5,10 +5,12 @@ on:
     branches: [main]
     paths:
       - 'website/**'
+      - 'CHANGELOG.md'
       - '.github/workflows/website.yml'
   pull_request:
     paths:
       - 'website/**'
+      - 'CHANGELOG.md'
       - '.github/workflows/website.yml'
   workflow_dispatch:
 

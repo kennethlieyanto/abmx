@@ -44,6 +44,11 @@ through that plugin. Write those with the base explicitly:
 
 `starlight-links-validator` fails the build on broken internal links.
 
+The [release notes](https://kennethlieyanto.github.io/abmx/release-notes/) page is generated: `scripts/sync-release-notes.mjs`
+copies the repository's release-please `CHANGELOG.md` into
+`src/content/docs/release-notes.md`. It runs automatically before `dev`, `build`,
+and `check`, so edit `CHANGELOG.md`, not the generated page.
+
 ## Install script
 
 `public/install.sh` is served at

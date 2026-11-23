@@ -1,0 +1,416 @@
+---
+// "Bank email in, ledger transaction out" — Ferris carries a Gmail receipt
+// through the abmx parser and files it as an Actual Budget transaction.
+//
+// The SVG is inline rather than an <img> so the colours can follow Starlight's
+// light/dark tokens.
+---
+
+<figure class="abmx-illustration">
+  <svg
+    viewBox="0 0 600 280"
+    role="img"
+    aria-label="Ferris carries a Gmail receipt through the abmx parser and files it as a transaction in Actual Budget"
+  >
+    <line class="abmx-ground" x1="0" y1="252" x2="600" y2="252" />
+
+    <!-- Gmail inbox -->
+    <g transform="translate(20,30)">
+      <rect class="abmx-card" width="160" height="130" rx="10" />
+      <rect
+        x="14"
+        y="12"
+        width="22"
+        height="16"
+        rx="2"
+        fill="none"
+        stroke="#ea4335"
+        stroke-width="2.5"
+      />
+      <path d="M14 14L25 23L36 14" fill="none" stroke="#ea4335" stroke-width="2.5" />
+      <text class="abmx-text" x="44" y="25">Inbox</text>
+      <g class="abmx-pick">
+        <rect x="10" y="40" width="140" height="24" rx="5" fill="#ea4335" opacity=".14" />
+        <text class="abmx-text abmx-text--sm" x="18" y="56">Card payment receipt</text>
+      </g>
+      <rect class="abmx-bar" x="14" y="76" width="120" height="8" rx="4" />
+      <rect class="abmx-bar" x="14" y="92" width="90" height="8" rx="4" />
+      <rect class="abmx-bar" x="14" y="108" width="110" height="8" rx="4" />
+    </g>
+
+    <!-- abmx parser -->
+    <g>
+      <rect class="abmx-card abmx-card--parser" x="230" y="34" width="140" height="166" rx="12" />
+      <rect
+        class="abmx-flash"
+        x="230"
+        y="34"
+        width="140"
+        height="166"
+        rx="12"
+        fill="#f74c00"
+        opacity="0"
+      />
+      <text class="abmx-text abmx-text--lg" x="300" y="62" text-anchor="middle">abmx parser</text>
+      <g class="abmx-gear abmx-center">
+        <circle
+          cx="300"
+          cy="104"
+          r="24"
+          fill="none"
+          stroke="#f74c00"
+          stroke-width="7"
+          stroke-dasharray="7 5"
+        />
+      </g>
+      <circle cx="300" cy="104" r="10" fill="#f74c00" />
+    </g>
+
+    <!-- Actual Budget ledger -->
+    <g transform="translate(420,30)">
+      <rect class="abmx-card" width="160" height="130" rx="10" />
+      <circle cx="24" cy="20" r="8" fill="#6c5ce7" />
+      <text class="abmx-text" x="40" y="24">Actual Budget</text>
+      <rect class="abmx-bar" x="14" y="44" width="80" height="8" rx="4" />
+      <rect class="abmx-bar" x="116" y="44" width="30" height="8" rx="4" />
+      <rect class="abmx-bar" x="14" y="66" width="100" height="8" rx="4" />
+      <rect class="abmx-bar" x="116" y="66" width="30" height="8" rx="4" />
+      <g class="abmx-land abmx-center">
+        <rect
+          x="8"
+          y="88"
+          width="144"
+          height="28"
+          rx="6"
+          fill="#6c5ce7"
+          opacity=".18"
+          stroke="#6c5ce7"
+          stroke-width="1.5"
+        />
+        <text class="abmx-text abmx-text--xs" x="16" y="106">EXAMPLE PAYEE</text>
+        <text class="abmx-text abmx-text--xs" x="144" y="106" text-anchor="end">-12,500</text>
+      </g>
+    </g>
+
+    <!-- Ferris -->
+    <g transform="translate(100,231)">
+      <g class="abmx-walk">
+        <g class="abmx-bob">
+          <g transform="scale(.3) translate(-232,-200)">
+            <g fill="#f74c00">
+              <g class="abmx-leg">
+                <path d="M92 180L58 194L114 270L70 207L90 194Z" />
+                <path d="M104 186L80 204L98 268L93 212L108 196Z" />
+              </g>
+              <g class="abmx-leg abmx-leg--right">
+                <path d="M374 180L408 194L352 270L396 207L376 194Z" />
+                <path d="M362 186L386 204L368 268L373 212L358 196Z" />
+              </g>
+              <path
+                d="M88 168Q72 152 52 134M378 168Q394 152 414 134"
+                stroke="#f74c00"
+                stroke-width="18"
+                stroke-linecap="round"
+                fill="none"
+              />
+            </g>
+            <path d="M80 182Q233 226 386 182Q233 252 80 182Z" fill="#a83200" />
+            <path
+              d="M80 182L86 147L106 135L101 112L124 105L125.5 82L150 81L157 59L180.5 64L193.6 44L215 55L233 39L251 55L272.4 44L285.5 64L309 58.6L316 81L340.5 82L341.6 105L364.6 112L359.6 135L380 147L386 182Q233 226 80 182Z"
+              fill="#f74c00"
+            />
+            <ellipse cx="207" cy="168" rx="19" ry="23" fill="#111" />
+            <ellipse cx="272" cy="168" rx="19" ry="23" fill="#111" />
+            <ellipse cx="202" cy="157" rx="6" ry="8" fill="#fff" />
+            <ellipse cx="267" cy="157" rx="6" ry="8" fill="#fff" />
+            <circle cx="214" cy="180" r="3.5" fill="#fff" />
+            <circle cx="279" cy="180" r="3.5" fill="#fff" />
+            <path d="M228 195L256 195Q249 207 242 207Q235 207 228 195Z" fill="#111" />
+          </g>
+
+          <g transform="translate(0,-6)">
+            <g class="abmx-env abmx-center">
+              <rect
+                x="-38"
+                y="-76"
+                width="76"
+                height="34"
+                rx="4"
+                fill="var(--abmx-card)"
+                stroke="#ea4335"
+                stroke-width="2.5"
+              />
+              <path d="M-38 -76L0 -56L38 -76" fill="none" stroke="#ea4335" stroke-width="2.5" />
+            </g>
+            <g class="abmx-chip abmx-center">
+              <rect x="-40" y="-76" width="80" height="34" rx="6" fill="#6c5ce7" />
+              <text
+                class="abmx-chip-text"
+                x="0"
+                y="-62"
+                text-anchor="middle"
+                fill="#fff">-12,500 IDR</text
+              >
+              <text
+                class="abmx-chip-sub"
+                x="0"
+                y="-49"
+                text-anchor="middle"
+                fill="#fff"
+                opacity=".85">EXAMPLE PAYEE</text
+              >
+            </g>
+          </g>
+
+          <g fill="#f74c00" stroke="#f74c00" stroke-width="1.6" stroke-linejoin="round">
+            <path
+              transform="translate(-56,-23) rotate(-12) scale(.72)"
+              d="M-7 2C-12 -4 -12 -17 -5 -26C-3 -20 -2 -13 -1 -9C1 -14 3 -19 5 -21C9 -14 10 -6 7 2C5 6 -5 6 -7 2Z"
+            />
+            <path
+              transform="translate(56,-23) scale(-1,1) rotate(-12) scale(.72)"
+              d="M-7 2C-12 -4 -12 -17 -5 -26C-3 -20 -2 -13 -1 -9C1 -14 3 -19 5 -21C9 -14 10 -6 7 2C5 6 -5 6 -7 2Z"
+            />
+          </g>
+        </g>
+      </g>
+    </g>
+  </svg>
+  <figcaption class="abmx-caption">
+    Gmail receipt &rarr; abmx parser &rarr; Actual Budget transaction
+  </figcaption>
+</figure>
+
+<style is:global>
+  .abmx-illustration {
+    --abmx-card: var(--sl-color-bg-nav);
+    --abmx-ink: var(--sl-color-text);
+    --abmx-bar: var(--sl-color-gray-4);
+    --abmx-line: var(--sl-color-gray-5);
+
+    margin: 0;
+    width: 100%;
+  }
+
+  .abmx-illustration svg {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .abmx-ground {
+    stroke: var(--abmx-line);
+    stroke-width: 3;
+    stroke-linecap: round;
+    stroke-dasharray: 2 10;
+  }
+
+  .abmx-card {
+    fill: var(--abmx-card);
+    stroke: var(--abmx-line);
+    stroke-width: 2;
+  }
+
+  .abmx-card--parser {
+    stroke: #f74c00;
+    stroke-width: 2.5;
+  }
+
+  .abmx-bar {
+    fill: var(--abmx-bar);
+  }
+
+  .abmx-text {
+    fill: var(--abmx-ink);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .abmx-text--sm {
+    font-size: 10px;
+  }
+
+  .abmx-text--lg {
+    font-size: 13px;
+  }
+
+  .abmx-text--xs {
+    font-size: 9px;
+  }
+
+  .abmx-chip-text {
+    font-size: 10px;
+    font-weight: 700;
+  }
+
+  .abmx-chip-sub {
+    font-size: 8px;
+  }
+
+  .abmx-caption {
+    margin: 0.75rem 0 0;
+    text-align: center;
+    font-size: var(--sl-text-sm);
+    color: var(--sl-color-gray-3);
+  }
+
+  .abmx-center {
+    transform-box: fill-box;
+    transform-origin: center;
+  }
+
+  .abmx-walk {
+    animation: abmx-walk 8s infinite ease-in-out;
+  }
+
+  .abmx-bob {
+    animation: abmx-bob 0.6s infinite ease-in-out alternate;
+  }
+
+  .abmx-leg {
+    transform-box: fill-box;
+    transform-origin: 50% 0;
+    animation: abmx-leg 0.6s infinite ease-in-out alternate;
+  }
+
+  .abmx-leg--right {
+    animation-delay: -0.3s;
+  }
+
+  .abmx-env {
+    animation: abmx-env 8s infinite ease-out;
+  }
+
+  .abmx-chip {
+    animation: abmx-chip 8s infinite ease-out;
+  }
+
+  .abmx-pick {
+    animation: abmx-pick 8s infinite;
+  }
+
+  .abmx-flash {
+    animation: abmx-flash 8s infinite;
+  }
+
+  .abmx-land {
+    animation: abmx-land 8s infinite ease-out;
+  }
+
+  .abmx-gear {
+    animation: abmx-spin 6s infinite linear;
+  }
+
+  @keyframes abmx-walk {
+    0%,
+    8% {
+      transform: translateX(0);
+    }
+    42%,
+    56% {
+      transform: translateX(200px);
+    }
+    90%,
+    100% {
+      transform: translateX(400px);
+    }
+  }
+
+  @keyframes abmx-bob {
+    to {
+      transform: translateY(-4px);
+    }
+  }
+
+  @keyframes abmx-leg {
+    to {
+      transform: translateY(-10px);
+    }
+  }
+
+  @keyframes abmx-env {
+    0%,
+    3% {
+      opacity: 0;
+      transform: translateY(14px);
+    }
+    7%,
+    46% {
+      opacity: 1;
+      transform: none;
+    }
+    50%,
+    100% {
+      opacity: 0;
+      transform: scale(0.6);
+    }
+  }
+
+  @keyframes abmx-chip {
+    0%,
+    46% {
+      opacity: 0;
+      transform: scale(0.6);
+    }
+    52%,
+    88% {
+      opacity: 1;
+      transform: none;
+    }
+    94%,
+    100% {
+      opacity: 0;
+      transform: translateY(-34px) scale(0.8);
+    }
+  }
+
+  @keyframes abmx-pick {
+    0%,
+    2% {
+      opacity: 1;
+    }
+    5%,
+    96% {
+      opacity: 0.2;
+    }
+    100% {
+      opacity: 1;
+    }
+  }
+
+  @keyframes abmx-flash {
+    0%,
+    40% {
+      opacity: 0;
+    }
+    47% {
+      opacity: 0.35;
+    }
+    56%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes abmx-land {
+    0%,
+    91% {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    95%,
+    98% {
+      opacity: 1;
+      transform: none;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes abmx-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+</style>

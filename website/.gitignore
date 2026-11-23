@@ -1,3 +1,6 @@
 node_modules/
 dist/
 .astro/
+
+# Generated from ../CHANGELOG.md by scripts/sync-release-notes.mjs.
+src/content/docs/release-notes.md

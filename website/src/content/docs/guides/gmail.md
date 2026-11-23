@@ -49,11 +49,14 @@ abmx auth login
 ```
 
 This starts a loopback listener on `127.0.0.1:<random port>`, prints an
-authorization URL, and tries to open a browser. Approve read-only Gmail access;
-the refresh token is written to
+authorization URL, and tries to open a browser. When no browser can be opened —
+a headless box, a container, `$DISPLAY`/`$WAYLAND_DISPLAY` unset, or `xdg-open`
+failing — it says so and switches to the manual paste flow on its own. Approve
+read-only Gmail access; the refresh token is written to
 `~/.local/state/abmx/gmail-credentials.json` with mode `0600`.
 
-Flags: `--no-browser` prints the URL only, `--port N` pins the loopback port.
+Flags: `--no-browser` prints the URL only, `--port N` pins the loopback port,
+`--manual` forces the paste flow.
 
 ### Headless server (or a browser on another machine)
 
@@ -62,7 +65,8 @@ approve in a browser on a different machine, the redirect goes to *that*
 machine's localhost, where nothing is listening — you get "This site can't be
 reached" even though authorization succeeded.
 
-Use `--manual`:
+Without a browser abmx detects that and uses the manual flow automatically. You
+can also force it with `--manual`:
 
 ```bash
 abmx auth login --manual
@@ -225,7 +229,7 @@ it to re-fetch everything.
 | `invalid_grant` on refresh | token expired (testing app) or revoked | re-run `abmx auth login` |
 | `403 … insufficient authentication scopes` | wrong scope on the token | revoke at <https://myaccount.google.com/permissions>, re-authorize |
 | `no refresh token returned` | Google only returns one on the first consent | remove app access, re-authorize (the flow already sends `prompt=consent`) |
-| browser shows "This site can't be reached" after approving | the redirect's `127.0.0.1` is the browser's machine, not the CLI's | `abmx auth login --manual`, then paste the URL from the address bar |
+| browser shows "This site can't be reached" after approving | the redirect's `127.0.0.1` is the browser's machine, not the CLI's | abmx falls back to the paste flow when it cannot open a browser; force it with `abmx auth login --manual`, then paste the URL from the address bar |
 | `state mismatch` | the pasted URL came from a different run | re-run `--manual` and paste the URL from that same run |
 | nothing found | no messages under the mapped labels | check the gmailctl filter, then `abmx status` |
 | old mail is downloaded again | the state database was removed or reset | expected after `abmx reset`; dedupe keeps the ledger intact |

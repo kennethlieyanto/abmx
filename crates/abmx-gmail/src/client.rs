@@ -22,6 +22,11 @@ pub enum GmailError {
     #[error("gmail: {0}")]
     Auth(String),
 
+    /// The desktop hand-off failed before the flow could wait for a callback.
+    /// `authorize_auto` catches this and switches to the manual flow.
+    #[error("gmail: could not open a browser: {0}")]
+    BrowserUnavailable(String),
+
     #[error("gmail api {status}: {body}")]
     Api { status: u16, body: String },
 

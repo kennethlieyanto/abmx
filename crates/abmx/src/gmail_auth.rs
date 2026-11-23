@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use abmx_gmail::{authorize, authorize_manual, OAuthConfig, TokenStore};
+use abmx_gmail::{authorize, authorize_auto, authorize_manual, OAuthConfig, TokenStore};
 use anyhow::{bail, Result};
 
 use crate::config::Config;
@@ -13,7 +13,7 @@ pub struct Options {
     pub no_browser: bool,
     /// Pin the loopback port; `None` uses the config, then `0` (any port).
     pub port: Option<u16>,
-    /// Approve anywhere and paste the callback URL back.
+    /// Force the paste-the-callback flow even if a browser could be opened.
     pub manual: bool,
 }
 
@@ -28,12 +28,15 @@ pub fn authorize_gmail(config: &Config, base: &Path, options: &Options) -> Resul
     let mut oauth = OAuthConfig::new(credentials.client_id);
     oauth.client_secret = credentials.client_secret;
     oauth.port = options.port.unwrap_or_else(|| config.gmail_oauth_port());
-    oauth.open_browser = !options.no_browser && !options.manual;
+    oauth.open_browser = !options.manual && !options.no_browser;
 
     let credentials = if options.manual {
         authorize_manual(&oauth)?
-    } else {
+    } else if options.no_browser {
         authorize(&oauth)?
+    } else {
+        // Open a browser when possible; headless boxes fall back to pasting.
+        authorize_auto(&oauth)?
     };
 
     let store = TokenStore::new(config.gmail_token_path(base));

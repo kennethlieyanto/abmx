@@ -1,7 +1,7 @@
 //! `abmx auth export` / `abmx auth import`: the portable credential bundle.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use abmx_gmail::{Credentials, TokenStore};
 
@@ -172,4 +172,44 @@ fn the_gmail_alias_still_reaches_login() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("--manual"), "{stdout}");
+}
+
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn login_without_a_browser_falls_back_to_the_paste_flow() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+[fetch.gmail]
+client_id = "client-id"
+
+[receipts]
+prefix = "receipt/"
+"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_abmx"))
+        .arg("--config")
+        .arg(&path)
+        .args(["auth", "login"])
+        .env("ABMX_GMAIL_CLIENT_SECRET", "client-secret")
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+
+    // No tty to paste into, so the flow ends with the paste prompt instead of
+    // hanging on a callback that no browser will produce.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("no graphical session"), "{stderr}");
+    assert!(
+        stderr.contains("Falling back to the manual flow"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Paste the full callback URL"), "{stderr}");
 }

@@ -14,8 +14,8 @@ use std::path::PathBuf;
 use abmx_core::{FetchBatch, FetchRequest, Fetcher, MessageKey, RawMessage};
 
 pub use auth::{
-    authorize, authorize_manual, revoke_refresh_token, Credentials, OAuthConfig, TokenStore,
-    REVOKE_URL,
+    authorize, authorize_auto, authorize_manual, revoke_refresh_token, Credentials, OAuthConfig,
+    TokenStore, REVOKE_URL,
 };
 pub use client::{GmailClient, GmailError, GmailLabel, MessageMeta, Profile};
 pub use sample::SampleMessage;

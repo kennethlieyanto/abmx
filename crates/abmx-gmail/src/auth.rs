@@ -2,13 +2,16 @@
 //!
 //! The flow is the standard "desktop app" one. Google retired the out-of-band
 //! flow, so a loopback listener is the only headless-friendly option that does
-//! not require a public redirect URL. On a server without a browser, run
-//! `abmx auth login` on a machine that has one and copy the credential file.
+//! not require a public redirect URL. [`authorize_auto`] opens a browser when
+//! it can and otherwise asks for the callback URL to be pasted, which works
+//! even when the browser is on another machine.
 
+use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -178,6 +181,30 @@ pub fn authorize_manual(config: &OAuthConfig) -> Result<Credentials, GmailError>
     authorize_with(config, Mode::Manual)
 }
 
+/// Try the loopback flow with a browser, falling back to the manual flow.
+///
+/// Opening a browser fails on headless boxes, in containers, and when
+/// `xdg-open` exists but has no handler. Rather than making every one of those
+/// users discover `--manual`, detect the failure and rerun the request in
+/// manual mode. The first authorization URL is never approved, so replacing it
+/// is safe.
+pub fn authorize_auto(config: &OAuthConfig) -> Result<Credentials, GmailError> {
+    let mut loopback = config.clone();
+    loopback.open_browser = true;
+
+    match authorize_with(&loopback, Mode::Loopback) {
+        Ok(credentials) => Ok(credentials),
+        Err(GmailError::BrowserUnavailable(reason)) => {
+            eprintln!(
+                "Could not open a browser ({reason}).\n\
+                 Falling back to the manual flow: approve in any browser, then paste the callback URL.\n"
+            );
+            authorize_with(config, Mode::Manual)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Loopback,
@@ -207,15 +234,24 @@ fn authorize_with(config: &OAuthConfig, mode: Mode) -> Result<Credentials, Gmail
 
     let url = authorization_url(config, &redirect, &state, &challenge)?;
 
-    eprintln!("Open this URL and approve read-only Gmail access:\n\n  {url}\n");
-
-    if mode == Mode::Manual {
-        eprintln!(
-            "After approving, the browser will try to open a 127.0.0.1 page and fail.\n\
-             That is expected: copy the whole address from the address bar and paste it here.\n"
-        );
-    } else if config.open_browser {
-        let _ = open_in_browser(url.as_str());
+    match mode {
+        Mode::Manual => {
+            eprintln!("Open this URL and approve read-only Gmail access:\n\n  {url}\n");
+            eprintln!(
+                "After approving, the browser will try to open a 127.0.0.1 page and fail.\n\
+                 That is expected: copy the whole address from the address bar and paste it here.\n"
+            );
+        }
+        Mode::Loopback => {
+            if config.open_browser {
+                // Launch before printing so a failed launch does not leave a
+                // throwaway authorization URL on screen.
+                open_in_browser(url.as_str()).map_err(GmailError::BrowserUnavailable)?;
+                eprintln!("Opened a browser. If nothing appeared, open this URL:\n\n  {url}\n");
+            } else {
+                eprintln!("Open this URL and approve read-only Gmail access:\n\n  {url}\n");
+            }
+        }
     }
 
     let (code, returned_state) = match mode {
@@ -563,18 +599,74 @@ fn respond(stream: &mut std::net::TcpStream, status: u16, message: &str) {
     let _ = stream.flush();
 }
 
-fn open_in_browser(url: &str) -> std::io::Result<()> {
-    #[cfg(target_os = "macos")]
-    let program = "open";
-    #[cfg(not(target_os = "macos"))]
-    let program = "xdg-open";
+/// Launcher used to hand the authorization URL to the desktop.
+#[cfg(target_os = "macos")]
+const BROWSER_LAUNCHER: &str = "open";
+#[cfg(not(target_os = "macos"))]
+const BROWSER_LAUNCHER: &str = "xdg-open";
 
-    std::process::Command::new(program)
+/// How long to wait for the launcher to report that it could not start a
+/// browser. A launcher that is still running after this is assumed to have
+/// handed off; `xdg-open` normally exits within a few hundred milliseconds.
+const LAUNCHER_GRACE: Duration = Duration::from_secs(2);
+
+/// Open `url` in the user's browser. `Err` explains why it could not.
+fn open_in_browser(url: &str) -> Result<(), String> {
+    if !graphical_session_available() {
+        return Err("no graphical session (DISPLAY and WAYLAND_DISPLAY are unset)".to_owned());
+    }
+    launch_browser(BROWSER_LAUNCHER, url)
+}
+
+fn launch_browser(program: &str, url: &str) -> Result<(), String> {
+    let mut child = Command::new(program)
         .arg(url)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
-        .map(|_| ())
+        .map_err(|error| format!("could not run {program}: {error}"))?;
+
+    let deadline = Instant::now() + LAUNCHER_GRACE;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => return Err(format!("{program} exited with {status}")),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    // Still running: assume the browser is launching. Reap it
+                    // in the background so it does not become a zombie.
+                    std::thread::spawn(move || {
+                        let _ = child.wait();
+                    });
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(error) => return Err(format!("{program}: {error}")),
+        }
+    }
+}
+
+/// Whether this process can reach a desktop that could show a browser.
+///
+/// Linux desktops set `DISPLAY` (X11) or `WAYLAND_DISPLAY` (Wayland). macOS
+/// needs no such variable.
+fn graphical_session_available() -> bool {
+    if cfg!(target_os = "macos") {
+        return true;
+    }
+
+    let display = std::env::var_os("DISPLAY");
+    let wayland = std::env::var_os("WAYLAND_DISPLAY");
+    has_graphical_session(display.as_deref(), wayland.as_deref())
+}
+
+fn has_graphical_session(display: Option<&OsStr>, wayland: Option<&OsStr>) -> bool {
+    [display, wayland]
+        .into_iter()
+        .flatten()
+        .any(|value| !value.is_empty())
 }
 
 #[cfg(test)]
@@ -697,5 +789,31 @@ mod tests {
 
         config.port = 4444;
         assert_eq!(manual_redirect(&config), "http://127.0.0.1:4444/callback");
+    }
+
+    #[test]
+    fn a_graphical_session_needs_a_display_or_wayland() {
+        assert!(!has_graphical_session(None, None));
+        assert!(!has_graphical_session(Some(OsStr::new("")), None));
+        assert!(has_graphical_session(Some(OsStr::new(":0")), None));
+        assert!(has_graphical_session(None, Some(OsStr::new("wayland-0"))));
+    }
+
+    #[test]
+    fn a_launcher_that_exits_successfully_counts_as_opened() {
+        assert!(launch_browser("true", "https://example.com").is_ok());
+    }
+
+    #[test]
+    fn a_launcher_that_exits_nonzero_is_unavailable() {
+        let error = launch_browser("false", "https://example.com").unwrap_err();
+        assert!(error.contains("false exited with"), "{error}");
+    }
+
+    #[test]
+    fn a_missing_launcher_is_unavailable() {
+        let error =
+            launch_browser("abmx-no-such-browser-launcher", "https://example.com").unwrap_err();
+        assert!(error.contains("could not run"), "{error}");
     }
 }

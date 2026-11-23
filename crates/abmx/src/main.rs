@@ -54,10 +54,11 @@ struct Cli {
 enum Command {
     /// Interactive quickstart: config, Gmail, labels, and account mapping.
     Setup {
-        /// Approve in any browser and paste the callback URL back.
+        /// Force the paste-the-callback flow; used automatically when no
+        /// browser can be opened.
         #[arg(long)]
         manual: bool,
-        /// Print the Gmail authorization URL instead of opening a browser.
+        /// Print the authorization URL instead of trying to open a browser.
         #[arg(long)]
         no_browser: bool,
         /// Re-offer labels you previously declined.
@@ -202,6 +203,9 @@ enum ReceiptCommand {
 #[derive(Subcommand)]
 enum AuthCommand {
     /// Authorize the Gmail account with OAuth2 + PKCE.
+    ///
+    /// Tries to open a browser and falls back to printing the URL when none
+    /// can be opened.
     #[command(alias = "gmail")]
     Login {
         /// Print the URL instead of trying to open a browser.
@@ -210,7 +214,7 @@ enum AuthCommand {
         /// Loopback port for the OAuth redirect; 0 picks a free one.
         #[arg(long, value_name = "PORT")]
         port: Option<u16>,
-        /// Approve in any browser and paste the callback URL back.
+        /// Force the paste-the-callback flow even when a browser is available.
         ///
         /// Use this when the CLI and the browser are on different machines:
         /// the redirect's 127.0.0.1 belongs to the browser's machine, so a

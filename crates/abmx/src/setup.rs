@@ -341,9 +341,14 @@ fn step_gmail(path: &Path, doc: &mut ConfigDocument, options: &Options) -> Resul
     }
 
     let (config, base) = reload(path)?;
-    let authorize = confirm("Authorize Gmail now? A browser window will open.")
-        .initial_value(true)
-        .interact()?;
+    let prompt = if options.manual {
+        "Authorize Gmail now? You will paste the callback URL back."
+    } else if options.no_browser {
+        "Authorize Gmail now? The authorization URL will be printed."
+    } else {
+        "Authorize Gmail now? abmx will try to open a browser."
+    };
+    let authorize = confirm(prompt).initial_value(true).interact()?;
     if !authorize {
         log::info("skipped Gmail authorization; rerun `abmx setup` when ready")?;
         return Ok(false);

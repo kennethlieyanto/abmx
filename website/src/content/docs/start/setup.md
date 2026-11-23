@@ -16,7 +16,7 @@ It is idempotent. Rerunning it skips completed steps, so it doubles as the
 
 ```bash
 abmx setup                 # the normal path
-abmx setup --manual        # headless OAuth: approve anywhere, paste the URL back
+abmx setup --manual        # force headless OAuth: approve anywhere, paste the URL back
 abmx setup --review        # re-offer labels you previously declined
 abmx setup --remap         # re-ask account mappings that already exist
 ```
@@ -81,9 +81,11 @@ Google Cloud checklist and asks for the path to the downloaded OAuth client JSON
 (Desktop app). The JSON is copied to `<config dir>/gmail-client.json` with mode
 `0600`, and `[fetch.gmail].credentials_file` is set.
 
-The authorization itself is the same PKCE loopback flow as
-`abmx auth login`, and respects `--manual` and `--no-browser`. The refresh token
-is written to `~/.local/state/abmx/gmail-credentials.json`.
+The authorization itself is the same PKCE flow as `abmx auth login`. It tries
+to open a browser; if none can be opened it switches to the manual paste flow
+by itself. `--manual` forces that flow and `--no-browser` keeps the loopback
+listener while printing the URL. The refresh token is written to
+`~/.local/state/abmx/gmail-credentials.json`.
 
 The client JSON and the token are deliberately separate, just like gws and
 gmailctl: the client identifies the app, the token identifies the user. See

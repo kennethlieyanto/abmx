@@ -6,7 +6,7 @@ description: Every abmx command, the receipt and statement groups, stdout rules,
 ```text
 abmx setup [--manual] [--no-browser] [--review] [--remap]
                                     interactive config, Gmail, receipts, statements
-abmx auth login [--manual]          OAuth2 + PKCE; --manual for a headless box
+abmx auth login [--manual]          OAuth2 + PKCE; pastes the callback when headless
 abmx auth export [--out FILE] [--stdout] [--force]
                                     write a portable credential bundle
 abmx auth import --file FILE        install an exported bundle locally

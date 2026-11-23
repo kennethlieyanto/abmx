@@ -140,28 +140,117 @@ redact in="sample" out="build/redacted":
 parser-init id:
     cargo run -q -p abmx -- parser init {{id}}
 
-# Remove the user config (~/.config/abmx) and every installed parser, so the
-# first-run UX can be tried again. The Gmail token and state DB live in
-# ~/.local/state/abmx and are kept; `abmx reset --purge` replays them.
-# Usage: `just nuke` (asks) or `just nuke yes`.
+# Nuke every trace of abmx so the first-run UX can be tried from scratch: the
+# state DB and Gmail token (setup reauthorizes), the config directory (samples,
+# OAuth client, config.toml), the cached Actual budget, the disposable Actual
+# server and its budget volume, and the gitignored dev/ sandbox files. Authored
+# parsers are expensive to recreate, so the user corpus is offered a move to
+# parsers.bak first.
+# Usage: `just nuke` (prompts) or `just nuke yes`.
 nuke yes="no":
     #!/usr/bin/env bash
     set -euo pipefail
-    dir="${XDG_CONFIG_HOME:-$HOME/.config}/abmx"
-    if [[ ! -e "$dir" ]]; then
-        echo "nothing to remove: $dir"
-        exit 0
+
+    config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/abmx"
+    state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/abmx"
+    cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/abmx"
+    parsers="$config_dir/parsers"
+    repo="{{justfile_directory()}}"
+    compose="$repo/dev/compose.yaml"
+
+    ask=1
+    if [[ "{{yes}}" == "yes" ]]; then
+        ask=0
+    elif [[ ! -t 0 ]]; then
+        echo "no terminal to confirm; rerun as 'just nuke yes'" >&2
+        exit 1
     fi
-    if [[ "{{yes}}" != "yes" ]]; then
-        printf 'remove %s? [y/N] ' "$dir"
+
+    echo "nuke removes:"
+    echo "  $config_dir (everything but parsers.bak*)"
+    echo "  $state_dir  (state DB, Gmail token, authoring samples)"
+    echo "  $cache_dir  (cached Actual budgets)"
+    echo "  dev/abmx.toml, dev/state.db*, dev/actual-cache/, dev/actual-api-key, dev/*.password"
+    echo "  the dev Actual container and its budget volume"
+    if [[ $ask -eq 1 ]]; then
+        printf 'nuke? [y/N] '
         read -r answer
         case "$answer" in
             y|Y|yes|YES) ;;
             *) echo "aborted"; exit 1 ;;
         esac
     fi
-    rm -rf "$dir"
-    echo "removed $dir"
+
+    # 1. Parsers are the one expensive artifact: offer to keep them.
+    backup=""
+    if [[ -d "$parsers" ]]; then
+        backup="$config_dir/parsers.bak"
+        if [[ -e "$backup" ]]; then
+            backup="$backup.$(date +%Y%m%dT%H%M%S)"
+        fi
+        keep=1
+        if [[ $ask -eq 1 ]]; then
+            printf 'keep authored parsers? move %s -> %s [Y/n] ' "$parsers" "$backup"
+            read -r answer
+            case "$answer" in
+                n|N|no|NO) keep=0 ;;
+            esac
+        fi
+        if [[ $keep -eq 1 ]]; then
+            mv -- "$parsers" "$backup"
+            echo "kept parsers at $backup"
+        else
+            echo "warning: $parsers will be deleted" >&2
+            backup=""
+        fi
+    fi
+
+    # 2. Config directory, keeping any parsers backup.
+    if [[ -d "$config_dir" ]]; then
+        shopt -s nullglob dotglob
+        for entry in "$config_dir"/*; do
+            case "${entry##*/}" in
+                parsers.bak*) continue ;;
+            esac
+            rm -rf -- "$entry"
+        done
+        rmdir -- "$config_dir" 2>/dev/null || true
+        echo "cleaned $config_dir"
+    fi
+
+    # 3. State and cache: state DB, Gmail token, downloaded samples.
+    rm -rf -- "$state_dir" "$cache_dir"
+    echo "removed $state_dir and $cache_dir"
+
+    # 4. Gitignored dev sandbox files, which point at the volume below.
+    shopt -s nullglob
+    for path in "$repo"/dev/abmx.toml "$repo"/dev/state.db* \
+                "$repo"/dev/actual-cache "$repo"/dev/actual-api-key \
+                "$repo"/dev/*.password; do
+        rm -rf -- "$path"
+        echo "removed ${path#"$repo"/}"
+    done
+
+    # 5. The disposable Actual server and its budget volume.
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && [[ -f "$compose" ]]; then
+        if ! docker compose -f "$compose" down -v --remove-orphans; then
+            echo "warning: docker compose down failed; continuing" >&2
+        fi
+        # `down -v` can leave the volume when the containers were already gone.
+        volume="$(basename "$(dirname "$compose")")_actual-data"
+        if docker volume inspect "$volume" >/dev/null 2>&1; then
+            docker volume rm "$volume"
+        fi
+        echo "removed the dev Actual container and volume"
+    else
+        echo "warning: docker unavailable or dev/compose.yaml missing; the dev container/volume were left alone" >&2
+    fi
+
+    echo
+    echo "next: just run setup"
+    if [[ -n "$backup" ]]; then
+        echo "restore parsers later with: mv \"$backup\" \"$parsers\""
+    fi
 
 # ---------------------------------------------------------------------------
 # actual helper

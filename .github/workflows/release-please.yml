@@ -1,0 +1,102 @@
+name: release-please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # release-please's `simple` strategy cannot bump Cargo.lock, and a tag
+      # whose lockfile still pins the previous workspace version breaks
+      # `nix build .#` / `cargo build --locked`. Reconcile the lockfile on the
+      # release PR branch after every update.
+      - name: Resolve release-please branch
+        id: branch
+        if: ${{ steps.release.outputs.pr != '' }}
+        env:
+          PR_JSON: ${{ steps.release.outputs.pr }}
+        run: |
+          set -euo pipefail
+          branch=$(printf '%s' "$PR_JSON" | jq -r '.headBranchName // empty')
+          if [ -z "$branch" ]; then
+            echo "::error::could not read headBranchName from release-please output"
+            exit 1
+          fi
+          echo "name=$branch" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release PR branch
+        if: ${{ steps.release.outputs.pr != '' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.branch.outputs.name }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: ${{ steps.release.outputs.pr != '' }}
+
+      - name: Sync Cargo.lock with the bumped workspace version
+        if: ${{ steps.release.outputs.pr != '' }}
+        env:
+          BRANCH: ${{ steps.branch.outputs.name }}
+        run: |
+          set -euo pipefail
+
+          # `cargo metadata` reconciles an existing lockfile in place; it does
+          # not re-resolve unrelated dependencies the way `generate-lockfile`
+          # would.
+          cargo metadata --format-version=1 > /dev/null
+
+          if git diff --quiet -- Cargo.lock; then
+            echo "Cargo.lock is already in sync."
+            exit 0
+          fi
+
+          # The lockfile format header is an unquoted integer. A change there
+          # means something did a full re-resolve.
+          if git diff -- Cargo.lock | grep -Eq '^[+-]version = [0-9]+$'; then
+            echo "::error::Cargo.lock format version changed; refusing to commit."
+            git diff -- Cargo.lock | head -20
+            exit 1
+          fi
+
+          # Every changed package must be a workspace member. This catches a
+          # cargo version deciding to bump an external dependency during what
+          # should be a workspace-only sync.
+          changed=$(git diff -U1 -- Cargo.lock \
+            | awk '/^ name = / { gsub(/"/, "", $3); name=$3 } /^[+-]version = / { print name }' \
+            | sort -u)
+          workspace=$(cargo metadata --no-deps --format-version=1 \
+            | jq -r '.packages[].name' | sort -u)
+          for package in $changed; do
+            if ! printf '%s\n' "$workspace" | grep -qx "$package"; then
+              echo "::error::Cargo.lock sync touched a non-workspace package: $package"
+              git diff -- Cargo.lock | head -80
+              exit 1
+            fi
+          done
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock
+          git commit -m "chore: sync Cargo.lock with workspace version"
+          git push origin "HEAD:${BRANCH}"

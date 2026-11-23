@@ -1,19 +1,76 @@
 ---
 title: Install
-description: Build or install abmx from Nix, Cargo, or the container image, and the credentials you need first.
+description: Install abmx with the shell installer, Nix, Cargo, or the container image, and the credentials you need first.
 ---
+
+## Quick install
+
+Linux and macOS, no Rust or Nix required:
+
+```bash
+curl -fsSL https://kennethlieyanto.github.io/abmx/install.sh | sh
+```
+
+The installer downloads the latest release for your platform, verifies its
+SHA-256, and installs:
+
+- `abmx` to `~/.local/bin/abmx`
+- the Actual helper to `~/.local/share/abmx/actual-helper/`
+
+It then runs `npm ci` in the helper directory when Node 22+ is available.
+`abmx --version` verifies the binary. If `~/.local/bin` is not on `PATH`, the
+installer prints the line to add it.
+
+The JSONL sink works without Node. The Actual sink needs **Node 22+** and the
+helper's `node_modules`; install Node and rerun the installer, or run:
+
+```bash
+cd ~/.local/share/abmx/actual-helper && npm ci --omit=dev
+```
+
+Pin a version or choose a different prefix:
+
+```bash
+curl -fsSL https://kennethlieyanto.github.io/abmx/install.sh | ABMX_VERSION=v0.1.0 sh
+curl -fsSL https://kennethlieyanto.github.io/abmx/install.sh | ABMX_INSTALL_DIR="$HOME/.local" sh
+```
+
+Prefer to read before running? Download it first:
+
+```bash
+curl -fsSLO https://kennethlieyanto.github.io/abmx/install.sh
+less install.sh
+sh install.sh
+```
+
+Rerun the same command to upgrade. Uninstall with:
+
+```bash
+rm ~/.local/bin/abmx
+rm -rf ~/.local/share/abmx
+```
+
+Your config, state, and parsers live under `~/.config/abmx`,
+`~/.local/state/abmx`, and `~/.cache/abmx`; the installer never touches them.
 
 ## Nix
 
-The turnkey path. The flake bundles the Actual helper and Node.
+The flake bundles the Actual helper and Node, so this is still the turnkey path
+for a NixOS or home-manager host:
+
+```bash
+nix profile install github:kennethlieyanto/abmx
+nix run github:kennethlieyanto/abmx -- --version
+```
+
+From a checkout:
 
 ```bash
 nix build .#          # ./result/bin/abmx
 nix develop           # rust, cargo, clippy, rustfmt, just, node, sqlite
 ```
 
-From a checkout you can also try it in place; `.envrc` adds `target/debug` to
-`PATH`:
+`.envrc` also adds `target/debug` to `PATH`:
 
 ```bash
 direnv allow          # first time only

@@ -131,17 +131,39 @@ enabled.
 
 ## Releasing
 
-There is no release automation. The workspace shares one version
-(`[workspace.package].version`), and a release is a tag:
+Releases are automated with
+[release-please](https://github.com/googleapis/release-please). `main` must use
+Conventional Commit messages (`feat:`, `fix:`, `feat!:`); release-please turns
+them into one pending release PR.
 
-```bash
-git tag vX.Y.Z
-git push origin vX.Y.Z
-```
+1. Merge the pending `chore: release` PR when ready to ship.
+2. release-please bumps the workspace version, `version.txt`, `Cargo.lock`, and
+   `CHANGELOG.md`, then creates the `vX.Y.Z` tag and GitHub Release.
+3. The `release` workflow uploads the Linux/macOS tarballs; the `image`
+   workflow publishes the container.
 
-The Nix flake reads the version from `Cargo.toml`, so bump it before tagging.
-Parser corpora are not part of the release: they are runtime data managed by the
-user (or by a deployment's ConfigMap).
+The repository needs a `RELEASE_PLEASE_TOKEN` secret: a fine-grained PAT scoped
+to this repository with **Contents**, **Pull requests**, and **Issues**
+read/write. The default `GITHUB_TOKEN` cannot trigger the tag and release
+workflows. Rotate the PAT before it expires. Also set
+Settings → Actions → General → Workflow permissions to "Read and write".
+
+The root `Cargo.toml` is a virtual workspace, and release-please's Rust strategy
+cannot read `[workspace.package].version` (it requires a literal
+`[package].version`). `release-please-config.json` therefore uses the `simple`
+strategy with `version.txt`, plus a TOML `extra-files` updater for
+`$.workspace.package.version`. `version.txt` is generated, not hand-maintained;
+CI fails if it disagrees with `Cargo.toml`. The release-please workflow also
+commits the `Cargo.lock` sync onto the release PR so `--locked` builds work.
+
+The first release is bootstrapped with `initial-version: 0.1.0` and a
+`bootstrap-sha`; release-please ignores `bootstrap-sha` once a release exists. Do
+not rename release assets: `website/public/install.sh` depends on
+`abmx-<target>.tar.gz` and the adjacent `.sha256`.
+
+The helper's `package.json` version is not managed by release-please; it tracks
+the pinned `@actual-app/api`. Parser corpora are not part of a release: they are
+runtime data managed by the user (or by a deployment's ConfigMap).
 
 ## Scope
 

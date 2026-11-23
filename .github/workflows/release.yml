@@ -1,0 +1,142 @@
+name: release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build (for example v0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-assets-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # musl avoids a glibc-version floor on Linux. rusqlite is bundled and
+          # TLS is rustls, so these are self-contained apart from Node at runtime.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          # native runners: macos-15 is arm64, macos-15-intel is x86_64.
+          - target: aarch64-apple-darwin
+            os: macos-15
+            cross: false
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            cross: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - uses: taiki-e/install-action@v2
+        if: matrix.cross
+        with:
+          tool: cross
+
+      - name: Build
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --locked --target "${{ matrix.target }}" --package abmx --bin abmx
+          else
+            cargo build --release --locked --target "${{ matrix.target }}" --package abmx --bin abmx
+          fi
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          asset="abmx-${{ matrix.target }}.tar.gz"
+          rm -rf dist
+          mkdir -p dist/abmx/bin dist/abmx/share/abmx/actual-helper
+          cp "target/${{ matrix.target }}/release/abmx" dist/abmx/bin/abmx
+          chmod 0755 dist/abmx/bin/abmx
+          cp crates/abmx-actual/helper/helper.js \
+             crates/abmx-actual/helper/package.json \
+             crates/abmx-actual/helper/package-lock.json \
+             dist/abmx/share/abmx/actual-helper/
+          chmod 0755 dist/abmx/share/abmx/actual-helper/helper.js
+          cp README.md LICENSE dist/abmx/
+          tar -C dist -czf "$asset" abmx
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$asset" > "$asset.sha256"
+          else
+            shasum -a 256 "$asset" > "$asset.sha256"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: abmx-${{ matrix.target }}
+          path: |
+            abmx-${{ matrix.target }}.tar.gz
+            abmx-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    name: publish release assets
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Verify the tag matches the workspace version
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          test -n "$version"
+          test "$(tr -d '[:space:]' < version.txt)" = "$version"
+          if [ "v${version}" != "$TAG" ]; then
+            echo "::error::release tag $TAG does not match Cargo.toml version $version (expected v$version)"
+            exit 1
+          fi
+
+      - name: Upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          test -n "$(ls -A dist)"
+          (cd dist && sha256sum -- *.tar.gz > SHA256SUMS)
+          gh release upload "$TAG" \
+            dist/abmx-*.tar.gz \
+            dist/abmx-*.tar.gz.sha256 \
+            dist/SHA256SUMS \
+            --clobber

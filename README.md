@@ -6,6 +6,19 @@ ledger.
 **[Website and documentation](https://kennethlieyanto.github.io/abmx/)** ·
 [Contributing](CONTRIBUTING.md) · [MIT](LICENSE)
 
+## Install
+
+Linux and macOS, no Rust or Nix required:
+
+```bash
+curl -fsSL https://kennethlieyanto.github.io/abmx/install.sh | sh
+```
+
+The installer verifies the release checksum and installs `abmx` to
+`~/.local/bin`. See
+[Install](https://kennethlieyanto.github.io/abmx/start/install/) for Nix, Cargo,
+container, and Node 22 requirements.
+
 ```console
 $ abmx sync
 fetched 15, parsed 15 — import 13, broken 2, unmatched 0, failed 0

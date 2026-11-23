@@ -85,6 +85,14 @@ transactions and leaves reconciliation against the statement to you.
 ## Install
 
 <Tabs>
+  <TabItem label="curl">
+    ```bash
+    curl -fsSL https://kennethlieyanto.github.io/abmx/install.sh | sh
+    ```
+
+    Installs the latest Linux/macOS release to `~/.local` and sets up the Actual
+    helper when Node 22+ is present. See [Install](/start/install/).
+  </TabItem>
   <TabItem label="Nix">
     ```bash
     nix run github:kennethlieyanto/abmx -- --version

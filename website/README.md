@@ -44,6 +44,14 @@ through that plugin. Write those with the base explicitly:
 
 `starlight-links-validator` fails the build on broken internal links.
 
+## Install script
+
+`public/install.sh` is served at
+<https://kennethlieyanto.github.io/abmx/install.sh> and is the one-liner in the
+install guide. It downloads `abmx-<target>.tar.gz` and the adjacent `.sha256`
+from GitHub Releases, so keep its target names in sync with
+`.github/workflows/release.yml`.
+
 ## Deployment
 
 `.github/workflows/website.yml` builds the site and deploys it with GitHub Pages

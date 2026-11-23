@@ -205,7 +205,7 @@ nuke yes="no":
         fi
     fi
 
-    # 2. Config directory, keeping any parsers backup.
+    # 2. Config directory contents, keeping the directory and any parsers backup.
     if [[ -d "$config_dir" ]]; then
         shopt -s nullglob dotglob
         for entry in "$config_dir"/*; do
@@ -214,7 +214,6 @@ nuke yes="no":
             esac
             rm -rf -- "$entry"
         done
-        rmdir -- "$config_dir" 2>/dev/null || true
         echo "cleaned $config_dir"
     fi
 
@@ -227,6 +226,7 @@ nuke yes="no":
     for path in "$repo"/dev/abmx.toml "$repo"/dev/state.db* \
                 "$repo"/dev/actual-cache "$repo"/dev/actual-api-key \
                 "$repo"/dev/*.password; do
+        [[ -e "$path" ]] || continue
         rm -rf -- "$path"
         echo "removed ${path#"$repo"/}"
     done
